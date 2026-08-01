@@ -1,0 +1,44 @@
+{
+  "format": 1,
+  "versions": {
+    "8.4.1": {
+      "abi": "py3",
+      "dll": "librenpython.dll",
+      "symbols": {
+        "PyRun_SimpleStringFlags": null,
+        "PyRun_SimpleString": null,
+        "PyGILState_Ensure": null,
+        "PyGILState_Release": null,
+        "Py_GetVersion": null,
+        "Py_CompileString": null,
+        "PyRun_String": null
+      }
+    },
+    "8.5.0": {
+      "abi": "py3",
+      "dll": "librenpython.dll",
+      "symbols": {
+        "PyRun_SimpleStringFlags": null,
+        "PyRun_SimpleString": null,
+        "PyGILState_Ensure": null,
+        "PyGILState_Release": null,
+        "Py_GetVersion": null,
+        "Py_CompileString": null,
+        "PyRun_String": null
+      }
+    },
+    "8.5.3.26051504": {
+      "abi": "py3",
+      "dll": "librenpython.dll",
+      "symbols": {
+        "PyRun_SimpleStringFlags": null,
+        "PyRun_SimpleString": null,
+        "PyGILState_Ensure": null,
+        "PyGILState_Release": null,
+        "Py_GetVersion": null,
+        "Py_CompileString": null,
+        "PyRun_String": null
+      }
+    }
+  }
+}

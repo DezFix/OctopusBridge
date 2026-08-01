@@ -1,0 +1,27 @@
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.python-version
+
+# ── Сборка (PyInstaller / Inno Setup) ──
+build/
+dist/
+installer/
+*.spec.tmp
+
+# ── Локальные данные ──
+TEMP/
+projects/
+crash.log
+*.log
+
+# ── IDE / OS ──
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
