@@ -16,6 +16,7 @@ installer/
 # ── Локальные данные ──
 TEMP/
 projects/
+TZ.md
 crash.log
 *.log
 
