@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""Движки машинного перевода: AI (LLM), Argos (встроенный офлайн), Google Free."""
+"""Движки машинного перевода: AI (LLM), Honyaku (встроенный офлайн),
+Google Free, Bing."""
 from __future__ import annotations
 
 import json
@@ -39,9 +40,9 @@ class AIEngine(BaseEngine):
 
     def __init__(self, base_url: str = "https://openrouter.ai/api/v1",
                  api_key: str = "", model: str = "", batch_size: int = 8):
-        self.base_url = base_url.rstrip("/")
-        self.api_key = api_key
-        self.model = model
+        self.base_url = (base_url or "https://openrouter.ai/api/v1").rstrip("/")
+        self.api_key = api_key or ""
+        self.model = model or ""
         self.batch_size = batch_size
 
     def ping(self) -> bool:
@@ -166,68 +167,81 @@ class AIEngine(BaseEngine):
         return result
 
 
-class ArgosEngine(BaseEngine):
-    """Встроенный офлайн-перевод на argostranslate (CTranslate2).
+class HonyakuEngine(BaseEngine):
+    """Встроенный офлайн-перевод на собственной библиотеке honyaku
+    (CTranslate2 + SentencePiece, без PyTorch).
 
-    Не требует внешних программ. Языковые пакеты (~100-300 МБ) скачиваются
-    один раз из настроек приложения. Направления вроде ja→ru переводятся
-    автоматически через английский (ja→en→ru).
+    Два тира моделей:
+      * fast — OPUS-MT, отдельная маленькая модель на ядровые пары
+        (ja→ru, ja→en, en→ru), максимальная скорость;
+      * best — NLLB-200 distilled 600M, ОДНА модель на все пары
+        (ja/zh/ko/ru/en/fr/de/es/it/pt), заметно лучше смысл.
+
+    Модели качаются автоматически при первом переводе (обе тиры —
+    fast для ядровых пар, best как запасная и для остальных пар).
     """
 
-    name = "argos"
+    name = "honyaku"
+    DEFAULT_PAIRS = [
+        ("ja", "ru"), ("ja", "en"), ("zh", "ru"), ("zh", "en"),
+        ("en", "ru"),
+    ]
+    _FAST_PAIRS = ("ja-ru", "ja-en", "en-ru", "zh-en")
 
-    def __init__(self):
+    def __init__(self, tier: str = "best"):
         try:
-            import argostranslate.translate as tr
-            self._tr = tr
-            self._translators: dict = {}
+            from app.translators.honyaku import Translator
+            self._Translator = Translator
         except ImportError:
-            self._tr = None
-            self._translators = {}
+            self._Translator = None
+        self.tier = tier
+        self._translators: dict[str, object] = {}
+        self._lock = threading.Lock()
 
-    def _get_tr(self, source: str, target: str):
-        key = (source, target)
-        tr = self._translators.get(key)
-        if tr is not None:
-            return tr
-        langs = self._tr.get_installed_languages()
-        langs_dict = {l.code: l for l in langs}
-        from_lang = langs_dict.get(source)
-        to_lang = langs_dict.get(target)
-        if from_lang is None or to_lang is None:
-            return None
-        tr = from_lang.get_translation(to_lang)
-        self._translators[key] = tr
-        return tr
+    def _tiers_for(self, pair: str) -> list[str]:
+        # для ядерных пар можно "fast"; для остальных (zh, ko…) —
+        # только best (NLLB)
+        if pair in self._FAST_PAIRS:
+            return [self.tier, "fast", "best"]
+        return [self.tier, "best"]
+
+    def _translator(self, source: str, target: str):
+        pair = f"{source}-{target}"
+        with self._lock:
+            tr = self._translators.get(pair)
+            if tr is not None:
+                return tr
+            last_err = None
+            for tier in self._tiers_for(pair):
+                try:
+                    tr = self._Translator(pair=pair, tier=tier)
+                    self._translators[pair] = tr
+                    return tr
+                except (ValueError, RuntimeError) as e:
+                    last_err = e
+            raise EngineError from last_err
 
     def ping(self) -> bool:
-        if self._tr is None:
-            return False
-        return len(self._tr.get_installed_languages()) > 0
+        # Движок готов всегда: модели качаются автоматически при первом
+        # переводе. Проверка скачанных моделей здесь НЕ нужна — иначе
+        # реалтайм молча подменяется identity-функцией и перевод
+        # «не работает» без всякой ошибки.
+        return self._Translator is not None
 
     def translate(self, texts: list[str], source: str, target: str,
                   context_before: list[str] | None = None,
                   context_after: list[str] | None = None) -> list[str]:
-        if self._tr is None:
-            raise EngineError(
-                "argostranslate package not installed "
-                "(pip install argostranslate)")
+        if self._Translator is None:
+            raise EngineError("honyaku module not available")
         if source == target:
             return list(texts)
-        tr = self._get_tr(source, target)
-        if tr is not None:
-            return [tr.translate(t) for t in texts]
-        tr_src_en = self._get_tr(source, "en")
-        tr_en_tgt = self._get_tr("en", target)
-        if tr_src_en is None or tr_en_tgt is None:
+        try:
+            tr = self._translator(source, target)
+        except Exception as e:  # noqa: BLE001
             raise EngineError(
-                f"No Argos models for {source}→{target} or "
-                f"{source}→en→{target}. Download in Settings.")
-        result = []
-        for t in texts:
-            en = tr_src_en.translate(t)
-            result.append(tr_en_tgt.translate(en))
-        return result
+                f"No offline models for {source}→{target} "
+                "(models download automatically on first use).") from e
+        return list(tr.translate_batch(texts))
 
 
 class GoogleFreeEngine(BaseEngine):
@@ -320,12 +334,12 @@ class BingEngine(BaseEngine):
         r = self._session.get(self.HOST_URL, timeout=15)
         r.raise_for_status()
         html = r.text
-        m = re.search(r'\bIG:"([^"]+)"', html)
-        if m:
+        m = re.search(r'IG\s*[:=]\s*["\']([^"\']+)["\']', html)
+        if m and "+_G.IG+" not in m.group(1):
             self._ig = m.group(1)
         m = re.search(r'id="tta_outGDCont"[^>]*data-iid="([^"]+)"', html)
         if not m:
-            m = re.search(r'_iid="([^"]+)"', html)
+            m = re.search(r'_iid\s*=\s*["\']([^"\']+)["\']', html)
         if m:
             self._iid = m.group(1)
         m = re.search(r"params_AbusePreventionHelper\s*=\s*\[([^\]]+)\]", html)
@@ -369,7 +383,11 @@ class BingEngine(BaseEngine):
                           "tryFetchingGenderDebiasedTranslations": "true",
                           "key": self._key, "token": self._token},
                     headers={"Referer": self.HOST_URL,
-                             "Origin": "https://www.bing.com"},
+                             "Origin": "https://www.bing.com",
+                             "Accept": "application/json",
+                             "X-Requested-With": "XMLHttpRequest",
+                             "Content-Type": "application/x-www-form-urlencoded; "
+                                             "charset=UTF-8"},
                     timeout=30)
                 r.raise_for_status()
                 data = r.json()
@@ -381,7 +399,8 @@ class BingEngine(BaseEngine):
             except (requests.RequestException, ValueError, KeyError,
                     IndexError) as e:
                 last_err = e
-                # токены могли протухнуть — сброс и повторная загрузка
+                # токены могли протухнуть или страница изменилась —
+                # полный сброс и повторная загрузка
                 self._ig = self._iid = self._token = self._key = None
                 if attempt < 2:
                     import time
@@ -446,9 +465,8 @@ class RotateEngine(BaseEngine):
 class NllbEngine(BaseEngine):
     """Удалённый движок — оставлен как заглушка для старых настроек.
 
-    NLLB-200 требует transformers+torch (~2.5 ГБ + модель 2.3 ГБ),
-    поэтому исключён из состава приложения. Старые настройки,
-    где провайдером выбран 'nllb', переводят на Argos.
+    NLLB-200 теперь работает через honyaku (tier=best). Старые настройки,
+    где провайдером выбран 'nllb', переводят на HonyakuEngine.
     """
 
     name = "nllb"
@@ -461,13 +479,13 @@ class NllbEngine(BaseEngine):
 
     def translate(self, texts, source, target, *args, **kwargs):
         raise EngineError(
-            "NLLB-200 удалён из приложения — используйте Argos "
-            "(настройки → провайдер).")
+            "NLLB-200 перенесён в honyaku (tier=best) — выберите провайдера "
+            "Honyaku в настройках.")
 
 
 # реестр провайдеров для настроек
 PROVIDERS = {
-    "argos": "Argos — встроенный офлайн (без ключа)",
+    "honyaku": "Honyaku — встроенный офлайн (без ключа)",
     "google_free": "Google Translate — бесплатный (без ключа)",
     "bing": "Bing Translator — бесплатный (без ключа)",
     "rotate": "Google + Bing — чередование (быстрее)",
@@ -485,19 +503,17 @@ def get_engine(name: str, **kwargs) -> BaseEngine:
         "ai": AIEngine,
         "ollama": AIEngine,
         "openai_compat": AIEngine,
-        "argos": ArgosEngine,
+        "honyaku": HonyakuEngine,
+        "argos": HonyakuEngine,      # старые настройки -> honyaku
         "google_free": GoogleFreeEngine,
         "bing": BingEngine,
         "rotate": RotateEngine,
-        "nllb": NllbEngine,
     }
     if name not in engines:
+        if name == "nllb":
+            # старые настройки с удалённым NLLB — молча переводим на honyaku
+            return HonyakuEngine()
         raise EngineError(f"Unknown engine: {name}")
-    if name == "argos":
-        kwargs.pop("url", None)
-    if name == "nllb":
-        # старые настройки с удалённым NLLB — молча переводим на Argos
-        return ArgosEngine()
     if name in ("ollama", "openai_compat"):
         kwargs.setdefault("base_url", "http://localhost:11434")
         return AIEngine(**kwargs)
@@ -511,11 +527,10 @@ ENGINE_HINTS = {
         "For remote API: set base URL and API key in Settings.\n"
         "Check connection with 'Test Connection' button."
     ),
-    "argos": (
+    "honyaku": (
         "Offline engine is not ready.\n\n"
-        "If this is the first launch — download language packs with "
-        "'Download Language Packs' button in Settings "
-        "(~100-300 MB per pair, one-time download)."
+        "Models download automatically on first translation "
+        "(~60 MB per fast pair, ~1.2 GB for NLLB best, one-time download)."
     ),
 }
 
@@ -524,36 +539,38 @@ def engine_hint(name: str) -> str:
     return ENGINE_HINTS.get(name, "Check that the engine is running.")
 
 
-# ---------- скачивание языковых пакетов Argos ----------
+# ---------- скачивание моделей honyaku ----------
 
-ARGOS_ALL_PAIRS = [("ja", "en"), ("zh", "en"), ("en", "ru"), ("ru", "en")]
+HONYAKU_ALL_PAIRS = [
+    ("ja", "ru"), ("ja", "en"), ("zh", "ru"), ("zh", "en"), ("en", "ru"),
+]
+
+_FAST_PAIRS = ("ja-ru", "ja-en", "en-ru", "zh-en")
 
 
-def argos_missing_pairs_all() -> list[tuple[str, str]]:
+def honyaku_missing_pairs_all() -> list[tuple[str, str]]:
     try:
-        import argostranslate.translate as tr
+        from app.translators.honyaku.download import is_downloaded
     except ImportError:
-        raise EngineError("argostranslate not installed")
-    installed = {(t.from_lang.code, t.to_lang.code)
-                 for l in tr.get_installed_languages()
-                 for t in l.translations_from}
-    return [p for p in ARGOS_ALL_PAIRS if p not in installed]
+        raise EngineError("honyaku not installed")
+    missing = []
+    for src, tgt in HONYAKU_ALL_PAIRS:
+        pair = f"{src}-{tgt}"
+        tiers = ("fast", "best") if pair in _FAST_PAIRS else ("best",)
+        if not any(is_downloaded(t, pair) for t in tiers):
+            missing.append((src, tgt))
+    return missing
 
 
-def argos_download(pairs: list[tuple[str, str]],
-                   progress=None) -> list[str]:
-    import argostranslate.package as pkg
-    pkg.update_package_index()
-    available = pkg.get_available_packages()
+def honyaku_download(pairs: list[tuple[str, str]],
+                     progress=None) -> list[str]:
+    from app.translators.honyaku.download import ensure_model
     done = []
     for i, (src, dst) in enumerate(pairs):
-        package = next((p for p in available
-                        if p.from_code == src and p.to_code == dst), None)
-        if package is None:
-            raise EngineError(f"Package {src}→{dst} not found in Argos catalog")
+        pair = f"{src}-{dst}"
+        tier = "fast" if pair in _FAST_PAIRS else "best"
         if progress:
-            progress(i + 1, len(pairs), f"{src}→{dst}")
-        download_path = package.download()
-        pkg.install_from_path(download_path)
+            progress(i + 1, len(pairs), f"{src}→{dst} ({tier})")
+        ensure_model(tier, pair)
         done.append(f"{src}→{dst}")
     return done

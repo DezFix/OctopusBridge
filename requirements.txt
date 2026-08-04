@@ -2,10 +2,11 @@
 PySide6==6.11.1
 requests==2.34.2
 websockets==16.1.1
-argostranslate==1.11.0
+ctranslate2==4.8.1
+sentencepiece==0.2.2
+huggingface_hub>=0.24
 psutil==7.2.2
 frida==17.16.4
-sentencepiece==0.2.2
 
 # Build (для сборки exe через build_app.py)
 pyinstaller==6.21.0

@@ -2,12 +2,12 @@
 # Сгенерировано build_app.py — не редактируйте вручную.
 from PyInstaller.utils.hooks import collect_all, collect_data_files
 from PyInstaller.utils.win32.versioninfo import (
-    FixedFileInfo, StringFileInfo, StringStruct, VarFileInfo, VarStruct,
-    VSVersionInfo)
+    FixedFileInfo, StringFileInfo, StringStruct, StringTable,
+    VarFileInfo, VarStruct, VSVersionInfo)
 
 datas = collect_data_files('app') + [('ico.ico', '.')]
 binaries, hiddenimports = [], []
-for _pkg in ("argostranslate", "ctranslate2"):
+for _pkg in ("honyaku", "ctranslate2", "huggingface_hub"):
     try:
         _d, _b, _h = collect_all(_pkg)
     except Exception:
@@ -18,8 +18,8 @@ for _pkg in ("argostranslate", "ctranslate2"):
 
 version_info = VSVersionInfo(
     ffi=FixedFileInfo(
-        filevers=(0, 2, 0, 0),
-        prodvers=(0, 2, 0, 0),
+        filevers=(0, 3, 4, 0),
+        prodvers=(0, 3, 4, 0),
         mask=0x3F,
         flags=0x0,
         OS=0x40004,
@@ -28,15 +28,17 @@ version_info = VSVersionInfo(
         date=(0, 0),
     ),
     kids=[
-        StringFileInfo([StringStruct('040904B0', {
-            'CompanyName': 'OctopusBridge',
-            'FileDescription': 'OctopusBridge — game translation & modding tool',
-            'FileVersion': '0.2.0',
-            'InternalName': 'OctopusBridge',
-            'OriginalFilename': 'OctopusBridge.exe',
-            'ProductName': 'OctopusBridge',
-            'ProductVersion': '0.2.0',
-        })]),
+        StringFileInfo([
+            StringTable('040904B0', [
+                StringStruct('CompanyName', 'OctopusBridge'),
+                StringStruct('FileDescription', 'OctopusBridge - game translation & modding tool'),
+                StringStruct('FileVersion', '0.3.4'),
+                StringStruct('InternalName', 'OctopusBridge'),
+                StringStruct('OriginalFilename', 'OctopusBridge_v0.3.4.exe'),
+                StringStruct('ProductName', 'OctopusBridge'),
+                StringStruct('ProductVersion', '0.3.4'),
+            ]),
+        ]),
         VarFileInfo([VarStruct('Translation', [1033, 1200])]),
     ],
 )
@@ -50,7 +52,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['torch', 'torchvision', 'torchaudio', 'torch_directml', 'transformers', 'tokenizers', 'safetensors', 'accelerate', 'datasets', 'peft', 'einops', 'triton', 'sympy', 'networkx', 'sklearn', 'scipy', 'pandas', 'matplotlib', 'PIL', 'IPython', 'jupyter_client', 'huggingface_hub', 'stanza'],
+    excludes=['torch', 'torchvision', 'torchaudio', 'torch_directml', 'transformers', 'tokenizers', 'safetensors', 'accelerate', 'datasets', 'peft', 'einops', 'triton', 'sympy', 'networkx', 'sklearn', 'scipy', 'pandas', 'matplotlib', 'PIL', 'IPython', 'jupyter_client', 'stanza'],
     noarchive=False,
     optimize=0,
 )
@@ -62,7 +64,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='OctopusBridge',
+    name='OctopusBridge_v0.3.4.exe',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

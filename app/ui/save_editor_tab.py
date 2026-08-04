@@ -1,23 +1,34 @@
 # -*- coding: utf-8 -*-
-"""Save Editor для Twine (SugarCube .save).
+"""Save Editor для Twine (SugarCube .save) — минимальный редактор.
 
-Вкладка показывает список .save-файлов, позволяет загрузить,
-просматривать и редактировать переменные, а также сохранять изменения.
+Перетащите .save на вкладку (или «Загрузить…»), правьте переменные и
+нажмите «Применить» — файл перезаписывается на месте (оригинал —
+рядом, как *.ob_backup). Извлекаются ВСЕ параметры сейва: словари по
+точкам, списки по индексам ('flags[0]').
 """
 from __future__ import annotations
 
-import json
 import os
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QAbstractItemView, QFileDialog, QHBoxLayout, QHeaderView, QLabel,
-    QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
-    QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
+    QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QWidget,
 )
 
 from app.ui.i18n import TR
 from app.ui.icons import icon
+
+
+def _save_urls(mime):
+    urls = mime.urls() if mime.hasUrls() else []
+    out = []
+    for u in urls:
+        p = u.toLocalFile()
+        if p and p.lower().endswith((".save", ".json")):
+            out.append(p)
+    return out
 
 
 class SaveEditorTab(QWidget):
@@ -28,17 +39,15 @@ class SaveEditorTab(QWidget):
         self._save_path: str | None = None
         self._vars: list[dict] = []
         self._loading = False
+        self.setAcceptDrops(True)
 
         lay = QVBoxLayout(self)
 
         # ── верхняя панель ──
         bar = QHBoxLayout()
-        self.btn_refresh = QPushButton(TR("cheat_refresh"))
-        self.btn_refresh.clicked.connect(self._scan_saves)
-        bar.addWidget(self.btn_refresh)
-
-        self.btn_browse = QPushButton("…")
-        self.btn_browse.setToolTip("Выбрать .save вручную")
+        self.btn_browse = QPushButton(TR("save_load"))
+        self.btn_browse.setIcon(icon("folder-open"))
+        self.btn_browse.setToolTip(TR("save_browse_tip"))
         self.btn_browse.clicked.connect(self._browse_save)
         bar.addWidget(self.btn_browse)
 
@@ -53,23 +62,28 @@ class SaveEditorTab(QWidget):
         bar.addWidget(self.btn_save)
         lay.addLayout(bar)
 
-        # ── сплиттер: список сейвов + таблица ──
-        splitter = QSplitter(Qt.Horizontal)
+        # ── страницы: drop-зона / таблица переменных ──
+        self.stack = QStackedWidget()
 
-        # левая панель — список сейвов
-        left = QWidget()
-        left_lay = QVBoxLayout(left)
-        left_lay.setContentsMargins(0, 0, 0, 0)
-        left_lay.addWidget(QLabel("Сейвы:"))
-        self.save_list = QListWidget()
-        self.save_list.currentRowChanged.connect(self._on_save_selected)
-        left_lay.addWidget(self.save_list, 1)
-        splitter.addWidget(left)
+        drop = QWidget()
+        drop_lay = QVBoxLayout(drop)
+        drop_lay.setContentsMargins(24, 24, 24, 24)
+        lbl_icon = QLabel()
+        lbl_icon.setPixmap(icon("file-text", 56, "#445").pixmap(56, 56))
+        lbl_icon.setAlignment(Qt.AlignCenter)
+        drop_lay.addWidget(lbl_icon)
+        self.lbl_drop = QLabel(TR("save_drop_ph"))
+        self.lbl_drop.setAlignment(Qt.AlignCenter)
+        self.lbl_drop.setWordWrap(True)
+        self.lbl_drop.setStyleSheet(
+            "color:#667; border:2px dashed #445; border-radius:10px;"
+            "background:#14161a; font-size:16px;")
+        drop_lay.addWidget(self.lbl_drop, 1)
+        self.stack.addWidget(drop)
 
-        # правая панель — таблица переменных
-        right = QWidget()
-        right_lay = QVBoxLayout(right)
-        right_lay.setContentsMargins(0, 0, 0, 0)
+        table_page = QWidget()
+        t_lay = QVBoxLayout(table_page)
+        t_lay.setContentsMargins(0, 0, 0, 0)
 
         search_bar = QHBoxLayout()
         search_bar.addWidget(QLabel(TR("cheat_item_search")))
@@ -77,68 +91,42 @@ class SaveEditorTab(QWidget):
         self.var_search.setPlaceholderText("имя или значение…")
         self.var_search.textChanged.connect(self._fill_vars)
         search_bar.addWidget(self.var_search, 1)
-        right_lay.addLayout(search_bar)
+        t_lay.addLayout(search_bar)
 
         self.vars_table = QTableWidget(0, 3)
         self.vars_table.setHorizontalHeaderLabels(["#", "Переменная", "Значение"])
         self.vars_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.vars_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.vars_table.itemChanged.connect(self._on_var_edit)
-        right_lay.addWidget(self.vars_table, 1)
+        t_lay.addWidget(self.vars_table, 1)
 
-        hint = QLabel("Изменения применяются только после нажатия «Применить».")
+        hint = QLabel(TR("save_apply_hint"))
         hint.setWordWrap(True)
-        right_lay.addWidget(hint)
+        t_lay.addWidget(hint)
+        self.stack.addWidget(table_page)
 
-        splitter.addWidget(right)
-        splitter.setSizes([200, 600])
-        lay.addWidget(splitter, 1)
+        self.stack.setCurrentIndex(0)
+        lay.addWidget(self.stack, 1)
 
-    # ── сканирование ──
+    # ── drag&drop ──
+    def dragEnterEvent(self, e):
+        if _save_urls(e.mimeData()):
+            e.acceptProposedAction()
+        else:
+            super().dragEnterEvent(e)
+
+    def dropEvent(self, e):
+        paths = _save_urls(e.mimeData())
+        if paths:
+            e.acceptProposedAction()
+            self._load_save(paths[0])
+        else:
+            super().dropEvent(e)
+
+    # ── проект ──
     def on_project_opened(self):
-        self._scan_saves()
-
-    def _scan_saves(self):
-        self.save_list.blockSignals(True)
-        self.save_list.clear()
-        self._save_data = None
-        self._save_path = None
-        self._vars = []
-        self._fill_vars()
-        self.btn_save.setEnabled(False)
-        self.lbl_status.setText("Поиск сейвов…")
-
-        p = self.main.project
-        game_dir = p.game_dir if p else ""
-        if not game_dir or not os.path.isdir(game_dir):
-            self.lbl_status.setText("Проект не открыт")
-            self.save_list.blockSignals(False)
-            return
-
-        from app.core.twine import savefile
-        saves = savefile.find_saves(game_dir)
-        if not saves:
-            # поиск глубже: game/saves/ (Ren'Py-совместимость)
-            for root, _dirs, files in os.walk(game_dir):
-                for f in sorted(files):
-                    if f.endswith(".save"):
-                        saves.append(os.path.join(root, f))
-
-        if not saves:
-            self.lbl_status.setText("Сейвы не найдены")
-            self.save_list.blockSignals(False)
-            return
-
-        for path in saves:
-            name = os.path.basename(path)
-            folder = os.path.basename(os.path.dirname(path))
-            item = QListWidgetItem(f"{folder}/{name}" if folder != os.path.basename(game_dir) else name)
-            item.setData(Qt.UserRole, path)
-            item.setToolTip(path)
-            self.save_list.addItem(item)
-
-        self.lbl_status.setText(f"Найдено сейвов: {len(saves)}")
-        self.save_list.blockSignals(False)
+        if not self._save_data:
+            self.lbl_status.setText(TR("save_wait_drop"))
 
     # ── загрузка ──
     def _browse_save(self):
@@ -150,15 +138,6 @@ class SaveEditorTab(QWidget):
             "Save files (*.save);;All files (*)")
         if path:
             self._load_save(path)
-
-    def _on_save_selected(self, row: int):
-        if row < 0:
-            return
-        item = self.save_list.item(row)
-        if not item:
-            return
-        path = item.data(Qt.UserRole)
-        self._load_save(path)
 
     def _load_save(self, path: str):
         from app.core.twine import savefile
@@ -178,8 +157,9 @@ class SaveEditorTab(QWidget):
 
         self._fill_vars()
         self.btn_save.setEnabled(True)
+        self.stack.setCurrentIndex(1)
         self.lbl_status.setText(
-            f"{os.path.basename(path)} — {len(self._vars)} переменных")
+            f"{os.path.basename(path)} — {len(self._vars)} параметров")
 
     # ── таблица ──
     def _fill_vars(self):
@@ -249,7 +229,7 @@ class SaveEditorTab(QWidget):
         finally:
             self._loading = False
 
-    # ── сохранение ──
+    # ── сохранение: перезаписывает тот же файл ──
     def _save_current(self):
         from app.core.twine import savefile
         if not self._save_data or not self._save_path:
@@ -259,7 +239,7 @@ class SaveEditorTab(QWidget):
             savefile.set_variables(self._save_data, updates)
             savefile.write_save(self._save_path, self._save_data)
             self.lbl_status.setText(
-                f"Сохранено: {os.path.basename(self._save_path)} "
-                f"({len(updates)} переменных)")
+                TR("save_saved", name=os.path.basename(self._save_path),
+                   n=len(updates)))
         except (ValueError, OSError) as e:
             QMessageBox.warning(self, "Ошибка сохранения", str(e))

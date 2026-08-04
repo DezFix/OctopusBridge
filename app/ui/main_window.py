@@ -10,7 +10,7 @@ import hashlib
 import json
 import os
 
-from PySide6.QtCore import QSettings, Signal
+from PySide6.QtCore import QSettings, QThread, Signal
 from PySide6.QtGui import QIcon, QCloseEvent
 from PySide6.QtWidgets import (QMainWindow, QTabWidget, QSystemTrayIcon,
                                QMenu)
@@ -59,16 +59,19 @@ def _migrate_qsettings(new: QSettings):
 
 
 def _cleanup_nllb_settings(s: QSettings):
-    """Удаляет остатки удалённого NLLB-движка из настроек."""
+    """Удаляет остатки удалённых движков (NLLB, Argos) из настроек."""
     for key in s.allKeys():
         if key.startswith("nllb_gpu_") or key == "engine_nllb":
             s.remove(key)
     if s.value("engine_realtime") == "nllb":
-        s.setValue("engine_realtime", "argos")
+        s.setValue("engine_realtime", "honyaku")
     if s.value("engine_files") == "nllb":
-        s.setValue("engine_files", "argos")
+        s.setValue("engine_files", "honyaku")
     if s.value("engine_corrector") == "nllb":
         s.setValue("engine_corrector", "ai")
+    for key in ("engine_realtime", "engine_files", "engine_corrector"):
+        if s.value(key) == "argos":
+            s.setValue(key, "honyaku")
 
 
 def _migrate_project_files():
@@ -85,6 +88,27 @@ def _migrate_project_files():
                 pass
 
 
+class _ModelPrefetch(QThread):
+    """Фоновая автозагрузка офлайн-моделей honyaku (fast+best)."""
+    progress = Signal(str)
+
+    def __init__(self, pairs, parent=None):
+        super().__init__(parent)
+        self.setObjectName("ModelPrefetch")
+        self.pairs = pairs
+
+    def run(self):
+        from app.core.translate.engines import honyaku_download
+        try:
+            honyaku_download(self.pairs)
+        except Exception as e:  # noqa: BLE001
+            self.progress.emit(
+                f"Автозагрузка моделей не удалась ({e}) — модели "
+                f"докачаются автоматически при первом переводе.")
+        else:
+            self.progress.emit("Офлайн-модели готовы к работе.")
+
+
 class MainWindow(QMainWindow):
     bridge_client = Signal(bool)
     bridge_translated = Signal(str, str)
@@ -98,7 +122,7 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("OctopusBridge", "OctopusBridge")
         _migrate_qsettings(self.settings)
         _cleanup_nllb_settings(self.settings)
-        set_language(self.settings.value("ui_lang", "ru"))
+        set_language(self.settings.value("ui_lang", "en"))
         self.setWindowTitle(f"{TR('app_title')}  v{app_paths.__version__}")
         self.resize(1100, 750)
         icon_path = app_paths.icon_path()
@@ -167,6 +191,10 @@ class MainWindow(QMainWindow):
         if not self.settings.value("setup_done", False, type=bool):
             from PySide6.QtCore import QTimer
             QTimer.singleShot(500, self._first_launch_setup)
+        else:
+            from app.ui.app_info import maybe_show_changelog
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(900, lambda: maybe_show_changelog(self))
 
     # ---------- трей ----------
     def _setup_tray(self):
@@ -365,24 +393,26 @@ class MainWindow(QMainWindow):
     def create_engine(self, engine_type: str = "files"):
         s = self.settings
         if engine_type == "realtime":
-            name = s.value("engine_realtime", "argos")
+            name = s.value("engine_realtime", "honyaku")
         elif engine_type == "corrector":
             name = s.value("engine_corrector",
-                           s.value("engine_files", s.value("engine", "argos")))
+                           s.value("engine_files", s.value("engine", "honyaku")))
         else:
-            name = s.value("engine_files", s.value("engine", "argos"))
+            name = s.value("engine_files", s.value("engine", "honyaku"))
         model = s.value("model", s.value("ollama_model", "qwen2.5:7b"))
         pfx = engine_type
         try:
             if name == "ai":
                 return get_engine("ai",
-                                  base_url=s.value(f"base_url_{pfx}"),
-                                  api_key=s.value(f"api_key_{pfx}"),
+                                  base_url=s.value(
+                                      f"base_url_{pfx}",
+                                      "https://openrouter.ai/api/v1"),
+                                  api_key=s.value(f"api_key_{pfx}", ""),
                                   model=model)
             if name in ("google_free", "bing", "rotate"):
                 return get_engine(name)
-            if name == "argos":
-                return get_engine("argos")
+            if name in ("honyaku", "argos"):
+                return get_engine(name)
             raise ValueError(f"Unknown engine: {name}")
         except Exception:  # noqa: BLE001
             return None
@@ -461,6 +491,7 @@ class MainWindow(QMainWindow):
             self.bridge_log.emit(TR("live_unsupported"))
             return False
         tentacle.set_translate_fn(translate_fn)
+        self._live_translate_fn = translate_fn
         tentacle.setParent(self)
         if port_hint and hasattr(tentacle, "set_port_hint"):
             tentacle.set_port_hint(port_hint)
@@ -477,13 +508,21 @@ class MainWindow(QMainWindow):
         if hasattr(self, "status_bar"):
             self.status_bar.set_connected(False)
 
+    def set_live_translation(self, enabled: bool):
+        """Вкл/выкл перевод в живой сессии на лету.
+
+        Щупальце остаётся подключённым — читы, переменные и состояние
+        продолжают работать, текст показывается без перевода.
+        """
+        self.session.set_translation_enabled(enabled)
+
     # ---------- статус-бар ----------
     def refresh_status_bar(self):
         """Обновляет провайдера и соединение в нижнем статус-баре."""
         if not hasattr(self, "status_bar"):
             return
         name = self.settings.value(
-            "engine_realtime", self.settings.value("engine", "argos"))
+            "engine_realtime", self.settings.value("engine", "honyaku"))
         self.status_bar.set_provider(provider_short_name(str(name)))
         self.status_bar.set_connected(self.session.is_active(),
                                       backend=self._backend_name())
@@ -492,45 +531,46 @@ class MainWindow(QMainWindow):
         t = self.session.tentacle
         if not t:
             return ""
-        return {"rpgmaker": "CDP", "renpy": "Frida", "twine": "HTTP+WS"}.get(t.key, t.key)
+        return {"rpgmaker": "CDP", "renpy": "Frida", "twine": "HTTP+WS",
+                "tyrano": "CDP"}.get(t.key, t.key)
 
     def _on_sb_client(self, connected: bool):
         self.status_bar.set_connected(connected,
                                       backend=self._backend_name())
 
     def _first_launch_setup(self):
-        engine = self.settings.value("engine", "argos")
-        if engine != "argos":
+        """Фоновая автозагрузка офлайн-моделей honyaku (fast+best).
+
+        Без диалогов и кнопок: при первом запуске модели качаются в фоне,
+        перевод работает сразу после загрузки. При сбое — тихо пропускаем,
+        движок докачает модели при первом переводе.
+        """
+        engine = self.settings.value("engine", "honyaku")
+        if engine not in ("honyaku", "argos", ""):
             self.settings.setValue("setup_done", True)
             return
         try:
-            from app.core.translate.engines import argos_missing_pairs_all
-            missing = argos_missing_pairs_all()
+            from app.core.translate.engines import honyaku_missing_pairs_all
+            missing = honyaku_missing_pairs_all()
         except Exception:  # noqa: BLE001
             self.settings.setValue("setup_done", True)
             return
         if not missing:
             self.settings.setValue("setup_done", True)
             return
+        from PySide6.QtCore import QThread
         pairs_text = ", ".join(f"{a}→{b}" for a, b in missing)
-        from PySide6.QtWidgets import QMessageBox
-        answer = QMessageBox.question(
-            self, TR("setup_title"),
-            TR("setup_argos_msg", pairs=pairs_text),
-            QMessageBox.Yes | QMessageBox.No)
-        if answer != QMessageBox.Yes:
-            self.settings.setValue("setup_done", True)
-            return
-        from app.ui.settings_tab import DownloadWorker
-        from PySide6.QtCore import QEventLoop
-        self._setup_worker = DownloadWorker(missing)
-        loop = QEventLoop()
-        self._setup_worker.done.connect(lambda r: (setattr(self, '_setup_result', r), loop.quit()))
-        self._setup_worker.failed.connect(lambda e: (setattr(self, '_setup_result', e), loop.quit()))
-        self._setup_worker.start()
-        loop.exec()
-        self.settings.setValue("setup_done", True)
-        self._setup_worker = None
+
+        worker = _ModelPrefetch(missing)
+        worker.setObjectName("HonyakuPrefetch")
+        worker.progress.connect(self.bridge_log)
+        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(
+            lambda: setattr(self, "_prefetch_thread", None))
+        self._prefetch_thread = worker
+        self.bridge_log.emit(
+            f"Автозагрузка офлайн-моделей в фоне: {pairs_text}")
+        worker.start()
 
     def _stop_workers(self):
         """Мягко останавливает фоновые QThread перед выходом —
@@ -543,6 +583,7 @@ class MainWindow(QMainWindow):
                  getattr(tt.worker_correct.corrector, "cancel", None)
                  if tt.worker_correct else None),
                 (getattr(self, "_extract_worker", None), None),
+                (getattr(self, "_prefetch_thread", None), None),
                 (getattr(self.cheat_tab, "_names_worker", None)
                  if self.cheat_tab else None, None)):
             if not worker:

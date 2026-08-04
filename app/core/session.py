@@ -53,6 +53,12 @@ class GameSession(QObject):
         if self._tentacle:
             self._tentacle.set_translate_fn(fn)
 
+    def set_translation_enabled(self, enabled: bool):
+        """Вкл/выкл перевод на лету (текст остаётся без перевода,
+        соединение и читы продолжают работать)."""
+        if self._tentacle:
+            self._tentacle.set_translation_enabled(enabled)
+
     def send_key(self, key: str, code: str = "", keyCode: int = 0,
                  windowsKeyCode: int = 0) -> bool:
         if self._tentacle:

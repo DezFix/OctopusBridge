@@ -55,6 +55,37 @@ const requested = new Set();
 let waitingWindows = new Set();
 let _autoStateTimer = null;
 
+// ── ускорение игры: множитель updateMain (MV и MZ) ──
+window.__octopus_gameSpeed = 1;
+window.__octopus_setGameSpeed = function (n) {
+  n = Math.max(1, Math.min(20, Math.floor(n || 1)));
+  window.__octopus_gameSpeed = n;
+  if (!window.__octopus_speedHooked &&
+      typeof SceneManager !== "undefined" && SceneManager.updateMain) {
+    try {
+      const _obUpdateMain = SceneManager.updateMain;
+      SceneManager.updateMain = function () {
+        const k = window.__octopus_gameSpeed || 1;
+        if (k > 1) {
+          for (let i = 0; i < k; i++) {
+            _obUpdateMain.call(this);
+            // MV: Input.update вызывается один раз за кадр вне updateMain —
+            // без синхронизации каждое нажатие срабатывает k раз (меню,
+            // диалоги листаются кратно скорости). MZ: вызов идемпотентен.
+            if (i < k - 1 &&
+                typeof SceneManager.updateInputData === "function") {
+              try { SceneManager.updateInputData(); } catch (e) {}
+            }
+          }
+        } else {
+          _obUpdateMain.call(this);
+        }
+      };
+      window.__octopus_speedHooked = true;
+    } catch (e) {}
+  }
+};
+
 window.__octopus_addToCache = function (pairs) {
   for (const k of Object.keys(pairs)) {
     cache.set(k, pairs[k]);
@@ -68,11 +99,36 @@ function autoSendState() {
 }
 
 // ---------- перевод ----------
+// Не отправляем только строки без единой буквы (символы, цифры, пустые):
+// это не текст, а иконки/разделители.
+const HAS_LETTER_RE = /[A-Za-z\u00C0-\u024F\u0370-\u03FF\u0400-\u04FF\u3040-\u30FF\u31F0-\u31FF\u3400-\u9FFF\uAC00-\uD7A3\uFF66-\uFF9F]/;
+
 function translatable(text) {
   if (typeof text !== "string") return false;
-  if (text.trim().length < 1) return false;
-  if (!/[^\s\\{}\[\]0-9]/.test(text)) return false;
+  text = text.trim();
+  if (text.length < 1) return false;
+  if (!HAS_LETTER_RE.test(text)) return false;
   return true;
+}
+
+// ── распознавание перемотки текста (скип) ──
+// Пока игрок держит OK/листает диалоги мгновенно, переводить нечего:
+// запросы лишь копятся в очереди и вешают приложение. Скипнутый текст
+// пропускаем и при следующем обычном показе переведём заново.
+function isFastForwarding(win) {
+  try {
+    if (win && win._showFast) return true;
+    const scene = SceneManager._scene;
+    if (!scene) return false;
+    const mw = scene._messageWindow;
+    if (mw && mw._showFast) return true;
+    if (scene._scrollTextWindow && scene._scrollTextWindow.isFastForward &&
+        scene._scrollTextWindow.isFastForward()) return true;
+    if (scene._logWindow && scene._logWindow.isFastForward &&
+        scene._logWindow.isFastForward()) return true;
+    if (scene.isFastForward && scene.isFastForward()) return true;
+  } catch (e) {}
+  return false;
 }
 
 function requestBackground(text, win) {
@@ -80,14 +136,23 @@ function requestBackground(text, win) {
     if (win) waitingWindows.add(win);
     return;
   }
+  if (isFastForwarding(win)) return;  // скип: перематываемый текст не переводим
   requested.add(text);
   if (win) waitingWindows.add(win);
   window.__octopus_translate(text).then((tr) => {
-    cache.set(text, tr);
+    if (tr !== text) {
+      cache.set(text, tr);
+    } else {
+      // перевод приостановлен пользователем: не запоминаем identity,
+      // чтобы после включения перевести строку заново
+      requested.delete(text);
+    }
     refreshMessageIfShowing(text);
     const wins = waitingWindows;
     waitingWindows = new Set();
-    wins.forEach((w) => { try { if (w.refresh) w.refresh(); } catch (e) {} });
+    wins.forEach((w) => {
+      try { if (w.refresh && !w._octWaiting) w.refresh(); } catch (e) {}
+    });
   });
 }
 
@@ -123,10 +188,15 @@ function wrapLine(win, text, maxWidth) {
   return lines;
 }
 
-function rewrapMessage(win) {
-  const original = $gameMessage._texts.map((t) => cache.get(t) || t);
+function rewrapMessage(win, hideMissing) {
+  const original = $gameMessage._texts.map(
+    (t) => (cache.has(t) ? cache.get(t)
+            : (hideMissing ? "\u2026" : t)));
   const full = original.join("\n");
-  const maxWidth = win.innerWidth || (win.contents ? win.contents.width : 800);
+  // MV: innerWidth — метод, MZ: getter
+  const maxWidth = typeof win.innerWidth === "function"
+    ? win.innerWidth()
+    : (win.innerWidth || (win.contents ? win.contents.width : 800));
   const visibleRows = $gameMessage._numVisibleRows || 4;
 
   let fontSize = BASE_FONT_SIZE;
@@ -151,17 +221,34 @@ function refreshMessageIfShowing(original) {
   try {
     const scene = SceneManager._scene;
     const w = scene && scene._messageWindow;
-    if (w && w.isOpen() && $gameMessage._texts.includes(original)) {
+    if (w && w.isOpen() && $gameMessage._texts.includes(original) &&
+        !w._showFast && !w._octWaiting) {
       w.startMessage();
     }
   } catch (e) {}
   _refreshing = false;
 }
 
+// Окна, где оригинал показывать нельзя (перевод готовится за кадром):
+// текстовые окна (ScrollText, BattleLog) — вместо оригинала «…»,
+// которое заменяется переводом по мере готовности.
+const HIDDEN_WINDOWS = ["Window_ScrollText", "Window_BattleLog"];
+
+function isHiddenWindow(win) {
+  if (!win) return false;
+  if (win.__octHide) return true;
+  return HIDDEN_WINDOWS.some((n) => typeof window[n] !== "undefined" &&
+                                    win instanceof window[n]);
+}
+
 function wrapText(text, win) {
   if (!translatable(text)) return text;
   const t = cache.get(text);
   if (t !== undefined) return t;
+  if (isHiddenWindow(win)) {
+    requestBackground(text, win);
+    return "\u2026";  // «…» вместо оригинала, потом подставится перевод
+  }
   requestBackground(text, win);
   return text;
 }
@@ -218,109 +305,221 @@ function sendState() {
 }
 
 // ---------- установка хуков ----------
+function safePatch(target, patchFn) {
+  // MV-совместимость: отсутствующая функция не ломает остальные хуки
+  if (typeof target === "function") {
+    try { patchFn(); } catch (e) {
+      console.warn("[octopus] hook skip: " + e);
+    }
+  }
+}
+
 function installHooks() {
-  const _gameMessageAdd = Game_Message.prototype.add;
-  Game_Message.prototype.add = function (text) {
-    if (translatable(text) && !cache.has(text)) requestBackground(text, null);
-    _gameMessageAdd.call(this, text);
-  };
+  safePatch(Game_Message.prototype.add, () => {
+    const _gameMessageAdd = Game_Message.prototype.add;
+    Game_Message.prototype.add = function (text) {
+      if (translatable(text) && !cache.has(text)) requestBackground(text, null);
+      _gameMessageAdd.call(this, text);
+    };
+  });
 
-  const _startMessage = Window_Message.prototype.startMessage;
-  Window_Message.prototype.startMessage = function () {
-    rewrapMessage(this);
-    _startMessage.call(this);
-  };
+  // диалог «за кадром»: строки без перевода показываются как «…»,
+  // продвижение по тексту (ввод/скип) блокируется, пока перевод не готов,
+  // затем страница перезапускается с реальным переводом — оригинал никто
+  // не увидит, лишний клик не нужен (игрок не успел уйти дальше).
+  safePatch(Window_Message.prototype.startMessage, () => {
+    const _startMessage = Window_Message.prototype.startMessage;
+    const PENDING_TIMEOUT = 6000;
+    const PENDING_POLL_MS = 150;
+    Window_Message.prototype.startMessage = function () {
+      const texts = ($gameMessage && $gameMessage._texts) || [];
+      const missing = texts.filter(
+        (t) => translatable(t) && !cache.has(t));
+      if (missing.length === 0) {
+        this._octWaiting = false;
+        this._octWaitToken = (this._octWaitToken || 0) + 1;
+        rewrapMessage(this);
+        return _startMessage.call(this);
+      }
+      // перевод ещё идёт: держим окно на первой странице с «…»
+      if (this._octWaiting && this._octWaitToken) {
+        return;  // полл уже активен, не дублируем
+      }
+      const win = this;
+      win._octWaiting = true;
+      win._octWaitToken = (win._octWaitToken || 0) + 1;
+      win._octOriginals = texts.slice();  // оригиналы: _texts займут «…»
+      const token = win._octWaitToken;
+      const deadline = Date.now() + PENDING_TIMEOUT;
+      try {
+        missing.forEach((t) => requestBackground(t, win));
+        rewrapMessage(win, true);
+        _startMessage.call(win);
+      } catch (e) {}
+      if (typeof win.startWait === "function") win.startWait(PENDING_POLL_MS);
+      // замораживаем перерисовку: пока перевод идёт, страница не должна
+      // прокручиваться (скип/пауза в конце страницы не сработают)
+      if (typeof win.updateMessage === "function") {
+        win._octFrozenUpdate = win.updateMessage;
+        win.updateMessage = function () {};
+      }
+      (function poll() {
+        if (win._octWaitToken !== token || !win._octWaiting) return;
+        // готовность проверяем по сохранённым оригиналам: текущие
+        // $gameMessage._texts — уже плейсхолдеры «…», их в кэше нет
+        const originals = win._octOriginals || [];
+        const left = originals.filter(
+          (t) => translatable(t) && !cache.has(t));
+        if (left.length === 0 || Date.now() > deadline) {
+          win._octWaiting = false;
+          win._octWaitToken = (win._octWaitToken || 0) + 1;
+          win._octOriginals = null;
+          if (win._octFrozenUpdate) {
+            win.updateMessage = win._octFrozenUpdate;
+            win._octFrozenUpdate = null;
+          }
+          win._waitCount = 0;  // снимаем блокировку страницы
+          try {
+            // таймаут: непереведённое показываем оригиналом, а не «…»
+            $gameMessage._texts = originals.slice();
+            rewrapMessage(win, false);
+            _startMessage.call(win);
+          } catch (e) {}
+          return;
+        }
+        if (typeof win.startWait === "function") win.startWait(PENDING_POLL_MS);
+        try { left.forEach((t) => requestBackground(t, win)); } catch (e) {}
+        setTimeout(poll, PENDING_POLL_MS);
+      })();
+    };
+  });
 
-  const _terminateMessage = Window_Message.prototype.terminateMessage;
-  Window_Message.prototype.terminateMessage = function () {
-    if (this.contents) this.contents.fontSize = BASE_FONT_SIZE;
-    _terminateMessage.call(this);
-  };
+  safePatch(Window_Message.prototype.terminateMessage, () => {
+    const _terminateMessage = Window_Message.prototype.terminateMessage;
+    Window_Message.prototype.terminateMessage = function () {
+      this._octWaiting = false;
+      this._octWaitToken = (this._octWaitToken || 0) + 1;
+      this._octOriginals = null;
+      if (this._octFrozenUpdate) {
+        this.updateMessage = this._octFrozenUpdate;
+        this._octFrozenUpdate = null;
+      }
+      if (this.contents) this.contents.fontSize = BASE_FONT_SIZE;
+      _terminateMessage.call(this);
+    };
+  });
 
-  const _drawTextEx = Window_Base.prototype.drawTextEx;
-  Window_Base.prototype.drawTextEx = function (text, x, y, width, maxLines) {
-    return _drawTextEx.call(this, wrapText(text, this), x, y, width, maxLines);
-  };
+  safePatch(Window_Base.prototype.drawTextEx, () => {
+    const _drawTextEx = Window_Base.prototype.drawTextEx;
+    Window_Base.prototype.drawTextEx = function (text, x, y, width, maxLines) {
+      return _drawTextEx.call(this, wrapText(text, this), x, y, width, maxLines);
+    };
+  });
 
-  const _drawText = Window_Base.prototype.drawText;
-  Window_Base.prototype.drawText = function (text, x, y, width, align) {
-    return _drawText.call(this, wrapText(text, this), x, y, width, align);
-  };
+  safePatch(Window_Base.prototype.drawText, () => {
+    const _drawText = Window_Base.prototype.drawText;
+    Window_Base.prototype.drawText = function (text, x, y, width, align) {
+      return _drawText.call(this, wrapText(text, this), x, y, width, align);
+    };
+  });
 
   // телепорт по Ctrl+клику
-  const _sceneMapUpdate = Scene_Map.prototype.update;
-  Scene_Map.prototype.update = function () {
-    _sceneMapUpdate.call(this);
-    if (window.__octopus.clickTp && TouchInput.isTriggered() &&
-        Input.isPressed("control")) {
-      const x = $gameMap.canvasToMapX(TouchInput.x);
-      const y = $gameMap.canvasToMapY(TouchInput.y);
-      if ($gameMap.isValid(x, y)) $gamePlayer.locate(x, y);
-    }
-  };
+  safePatch(Scene_Map.prototype.update, () => {
+    const _sceneMapUpdate = Scene_Map.prototype.update;
+    Scene_Map.prototype.update = function () {
+      _sceneMapUpdate.call(this);
+      if (window.__octopus.clickTp && TouchInput.isTriggered() &&
+          Input.isPressed("control")) {
+        const x = $gameMap.canvasToMapX(TouchInput.x);
+        const y = $gameMap.canvasToMapY(TouchInput.y);
+        if ($gameMap.isValid(x, y)) $gamePlayer.locate(x, y);
+      }
+    };
+  });
 
   // автосинхронизация состояния
-  const _origGameVarsSetValue = Game_Variables.prototype.setValue;
-  Game_Variables.prototype.setValue = function(id, value) {
-    _origGameVarsSetValue.call(this, id, value);
-    autoSendState();
-  };
+  safePatch(Game_Variables.prototype.setValue, () => {
+    const _origGameVarsSetValue = Game_Variables.prototype.setValue;
+    Game_Variables.prototype.setValue = function(id, value) {
+      _origGameVarsSetValue.call(this, id, value);
+      autoSendState();
+    };
+  });
 
-  const _origGameSwitchesSetValue = Game_Switches.prototype.setValue;
-  Game_Switches.prototype.setValue = function(id, value) {
-    _origGameSwitchesSetValue.call(this, id, value);
-    autoSendState();
-  };
+  safePatch(Game_Switches.prototype.setValue, () => {
+    const _origGameSwitchesSetValue = Game_Switches.prototype.setValue;
+    Game_Switches.prototype.setValue = function(id, value) {
+      _origGameSwitchesSetValue.call(this, id, value);
+      autoSendState();
+    };
+  });
 
-  const _origGainGold = Game_Party.prototype.gainGold;
-  Game_Party.prototype.gainGold = function(amount) {
-    _origGainGold.call(this, amount);
-    autoSendState();
-  };
+  safePatch(Game_Party.prototype.gainGold, () => {
+    const _origGainGold = Game_Party.prototype.gainGold;
+    Game_Party.prototype.gainGold = function(amount) {
+      _origGainGold.call(this, amount);
+      autoSendState();
+    };
+  });
 
-  const _origLoseGold = Game_Party.prototype.loseGold;
-  Game_Party.prototype.loseGold = function(amount) {
-    _origLoseGold.call(this, amount);
-    autoSendState();
-  };
+  safePatch(Game_Party.prototype.loseGold, () => {
+    const _origLoseGold = Game_Party.prototype.loseGold;
+    Game_Party.prototype.loseGold = function(amount) {
+      _origLoseGold.call(this, amount);
+      autoSendState();
+    };
+  });
 
-  const _origReserveTransfer = Game_Player.prototype.reserveTransfer;
-  Game_Player.prototype.reserveTransfer = function(mapId, x, y, d, fadeType) {
-    _origReserveTransfer.call(this, mapId, x, y, d, fadeType);
-    autoSendState();
-  };
+  safePatch(Game_Player.prototype.reserveTransfer, () => {
+    const _origReserveTransfer = Game_Player.prototype.reserveTransfer;
+    Game_Player.prototype.reserveTransfer = function(mapId, x, y, d, fadeType) {
+      _origReserveTransfer.call(this, mapId, x, y, d, fadeType);
+      autoSendState();
+    };
+  });
 
-  const _origSetHp = Game_BattlerBase.prototype.setHp;
-  Game_BattlerBase.prototype.setHp = function(hp) {
-    _origSetHp.call(this, hp);
-    autoSendState();
-  };
+  safePatch(Game_BattlerBase.prototype.setHp, () => {
+    const _origSetHp = Game_BattlerBase.prototype.setHp;
+    Game_BattlerBase.prototype.setHp = function(hp) {
+      _origSetHp.call(this, hp);
+      autoSendState();
+    };
+  });
 
-  const _origSetMp = Game_BattlerBase.prototype.setMp;
-  Game_BattlerBase.prototype.setMp = function(mp) {
-    _origSetMp.call(this, mp);
-    autoSendState();
-  };
+  safePatch(Game_BattlerBase.prototype.setMp, () => {
+    const _origSetMp = Game_BattlerBase.prototype.setMp;
+    Game_BattlerBase.prototype.setMp = function(mp) {
+      _origSetMp.call(this, mp);
+      autoSendState();
+    };
+  });
 
-  const _origChangeLevel = Game_Actor.prototype.changeLevel;
-  Game_Actor.prototype.changeLevel = function(level, showEffect) {
-    _origChangeLevel.call(this, level, showEffect);
-    autoSendState();
-  };
+  safePatch(Game_Actor.prototype.changeLevel, () => {
+    const _origChangeLevel = Game_Actor.prototype.changeLevel;
+    Game_Actor.prototype.changeLevel = function(level, showEffect) {
+      _origChangeLevel.call(this, level, showEffect);
+      autoSendState();
+    };
+  });
 
-  const _origChangeExp = Game_Actor.prototype.changeExp;
-  Game_Actor.prototype.changeExp = function(exp, showEffect) {
-    _origChangeExp.call(this, exp, showEffect);
-    autoSendState();
-  };
+  safePatch(Game_Actor.prototype.changeExp, () => {
+    const _origChangeExp = Game_Actor.prototype.changeExp;
+    Game_Actor.prototype.changeExp = function(exp, showEffect) {
+      _origChangeExp.call(this, exp, showEffect);
+      autoSendState();
+    };
+  });
 
-  const _origGainItem = Game_Party.prototype.gainItem;
-  Game_Party.prototype.gainItem = function(item, amount, includeEquip) {
-    _origGainItem.call(this, item, amount, includeEquip);
-    autoSendState();
-  };
+  safePatch(Game_Party.prototype.gainItem, () => {
+    const _origGainItem = Game_Party.prototype.gainItem;
+    Game_Party.prototype.gainItem = function(item, amount, includeEquip) {
+      _origGainItem.call(this, item, amount, includeEquip);
+      autoSendState();
+    };
+  });
 
   window.__octopus_hooksReady = true;
+  window.__octopus_setGameSpeed(window.__octopus_gameSpeed || 1);
   sendState();
 }
 
@@ -444,14 +643,28 @@ class RpgMakerTentacle(CDPTentacle):
         self._port_hint = port
 
     # ── кэш перевода ──
+    # Одноразовая миграция: старый кэш (Argos, ранние версии Honyaku)
+    # содержит галлюцинации («Домой» вместо каны). Honyaku переводит эти
+    # строки нормально, но пока запись в кэше — перевод не обновится.
+    # Чистим артефакты.
+    _LEGACY_ARTIFACTS = frozenset({"домой", "дома", "дом", "главная",
+                                   "внутренний"})
+
     def _load_cache(self, game_dir: str):
-        self._cache_path = os.path.join(game_dir, ".translation_cache.json")
-        try:
-            with open(self._cache_path, encoding="utf-8") as f:
-                self._cache = json.load(f)
-            self.log.emit(f"Кэш перевода: {len(self._cache)} строк.")
-        except (OSError, json.JSONDecodeError):
-            self._cache = {}
+        from app.core.translate.game_cache import CACHE_FILENAME, \
+            load_game_cache
+        self._cache_path = os.path.join(game_dir, CACHE_FILENAME)
+        self._cache = load_game_cache(game_dir, "rpgmaker")
+        bad = [k for k, v in self._cache.items()
+               if isinstance(v, str) and
+               v.strip().lower() in self._LEGACY_ARTIFACTS]
+        for k in bad:
+            del self._cache[k]
+        if bad:
+            self._cache_dirty = True
+            self.log.emit(
+                f"Кэш перевода: удалено {len(bad)} артефактов.")
+        self.log.emit(f"Кэш перевода: {len(self._cache)} строк.")
         self._save_timer.start()
 
     def _save_cache(self):
@@ -461,11 +674,9 @@ class RpgMakerTentacle(CDPTentacle):
         if not self._cache_dirty or not self._cache_path:
             return
         self._cache_dirty = False
-        try:
-            with open(self._cache_path, "w", encoding="utf-8") as f:
-                json.dump(self._cache, f, ensure_ascii=False, indent=2)
-        except OSError:
-            pass
+        from app.core.translate.game_cache import save_game_cache
+        save_game_cache(os.path.dirname(self._cache_path), "rpgmaker",
+                        self._cache)
 
     def detach(self):
         self._flush_cache()
@@ -490,9 +701,8 @@ class RpgMakerTentacle(CDPTentacle):
         self.text_seen.emit(original, translation)
 
     def translate(self, text: str) -> str:
-        if not text:
-            return text
-        if not self._translate_fn:
+        if not self._translation_enabled or not text \
+                or not self._translate_fn:
             return text
         cached = self._cache.get(text)
         if cached is not None:
@@ -618,6 +828,8 @@ class RpgMakerTentacle(CDPTentacle):
                     "a => { a.setHp(a.mhp); a.setMp(a.mmp); }), 'healed'")
         if cmd == "speed":
             return f"$gamePlayer.setMoveSpeed({int(kwargs['value'])})"
+        if cmd == "game_speed":
+            return f"window.__octopus_setGameSpeed({int(kwargs['value'])})"
         if cmd == "through":
             v = "true" if kwargs["value"] else "false"
             return f"$gamePlayer.setThrough({v})"
@@ -629,10 +841,13 @@ class RpgMakerTentacle(CDPTentacle):
                     f"{int(kwargs['mapId'])}, {int(kwargs['x'])}, "
                     f"{int(kwargs['y'])}, 0, 0), 'teleported'")
         if cmd == "win_battle":
-            return ("(() => { if (!$gameParty.inBattle()) "
+            return ("(() => { if (typeof $gameParty === 'undefined' || "
+                    "!$gameParty.inBattle()) "
                     "throw new Error('сейчас нет боя'); "
-                    "$gameTroop.members().forEach("
+                    "const troop = $gameTroop; "
+                    "troop.members().forEach("
                     "e => { if (e.isAlive()) e.die(); }); "
+                    "if (troop.isAllDead()) BattleManager.processVictory(); "
                     "return 'won'; })()")
         if cmd == "give_item":
             kind = str(kwargs.get("kind", ""))

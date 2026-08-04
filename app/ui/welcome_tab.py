@@ -7,11 +7,12 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 
 from PySide6.QtCore import (QEasingCurve, QPropertyAnimation, Qt, QTimer,
                              QTimeLine)
-from PySide6.QtWidgets import (QFileDialog, QFormLayout, QFrame,
+from PySide6.QtWidgets import (QCheckBox, QFileDialog, QFormLayout, QFrame,
                                 QGroupBox, QHBoxLayout,
                                 QLabel, QMessageBox, QPlainTextEdit,
                                 QPushButton, QVBoxLayout, QWidget)
@@ -117,6 +118,12 @@ class WelcomeTab(QWidget):
         btn_settings.setToolTip(TR("welcome_settings_tooltip"))
         btn_settings.clicked.connect(self._open_settings)
         row_btns.addWidget(btn_settings)
+        btn_about = QPushButton("")
+        btn_about.setIcon(icon("info", 20))
+        btn_about.setFixedWidth(44)
+        btn_about.setToolTip(TR("about_title"))
+        btn_about.clicked.connect(self._open_about)
+        row_btns.addWidget(btn_about)
         row_btns.addStretch(1)
         lay.addLayout(row_btns)
 
@@ -160,7 +167,21 @@ class WelcomeTab(QWidget):
         btn_settings.clicked.connect(self._open_settings)
         top.addWidget(btn_settings)
 
-        btn_change = QPushButton(TR("dash_change_game"))
+        btn_folder = QPushButton("")
+        btn_folder.setIcon(icon("folder-open", 18))
+        btn_folder.setMinimumSize(40, 34)
+        btn_folder.setStyleSheet(
+            "QPushButton { padding: 2px 8px; }")
+        btn_folder.setToolTip(TR("welcome_open_folder"))
+        btn_folder.clicked.connect(self._open_game_folder)
+        top.addWidget(btn_folder)
+
+        btn_change = QPushButton("")
+        btn_change.setIcon(icon("arrow-left", 18))
+        btn_change.setMinimumSize(40, 34)
+        btn_change.setStyleSheet(
+            "QPushButton { padding: 2px 8px; }")
+        btn_change.setToolTip(TR("dash_change_game"))
         btn_change.clicked.connect(self._go_welcome)
         top.addWidget(btn_change)
 
@@ -207,6 +228,16 @@ class WelcomeTab(QWidget):
         row_live.addWidget(self.btn_live_launch, 1)  # stretch=1 fills width
         actions_lay.addLayout(row_live)
 
+        # перевод можно выключить/включить на лету — читы и переменные
+        # продолжают работать, текст показывается как есть
+        self.chk_live_translate = QCheckBox(TR("live_translate_toggle"))
+        self.chk_live_translate.setChecked(True)
+        self.chk_live_translate.setEnabled(False)
+        self.chk_live_translate.setStyleSheet(
+            "background: transparent;")
+        self.chk_live_translate.toggled.connect(self._on_live_translate_toggle)
+        actions_lay.addWidget(self.chk_live_translate)
+
         self.lbl_live_status = QLabel(TR("live_stopped"))
         self.lbl_live_status.setWordWrap(True)
         actions_lay.addWidget(self.lbl_live_status)
@@ -217,6 +248,18 @@ class WelcomeTab(QWidget):
         actions_lay.addWidget(self.live_log)
 
         lay.addWidget(actions_box)
+
+        # font patch (Ren'Py): жёсткая замена шрифтов на кириллический
+        self.font_box = QGroupBox(TR("dash_font"))
+        font_lay = QHBoxLayout(self.font_box)
+        self.btn_font_patch = QPushButton(TR("res_font"))
+        self.btn_font_patch.clicked.connect(self._font_patch)
+        font_lay.addWidget(self.btn_font_patch, 1)
+        self.btn_font_restore = QPushButton(TR("res_font_restore"))
+        self.btn_font_restore.clicked.connect(self._font_restore)
+        font_lay.addWidget(self.btn_font_restore)
+        self.font_box.setVisible(False)
+        lay.addWidget(self.font_box)
 
         lay.addStretch(1)
         return w
@@ -238,7 +281,13 @@ class WelcomeTab(QWidget):
         self.lbl_engine.setText(module.display if module else "—")
         self.lbl_path.setText(p.game_dir)
 
-        s = self.main.settings
+        renpy_mode = bool(module and module.key == "renpy")
+        self.font_box.setVisible(renpy_mode)
+        if renpy_mode:
+            from app.core.renpy import fontpatch
+            self.btn_font_restore.setVisible(
+                fontpatch.is_patched(p.game_dir))
+
         self._refresh_stats()
 
     def _refresh_stats(self):
@@ -265,10 +314,9 @@ class WelcomeTab(QWidget):
         from app.core.rpgmaker import parser
         total = len(p.entries)
         done = sum(1 for e in p.entries if e.translation.strip())
-        cjk = sum(1 for e in p.entries if parser.has_cjk(e.original))
         if total:
             self.lbl_stats.setText(
-                TR("dash_stats_fmt", total=total, cjk=cjk,
+                TR("dash_stats_fmt", total=total,
                    done=done, left=total - done))
         else:
             self.lbl_stats.setText(TR("dash_no_extract"))
@@ -330,11 +378,22 @@ class WelcomeTab(QWidget):
             self.btn_live_launch.setText(TR("live_stop"))
             self.btn_live_launch.setIcon(icon("stop"))
             self.btn_live_launch.setEnabled(True)
+            self.chk_live_translate.setEnabled(True)
+            self.chk_live_translate.setChecked(True)
         else:
             self.lbl_live_status.setText(TR("live_waiting"))
             self.btn_live_launch.setText(TR("live_start"))
             self.btn_live_launch.setIcon(icon("play"))
             self.btn_live_launch.setEnabled(True)
+            self.chk_live_translate.setEnabled(False)
+            self.chk_live_translate.setChecked(True)
+
+    def _on_live_translate_toggle(self, checked: bool):
+        # вкл/выкл перевод на лету: читы и переменные продолжают работать
+        self.main.set_live_translation(checked)
+        if self.lbl_live_status.text() == TR("live_connected"):
+            self.lbl_live_status.setText(
+                TR("live_connected") if checked else TR("live_translate_off"))
 
     def _on_live_translated(self, original: str, translation: str):
         self.live_log.appendPlainText(f"{original}  =>  {translation}")
@@ -346,7 +405,43 @@ class WelcomeTab(QWidget):
         self.btn_live_launch.setEnabled(True)
         self.btn_live_launch.setText(TR("live_start"))
         self.btn_live_launch.setIcon(icon("play"))
+        self.chk_live_translate.setEnabled(False)
+        self.chk_live_translate.setChecked(True)
         self.lbl_live_status.setText(TR("live_game_closed"))
+
+    # ===================================================================
+    #  Font patch (Ren'Py)
+    # ===================================================================
+    def _font_patch(self):
+        p = self.main.project
+        if not p:
+            return
+        from app.core.renpy import fontpatch
+        try:
+            report = fontpatch.patch_font(p.game_dir)
+        except Exception as e:
+            QMessageBox.critical(self, TR("dash_font"), str(e))
+            return
+        if report["replaced"]:
+            QMessageBox.information(
+                self, TR("done"),
+                TR("res_font_done_renpy", n=report["replaced"]))
+        else:
+            QMessageBox.information(self, TR("done"), TR("res_font_already"))
+        self.refresh_dashboard()
+
+    def _font_restore(self):
+        p = self.main.project
+        if not p:
+            return
+        from app.core.renpy import fontpatch
+        try:
+            fontpatch.restore_font(p.game_dir)
+        except Exception as e:
+            QMessageBox.critical(self, TR("err"), str(e))
+            return
+        QMessageBox.information(self, TR("done"), TR("res_font_restored"))
+        self.refresh_dashboard()
 
     # ===================================================================
     #  Navigation
@@ -382,6 +477,26 @@ class WelcomeTab(QWidget):
     def _open_settings(self):
         from app.ui.settings_tab import SettingsDialog
         SettingsDialog(self.main, self.main).exec()
+
+    def _open_about(self):
+        from app.ui.app_info import show_about
+        show_about(self.main)
+
+    def _open_game_folder(self):
+        p = self.main.project
+        if not p:
+            return
+        path = p.game_dir
+        if not os.path.isdir(path):
+            return
+        try:
+            if sys.platform == "win32":
+                os.startfile(path)  # noqa: S606
+            else:
+                import subprocess
+                subprocess.Popen(["xdg-open", path])
+        except OSError:
+            pass
 
     # ===================================================================
     #  Animation & drag-and-drop

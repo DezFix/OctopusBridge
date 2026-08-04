@@ -184,9 +184,9 @@ def fix_punctuation(text: str, src: str, tgt: str) -> str:
 def fix_leading_case(text: str, original: str) -> str:
     """Восстанавливает регистр первой буквы, изменённый моделью.
 
-    Argos/NLLB капитализируют начало строки; если строка начиналась
-    с маскированного кода (v[config.version]), под удар попадает
-    первая буква: "v[config.version]" -> "V[config.version]".
+    Honyaku (NLLB-200/OPUS-MT) капитализирует начало строки; если
+    строка начиналась с маскированного кода (v[config.version]), под
+    удар попадает первая буква: "v[config.version]" -> "V[config.version]".
     """
     if not text or not original or text == original:
         return text
@@ -205,8 +205,8 @@ _NUM_TOKEN_RE = re.compile(r"-?\d+")
 def fix_number_signs(text: str, original: str) -> str:
     """Возвращает потерянные знаки минуса у чисел.
 
-    Argos/NLLB выбрасывают ведущий минус: "Visible Day: -1" ->
-    "Видимый день: 1". Сопоставляем числа по порядку появления;
+    Honyaku (NLLB-200/OPUS-MT) выбрасывает ведущий минус: "Visible Day: -1"
+    -> "Видимый день: 1". Сопоставляем числа по порядку появления;
     если цифры совпадают, а знак оригинала был минусом — возвращаем.
     """
     if not text or not original or text == original:

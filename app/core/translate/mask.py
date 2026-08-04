@@ -3,7 +3,7 @@
 
 \\V[1], \\fs[14], \\C[3], \\{, теги плагинов <center>, printf %1,
 интерполяция Ren'Py [expr!t] заменяются на XML-токены <x0/> —
-Marian/Argos и LLM сохраняют их, в отличие от ⟦0⟧.
+Honyaku и LLM сохраняют их, в отличие от ⟦0⟧.
 """
 from __future__ import annotations
 

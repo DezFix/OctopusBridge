@@ -26,7 +26,7 @@ FONT_REL = "ob_fonts/" + FONT_NAME
 AGENT_RPY = "ob_agent.rpy"
 
 # ── Защита Ren'Py-интерполяции от переводчика ────────────────────────
-# Плейсхолдер "OB{i}": чистый ASCII. Проверено на Argos/opus-mt:
+# Плейсхолдер "OB{i}": чистый ASCII. Проверено на honyaku (OPUS-MT/NLLB):
 # PUA-символы (\uE000) и скобки (⟦⟧, {{}}, «») токенизатор выбрасывает,
 # а цифро-буквенные токены (OB0) сохраняет слово-в-слово.
 _PLACEHOLDER = "OB{i}"
@@ -128,7 +128,7 @@ def find_launcher(game_dir: str) -> str | None:
 
 
 def install_font(game_dir: str) -> bool:
-    """Копирует кириллический NotoSans в game/ob_fonts/."""
+    """Копирует универсальный шрифт (RU+JP+EN) в game/ob_fonts/."""
     game_sub = os.path.join(game_dir, "game")
     if not os.path.isdir(game_sub):
         return False
@@ -145,6 +145,24 @@ def install_font(game_dir: str) -> bool:
         except OSError:
             pass
     return os.path.isfile(dst)
+
+
+def auto_patch_font(game_dir: str) -> int:
+    """Жёсткая замена шрифтов без кириллицы на NotoSans.
+
+    Вызывается при launch/attach: квадратики исчезают и при запуске
+    игры напрямую. Оригиналы — в game/ob_fonts_orig (кнопка отката).
+    Best-effort: при ошибке (например, игра уже запущена и файлы
+    залочены Windows) не роняем запуск — runtime-карта агента всё
+    равно подменит шрифт в сессии. Отключается файлом game/.octopus_nofont.
+    """
+    from app.core.renpy import fontpatch
+    if os.path.isfile(os.path.join(game_dir, "game", ".octopus_nofont")):
+        return 0
+    try:
+        return fontpatch.patch_font(game_dir).get("replaced", 0)
+    except Exception:
+        return -1
 
 
 def _fallback_font_path() -> str:
@@ -170,15 +188,18 @@ def _fallback_font_path() -> str:
     return ""
 
 
-def install_agent_rpy(game_dir: str, port: int) -> bool:
-    """Записывает ob_agent.rpy в game/ — Ren'Py загрузит его при старте."""
+def install_agent_rpy(game_dir: str, port: int, abi: str = "py3") -> bool:
+    """Записывает ob_agent.rpy в game/ — Ren'Py загрузит его при старте.
+
+    abi — ветка агента: "py2" (Ren'Py 7, Python 2.7) или "py3" (Ren'Py 8+).
+    """
     game_sub = os.path.join(game_dir, "game")
     if not os.path.isdir(game_sub):
         return False
     # Удаляем старый кэш, чтобы Ren'Py перекомпилировал .rpy
     cleanup_agent_rpy(game_dir)
     dst = os.path.join(game_sub, AGENT_RPY)
-    code = agent_rpy_source(port, FONT_REL, _fallback_font_path())
+    code = agent_rpy_source(port, FONT_REL, _fallback_font_path(), abi)
     try:
         with open(dst, "w", encoding="utf-8") as f:
             f.write(code)
@@ -389,12 +410,28 @@ class RenPyTentacle(Tentacle):
         backup_cache(game_dir)
 
         install_font(game_dir)
+        _n = auto_patch_font(game_dir)
+        if _n > 0:
+            self.log.emit(f"Шрифты без кириллицы заменены на NotoSans "
+                          f"({_n} шт., оригиналы в game/ob_fonts_orig)")
+        elif _n < 0:
+            self.log.emit("Автозамена шрифтов пропущена (игра запущена "
+                          "или каталог только для чтения)")
         if not self._start_server():
             return False
 
-        # RPY-агент: Ren'Py сам подхватит ob_agent.rpy из game/
-        install_agent_rpy(game_dir, self._server.port)
-        self.log.emit(f"RPY-агент записан в game/{AGENT_RPY}")
+        # RPY-агент: Ren'Py сам подхватит ob_agent.rpy из game/.
+        # Ветка агента выбирается по версии Ren'Py: 7.x = py2, 8.x = py3.
+        version, src = detect_version(game_dir, exe)
+        db = RenpyOffsetDB()
+        abi = db.get_abi_branch(version) if version else "py3"
+        install_agent_rpy(game_dir, self._server.port, abi)
+        if version:
+            self.log.emit(f"Ren'Py {version} (ветка {abi}) — "
+                          f"агент записан в game/{AGENT_RPY}")
+        else:
+            self.log.emit(f"Версия Ren'Py не определена, ветка {abi} — "
+                          f"агент записан в game/{AGENT_RPY}")
 
         # Запускаем игру обычным subprocess — БЕЗ Frida spawn/resume.
         # Тайминги инициализации Ren'Py не нарушаются.
@@ -417,6 +454,13 @@ class RenPyTentacle(Tentacle):
         self._game_dir = exe_dir
         if exe_dir:
             install_font(exe_dir)
+            _n = auto_patch_font(exe_dir)
+            if _n > 0:
+                self.log.emit(f"Шрифты без кириллицы заменены на NotoSans "
+                              f"({_n} шт., оригиналы в game/ob_fonts_orig)")
+            elif _n < 0:
+                self.log.emit("Автозамена шрифтов пропущена: игра запущена, "
+                              "файлы шрифтов залочены (runtime-карта работает)")
         if not self._start_server():
             return False
 
@@ -519,6 +563,16 @@ class RenPyTentacle(Tentacle):
 
     def _on_translate(self, msg: dict):
         original = msg.get("text", "")
+        if not self._translation_enabled:
+            # перевод приостановлен пользователем: отвечаем оригиналом
+            # с флагом paused — агент не кэширует и не skip-ит строку,
+            # после включения перевода она переведётся заново
+            if self._server:
+                self._server.send({"type": "translation",
+                                   "id": msg.get("id"), "text": original,
+                                   "paused": True})
+            self.text_seen.emit(original, original)
+            return
         try:
             masked, codes = _protect_interp(original)
             translation = self.translate(masked)

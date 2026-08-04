@@ -9,7 +9,7 @@ from app.ui.i18n import TR
 class RenPyModule(EngineModule):
     key = "renpy"
     title = "Ren'Py"
-    features = {"files", "live", "cheats", "resources"}
+    features = {"files", "live", "cheats", "resources", "font"}
 
     @classmethod
     def detect(cls, game_dir: str) -> int:

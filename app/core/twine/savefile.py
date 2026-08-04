@@ -14,7 +14,10 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import shutil
+import time
+from datetime import datetime
 
 _B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
 
@@ -274,16 +277,57 @@ def get_variables(data: dict) -> dict:
     return variables if isinstance(variables, dict) else {}
 
 
+_PATH_PART = re.compile(r"^([^\[\]]*)((?:\[\d+\])*)$")
+_PATH_IDX = re.compile(r"\[(\d+)\]")
+
+
+def _path_parts(dotted: str) -> list:
+    """'a.b[0].c' → [('key','a'), ('key','b'), ('idx',0), ('key','c')]."""
+    parts = []
+    for seg in str(dotted).split("."):
+        m = _PATH_PART.match(seg)
+        if not m:
+            continue
+        if m.group(1):
+            parts.append(("key", m.group(1)))
+        for im in _PATH_IDX.finditer(m.group(2)):
+            parts.append(("idx", int(im.group(1))))
+    return parts
+
+
 def _set_nested(target: dict, dotted: str, value):
-    parts = dotted.split(".")
-    node = target
-    for part in parts[:-1]:
-        child = node.get(part)
-        if not isinstance(child, dict):
-            child = {}
-            node[part] = child
-        node = child
-    node[parts[-1]] = value
+    """Записывает значение по dot-path с поддержкой индексов списков
+    ('flags[0]', 'inv[1].qty'). Следующий сегмент пути заранее известен —
+    промежуточные контейнеры создаются сразу нужного типа."""
+    parts = _path_parts(dotted)
+    if not parts:
+        return
+    node: object = target
+    for i, (kind, key) in enumerate(parts[:-1]):
+        nxt = parts[i + 1][0]
+        if kind == "key":
+            child = node.get(key) if isinstance(node, dict) else None
+            if not isinstance(child, (dict, list)):
+                child = [] if nxt == "idx" else {}
+                if isinstance(node, dict):
+                    node[key] = child
+            node = child
+        else:
+            if not isinstance(node, list):
+                node = []
+            while len(node) <= key:
+                node.append([] if nxt == "idx" else {})
+            node = node[key]
+    last_kind, last_key = parts[-1]
+    if last_kind == "key":
+        if isinstance(node, dict):
+            node[last_key] = value
+    else:
+        if not isinstance(node, list):
+            node = []
+        while len(node) <= last_key:
+            node.append(None)
+        node[last_key] = value
 
 
 def set_variables(data: dict, updates: dict):
@@ -301,21 +345,71 @@ def set_variables(data: dict, updates: dict):
         _set_nested(variables, dotted, value)
 
 
-def flatten_variables(variables: dict, max_depth: int = 4) -> dict:
-    """{'player': {'money': 0}} -> {'player.money': 0} (только примитивы)."""
+def flatten_variables(variables: dict, max_depth: int = 50) -> dict:
+    """ВСЕ значения дерева переменных → плоский dict, ничего не теряется.
+
+    Словари — точками ('player.money'), списки/кортежи — индексами
+    ('flags[0]'), прочие объекты — строкой, пустые контейнеры — '{}'/'[]'.
+    """
     out: dict = {}
 
-    def walk(node, prefix: str, depth: int):
-        for k, v in node.items():
-            name = f"{prefix}{k}"
-            if isinstance(v, dict) and depth < max_depth:
-                walk(v, name + ".", depth + 1)
-            elif isinstance(v, (int, float, str, bool)) or v is None:
-                out[name] = v
+    def walk(node, path: str, depth: int):
+        if depth > max_depth:
+            return
+        if isinstance(node, dict):
+            if not node:
+                out[path] = "{}"
+                return
+            for k, v in node.items():
+                walk(v, f"{path}.{k}" if path else str(k), depth + 1)
+        elif isinstance(node, (list, tuple)):
+            if not node:
+                out[path] = "[]"
+                return
+            for i, v in enumerate(node):
+                walk(v, f"{path}[{i}]", depth + 1)
+        elif isinstance(node, (int, float, str, bool)) or node is None:
+            out[path] = node
+        else:
+            out[path] = str(node)
 
     if isinstance(variables, dict):
-        walk(variables, "", 1)
+        walk(variables, "", 0)
     return out
+
+
+def write_slots(game_dir: str, base_name: str, slots: list,
+                fallback_ts: str | None = None) -> list[str]:
+    """Слоты игры (id/date/data-LZ-b64) → .save файлы в папку игры.
+
+    Имя файла: '<игра>-<дата слота>-slot<id>.save'. Повторный синк
+    перезаписывает те же файлы — дубли не копятся. Возвращает пути
+    записанных файлов.
+    """
+    safe = re.sub(r'[^\w .\-()]+', '_', base_name or 'game').strip() or 'game'
+    safe = safe[:60]
+    written = []
+    for s in slots or []:
+        data = s.get('data')
+        if not isinstance(data, str) or not data:
+            continue
+        sid = str(s.get('id', 'x'))
+        stamp = fallback_ts or time.strftime('%Y%m%d-%H%M%S')
+        date = s.get('date')
+        if date:
+            try:
+                stamp = datetime.fromtimestamp(
+                    int(date) / 1000).strftime('%Y%m%d-%H%M%S')
+            except (ValueError, OSError, OverflowError):
+                pass
+        path = os.path.join(game_dir, f'{safe}-{stamp}-slot{sid}.save')
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(data)
+        except OSError:
+            continue
+        written.append(path)
+    return written
 
 
 def find_saves(game_dir: str) -> list[str]:

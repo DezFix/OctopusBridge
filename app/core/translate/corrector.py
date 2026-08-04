@@ -36,6 +36,7 @@ class Corrector:
                 "(Ollama or OpenAI-compatible API)")
         self.engine = engine
         self.cancelled = False
+        self.diffs: list[CorrectionDiff] = []
 
     def cancel(self):
         self.cancelled = True
@@ -94,6 +95,21 @@ class Corrector:
             if progress:
                 progress(done, total)
         return diffs
+
+    def correct_all(
+        self,
+        entries: list[TranslationEntry],
+        tgt_lang: str,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> int:
+        """Вычисляет все исправления и сохраняет их в self.diffs.
+
+        Возвращает число предложенных исправлений. Результат доступен в
+        self.diffs для показа в диалоге подтверждения (UI не применяет
+        исправления автоматически).
+        """
+        self.diffs = self.compute_corrections(entries, tgt_lang, progress)
+        return len(self.diffs)
 
     def correct_entries(
         self,

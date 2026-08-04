@@ -1,61 +1,127 @@
 # -*- coding: utf-8 -*-
-"""Smoke-тесты ядра OctopusBridge на реальной игре (без изменения файлов игры)."""
+"""Ядро перевода: детект языка, маска кодов, глоссарий, память переводов,
+сервис Translator, фиксеры, ИИ-корректор. Без сети — фейковый движок."""
 import io
 import os
-import shutil
 import sys
 import tempfile
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.core.rpgmaker import parser, crypto
-from app.core.translate.mask import mask, unmask, validate
-from _test_game import find_rpgm_game, skip_no_game
+from app.core.models import TranslationEntry
+from app.core.translate.corrector import Corrector
+from app.core.translate.detect import detect_lang
+from app.core.translate import fixers
+from app.core.translate.glossary import Glossary
+from app.core.translate.mask import (is_code_only, mask, split_edge_codes,
+                                     unmask, validate)
+from app.core.translate.memory import TranslationMemory
+from app.core.translate.service import Translator
 
-GAME = find_rpgm_game()
-if not GAME:
-    skip_no_game("RPG Maker (The Suffering of The Modest Witch)")
 
-print('1) detect_engine:', parser.detect_engine(GAME))
+class FakeEngine:
+    """Фейковый движок: переводит верхним регистром, сохраняет токены <xN/>."""
 
-print('2) extract...')
-entries = parser.extract(GAME)
-cjk = sum(1 for e in entries if parser.has_cjk(e.original))
-print(f'   записей всего: {len(entries)}, с CJK: {cjk}')
-for e in entries[:3]:
-    print('  ', e.file, '|', e.context, '|', e.original[:60])
+    def __init__(self, name="fake"):
+        self.name = name
 
-print('3) mask/unmask round-trip...')
-samples = [r'テスト\V[1]と\N[2]、\C[3]赤\C[0] \{大\} 100\%1 \\ end',
-           r'Обычный текст без кодов',
-           r'\I[10]Предмет \V[5] шт.']
-for s in samples:
+    def translate(self, texts, source, target, context_before=None,
+                  context_after=None):
+        return [t.upper() for t in texts]
+
+    def complete(self, prompt):
+        items = prompt[prompt.index("["):prompt.rindex("]") + 1]
+        import json
+        batch = json.loads(items)
+        return json.dumps([it["d"] + " [fixed]" for it in batch],
+                          ensure_ascii=False)
+
+    def ping(self):
+        return True
+
+
+def mk(id_, original, translation="", status="new"):
+    return TranslationEntry(id_, "data/A.json", f"[{id_}]", "ctx",
+                            original, translation, status)
+
+
+print("1) detect_lang...")
+assert detect_lang("私は魔女です") == "ja"
+assert detect_lang("打撃/物理") == "zh"
+assert detect_lang("Skip the opening?") == "en"
+assert detect_lang("Привет, мир") == "ru"
+assert detect_lang("\\V[1] + 50") is None
+print("   OK")
+
+print("2) mask/unmask: коды и интерполяция Ren'Py...")
+for s in (r'テスト\V[1]と\N[2]、\C[3]赤\C[0] \{大\} 100\%1',
+          "Hello [name]! {w} [gold]",
+          "Misc [[Requires Restart]",
+          "[Save] обычный текст в скобках"):
     m, codes = mask(s)
-    assert validate(m, codes), s
-    assert unmask(m, codes) == s, (s, m)
-print('   OK')
+    assert validate(m, codes) and unmask(m, codes) == s, s
+assert unmask("без маркера", ["[x]"]) == "без маркера"
+assert is_code_only(mask(r'\V[1]')[0])
+assert not is_code_only("текст \\V[1]")
+lead, mid, trail = split_edge_codes(r'\V[1]привет\c[8]')
+assert lead == [r'\V[1]'] and trail == [r'\c[8]'] and mid == "привет"
+print("   OK")
 
-print('4) crypto .png_...')
-key = crypto.get_key_mz(GAME)
-pic = os.path.join(GAME, 'img', 'pictures',
-                   os.listdir(os.path.join(GAME, 'img', 'pictures'))[0])
-raw = crypto.decrypt_file(pic, key)
-assert raw[:8] == b'\x89PNG\r\n\x1a\n', raw[:8]
-print('   OK, PNG расшифрован, размер:', len(raw))
-
-print('5) apply на копии одного файла...')
+print("3) Глоссарий + память переводов...")
 with tempfile.TemporaryDirectory() as td:
-    os.makedirs(os.path.join(td, 'data'))
-    shutil.copy2(os.path.join(GAME, 'data', 'Map002.json'),
-                 os.path.join(td, 'data', 'Map002.json'))
-    sub = [e for e in parser.extract(td) if e.file.endswith('Map002.json')]
-    for e in sub[:5]:
-        e.translation = 'ТЕСТ: ' + e.original
-    stats = parser.apply(td, sub)
-    re_entries = parser.extract(td)
-    assert any(x.original.startswith('ТЕСТ: ') for x in re_entries)
-    print('   OK', stats['files'], 'файл(ов),', stats['strings'], 'строк, бэкапов:', len(stats['backups']))
+    g = Glossary(os.path.join(td, "glossary.json"))
+    g.set_terms("en", "ru", {"Aira": "Айра", "Memory Orb": "Сфера памяти"})
+    segs = g.split_by_terms("Aira used the Memory Orb!", "en", "ru")
+    assert ("Aira", "Айра") in segs and ("Memory Orb", "Сфера памяти") in segs
+    tm = TranslationMemory(os.path.join(td, "tm.sqlite"))
+    tr = Translator(FakeEngine(), tm=tm, glossary=g)
+    out = tr.translate_text("Aira used the Memory Orb!", "auto", "ru")
+    assert "Айра" in out and "Сфера памяти" in out
+    assert tm.get("Aira used the Memory Orb!", "en", "ru") == out
+    tm.close()
+print("   OK:", out)
+
+print("4) Сервис: auto-язык, батчи, дедупликация, коды...")
+with tempfile.TemporaryDirectory() as td:
+    tm = TranslationMemory(os.path.join(td, "tm.sqlite"))
+    tr = Translator(FakeEngine(), tm=tm)
+    assert tr.translate_text("Уже по-русски", "auto", "ru") == "Уже по-русски"
+    assert tr.translate_text("\\V[1]", "auto", "ru") == "\\V[1]"
+    entries = [mk(1, "こんにちは"), mk(2, "Hello there"),
+               mk(3, "Уже русский"), mk(4, "こんにちは")]
+    n = tr.translate_entries(entries, "auto", "ru")
+    assert n == 3, n
+    assert entries[0].translation == "こんにちは".upper()
+    assert entries[1].status == "translated"
+    assert entries[3].translation == entries[0].translation  # дедуп
+    assert entries[2].translation == ""
+    tm.close()
+print("   OK")
+
+print("5) Фиксеры...")
+f = fixers.apply_fixers
+assert f("v[config.version]", "en", "ru", "v[config.version]") == "v[config.version]"
+assert f("Видимый день: 1", "en", "ru", "Visible Day: -1") == "Видимый день: -1"
+assert f("Хорошая погода。", "ja", "ru", "Good weather") == "Хорошая погода."
+assert f("Привет", "en", "ru", "Привет") == "Привет"
+assert fixers.fix_leading_case("V[config.version]", "v[config.version]") == "v[config.version]"
+assert fixers.fix_number("Собрано 1 2 предметов", "Собрано ① ② предметов") == "Собрано ① ② предметов"
+print("   OK")
+
+print("6) ИИ-корректор (новый API correct_all/diffs)...")
+corrector = Corrector(FakeEngine())
+entries = [mk(1, "こんにちは", "Здравствуйте", "translated"),
+           mk(2, "ありがとう", "Спасибо", "translated"),
+           mk(3, "さようなら", "", "new")]
+n = corrector.correct_all(entries, "ru")
+assert n == 2, n
+assert len(corrector.diffs) == 2
+assert corrector.diffs[0].new_text == "Здравствуйте [fixed]"
+assert entries[0].translation == "Здравствуйте"  # не применено до подтверждения
+assert entries[2].status == "new"
+corrector.cancel()
+print("   OK")
 
 print()
-print('ВСЕ ТЕСТЫ ПРОШЛИ')
+print("ВСЕ ТЕСТЫ ЯДРА ПРОШЛИ")

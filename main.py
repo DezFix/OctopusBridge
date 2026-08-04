@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Точка входа OctopusBridge."""
 import os
+import subprocess
 import sys
 import traceback
 
@@ -19,6 +20,10 @@ def _excepthook(exc_type, exc_value, exc_tb):
     try:
         with open(CRASH_LOG, "a", encoding="utf-8") as f:
             f.write(f"\n=== {__import__('datetime').datetime.now()} ===\n{text}")
+        try:
+            subprocess.Popen(["notepad", CRASH_LOG])
+        except OSError:
+            os.startfile(CRASH_LOG)
     except OSError:
         pass
     QMessageBox.critical(None, "Error",

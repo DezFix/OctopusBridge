@@ -2,7 +2,7 @@
 """i18n: TR(key, **fmt) with full RU/EN coverage."""
 from __future__ import annotations
 
-_lang: str = "ru"
+_lang: str = "en"
 
 _STRINGS = {
     # ── App ──
@@ -17,12 +17,8 @@ _STRINGS = {
         "en": "Minimized to tray. Quit via the tray icon.",
     },
 
-    # ── Sidebar ──
-    "side_home": {"ru": "Домой", "en": "Home"},
-    "side_translate": {"ru": "Файлы", "en": "Files"},
-    "side_live": {"ru": "Реалтайм", "en": "Live"},
-    "side_cheats": {"ru": "Читы", "en": "Cheats"},
-    "side_settings": {"ru": "Настройки", "en": "Settings"},
+    # ── Диалоги ──
+    "side_home": {"ru": "Открыть папку игры", "en": "Open game folder"},
 
     # ── Welcome ──
     "welcome_title": {"ru": "OctopusBridge", "en": "OctopusBridge"},
@@ -40,20 +36,12 @@ _STRINGS = {
     },
     "welcome_loading": {"ru": "Загружаю игру", "en": "Loading game"},
     "welcome_unsupported": {
-        "ru": "Движок не поддерживается.\nПоддерживаются: RPG Maker MV/MZ, Ren'Py и Twine.",
-        "en": "Engine not supported.\nSupported: RPG Maker MV/MZ, Ren'Py and Twine.",
+        "ru": "Движок не поддерживается.\nПоддерживаются: RPG Maker MV/MZ, Ren'Py, Twine и TyranoScript.",
+        "en": "Engine not supported.\nSupported: RPG Maker MV/MZ, Ren'Py, Twine and TyranoScript.",
     },
     "welcome_hint": {
-        "ru": "Поддерживаются: RPG Maker MV/MZ, Ren'Py и Twine",
-        "en": "Supported: RPG Maker MV/MZ, Ren'Py and Twine",
-    },
-    "setup_title": {
-        "ru": "Настройка языковых пакетов",
-        "en": "Language Pack Setup",
-    },
-    "setup_argos_msg": {
-        "ru": "Для офлайн-перевода нужно скачать языковые пакеты:\n{pairs}\n\n(~100-300 МБ каждый). Скачать сейчас?",
-        "en": "Offline translation requires language packs:\n{pairs}\n\n(~100-300 MB each). Download now?",
+        "ru": "Поддерживаются: RPG Maker MV/MZ, Ren'Py, Twine и TyranoScript",
+        "en": "Supported: RPG Maker MV/MZ, Ren'Py, Twine and TyranoScript",
     },
     "welcome_recent": {
         "ru": "Последние проекты",
@@ -68,8 +56,8 @@ _STRINGS = {
         "en": "No recent projects",
     },
     "projects_subtitle": {
-        "ru": "Ваши игры — нажмите, чтобы продолжить перевод",
-        "en": "Your games — click one to continue translating",
+        "ru": "Ваши игры — нажмите, чтобы продолжить перевод, или перетащите папку игры сюда",
+        "en": "Your games — click one to continue translating, or drag a game folder here",
     },
     "projects_empty_title": {
         "ru": "Пока нет проектов",
@@ -90,6 +78,10 @@ _STRINGS = {
     "projects_clear_confirm": {
         "ru": "Удалить все проекты из списка?",
         "en": "Remove all projects from the list?",
+    },
+    "projects_open_folder": {
+        "ru": "Открыть папку",
+        "en": "Open folder",
     },
     "welcome_add_project": {
         "ru": "Добавить проект",
@@ -128,14 +120,16 @@ _STRINGS = {
     "dash_provider_engine": {"ru": "Движок:", "en": "Engine:"},
     "dash_provider_check": {"ru": "Проверить", "en": "Check"},
     "dash_change_game": {"ru": "Сменить игру", "en": "Change game"},
+    "welcome_open_folder": {"ru": "Открыть папку игры", "en": "Open game folder"},
     "dash_settings": {"ru": "Настройки", "en": "Settings"},
+    "dash_font": {"ru": "Шрифт с кириллицей", "en": "Cyrillic font"},
     "dash_no_extract": {
         "ru": "Текст ещё не извлечён. Нажмите «Извлечь текст».",
         "en": "Text not yet extracted. Click \"Extract text\".",
     },
     "dash_stats_fmt": {
-        "ru": "Записей: {total}  |  С иероглифами: {cjk}  |  Переведено: {done}  |  Осталось: {left}",
-        "en": "Entries: {total}  |  CJK: {cjk}  |  Translated: {done}  |  Remaining: {left}",
+        "ru": "Записей: {total}  |  Переведено: {done}  |  Осталось: {left}",
+        "en": "Entries: {total}  |  Translated: {done}  |  Remaining: {left}",
     },
     "dash_enc_yes": {"ru": "да", "en": "yes"},
     "dash_enc_no": {"ru": "нет", "en": "no"},
@@ -169,7 +163,6 @@ _STRINGS = {
     },
     "tr_filter": {"ru": "Показать:", "en": "Show:"},
     "tr_filter_all": {"ru": "Все", "en": "All"},
-    "tr_filter_cjk": {"ru": "С иероглифами", "en": "CJK only"},
     "tr_filter_untranslated": {"ru": "Без перевода", "en": "Untranslated"},
     "tr_filter_translated": {"ru": "Переведённые", "en": "Translated"},
     "tr_filter_skipped": {"ru": "Пропущенные", "en": "Skipped"},
@@ -328,10 +321,6 @@ _STRINGS = {
         "ru": "Этот движок пока не поддерживает живое подключение",
         "en": "This engine does not support live attach yet",
     },
-    "live_autowatch": {
-        "ru": "Автоподключение к запущенной игре",
-        "en": "Auto-attach to running game",
-    },
     "live_autofound": {
         "ru": "Найден процесс игры (pid {pid}) — подключаюсь…",
         "en": "Game process found (pid {pid}) — attaching…",
@@ -343,6 +332,10 @@ _STRINGS = {
     "live_translate_toggle": {
         "ru": "Перевод в реальном времени",
         "en": "Real-time translation",
+    },
+    "live_translate_off": {
+        "ru": "Перевод выключен (текст без перевода)",
+        "en": "Translation off (original text)",
     },
 
     # ── Cheat tab ──
@@ -425,6 +418,7 @@ _STRINGS = {
     "settings_languages": {"ru": "Языки перевода", "en": "Translation Languages"},
     "settings_live": {"ru": "Реалтайм", "en": "Real-time"},
     "settings_files": {"ru": "Файлы", "en": "Files"},
+    "settings_corr_tab": {"ru": "ИИ корректор", "en": "AI Corrector"},
     "settings_provider": {"ru": "Провайдер перевода", "en": "Translation Provider"},
     "settings_live_provider": {
         "ru": "Провайдер для реалтайма (в игре)",
@@ -438,6 +432,17 @@ _STRINGS = {
         "ru": "Провайдер для ИИ-коррекции",
         "en": "AI correction provider",
     },
+    "settings_glossary_box": {"ru": "ИИ глоссарий", "en": "AI Glossary"},
+    "settings_glossary_ai": {
+        "ru": "Использовать движок ИИ-корректора для анализа терминов",
+        "en": "Use the AI corrector engine for term analysis",
+    },
+    "settings_glossary_info": {
+        "ru": "Кнопка «Анализ терминов (AI)…» в глоссарии использует тот же "
+              "LLM-движок, что и ИИ-корректор.",
+        "en": "The \"Analyze terms (AI)…\" button in the glossary uses the "
+              "same LLM engine as the AI corrector.",
+    },
     "settings_provider_lbl": {"ru": "Провайдер:", "en": "Provider:"},
     "settings_preset": {"ru": "Пресет:", "en": "Preset:"},
     "settings_base_url": {"ru": "Base URL:", "en": "Base URL:"},
@@ -447,7 +452,6 @@ _STRINGS = {
     "settings_src_lang": {"ru": "Язык оригинала:", "en": "Source language:"},
     "settings_tgt_lang": {"ru": "Язык перевода:", "en": "Target language:"},
     "settings_check": {"ru": "Проверить провайдера", "en": "Check provider"},
-    "settings_argos": {"ru": "Пакеты Argos", "en": "Argos Packages"},
     "settings_status": {"ru": "Статус:", "en": "Status:"},
     "settings_status_ready": {
         "ru": "Провайдер готов к работе",
@@ -460,14 +464,6 @@ _STRINGS = {
     "settings_auto_launch": {
         "ru": "Автозапуск реалтайма при открытии проекта",
         "en": "Auto-start realtime on project open",
-    },
-    "settings_ws_info": {
-        "ru": "OctopusBridge подключается к процессу игры напрямую:\n"
-              "RPG Maker — через Chromium DevTools, Ren'Py — через Frida.\n"
-              "Файлы игры при живом подключении не изменяются.",
-        "en": "OctopusBridge attaches straight to the game process:\n"
-              "RPG Maker via Chromium DevTools, Ren'Py via Frida.\n"
-              "Game files stay untouched during live attach.",
     },
     "settings_overwrite": {"ru": "Режим перевода:", "en": "Translation mode:"},
     "settings_overwrite_new": {
@@ -515,9 +511,9 @@ _STRINGS = {
     },
 
     # ── Providers (engines) ──
-    "prov_argos": {
-        "ru": "Argos — встроенный офлайн (без ключа)",
-        "en": "Argos — built-in offline (no key)",
+    "prov_honyaku": {
+        "ru": "Honyaku — встроенный офлайн (без ключа)",
+        "en": "Honyaku — built-in offline (no key)",
     },
     "prov_google_free": {
         "ru": "Google Translate — бесплатный (без ключа)",
@@ -535,9 +531,9 @@ _STRINGS = {
         "ru": "AI — OpenAI/Ollama/LM Studio (требуется API или локальный сервер)",
         "en": "AI — OpenAI/Ollama/LM Studio (requires API or local server)",
     },
-    "prov_short_argos": {
-        "ru": "Argos Translate (офлайн)",
-        "en": "Argos Translate (offline)",
+    "prov_short_honyaku": {
+        "ru": "Honyaku (офлайн)",
+        "en": "Honyaku (offline)",
     },
     "prov_short_google_free": {"ru": "Google Translate", "en": "Google Translate"},
     "prov_short_bing": {"ru": "Bing Translator", "en": "Bing Translator"},
@@ -558,14 +554,15 @@ _STRINGS = {
               "For remote API: set base URL and API key in Settings.\n"
               "Check connection with the 'Check provider' button.",
     },
-    "hint_engine_argos": {
+    "hint_engine_honyaku": {
         "ru": "Офлайн-движок не готов.\n\n"
-              "Если это первый запуск — скачайте языковые пакеты кнопкой "
-              "«Пакеты Argos» в настройках (~100-300 МБ на пару, один раз).",
+              "Если это первый запуск — скачайте модели кнопкой "
+              "«Модели Honyaku» в настройках (fast ~60 МБ на пару, "
+              "NLLB best ~1.2 ГБ, один раз).",
         "en": "Offline engine is not ready.\n\n"
-              "If this is the first launch — download language packs with "
-              "'Argos Packages' button in Settings (~100-300 MB per pair, "
-              "one-time download).",
+              "If this is the first launch — download models with "
+              "'Honyaku Models' button in Settings (~60 MB per fast pair, "
+              "~1.2 GB for NLLB best, one-time download).",
     },
 
     # ── Engine tab titles ──
@@ -614,13 +611,13 @@ _STRINGS = {
         "ru": "Ollama вернул некорректный ответ",
         "en": "Ollama returned invalid response",
     },
-    "err_argos_not_installed": {
-        "ru": "Пакет argostranslate не установлен (pip install argostranslate)",
-        "en": "argostranslate package not installed (pip install argostranslate)",
+    "err_honyaku_not_installed": {
+        "ru": "Пакет honyaku не установлен (pip install honyaku)",
+        "en": "honyaku package not installed (pip install honyaku)",
     },
-    "err_argos_no_packages": {
-        "ru": "Офлайн-перевод {s}→{t} невозможен: {e}\nСкачайте языковые пакеты на вкладке «Настройки».",
-        "en": "Offline translation {s}→{t} failed: {e}\nDownload language packs in Settings.",
+    "err_honyaku_no_models": {
+        "ru": "Офлайн-перевод {s}→{t} невозможен: {e}\nСкачайте модели на вкладке «Настройки».",
+        "en": "Offline translation {s}→{t} failed: {e}\nDownload models in Settings.",
     },
     "err_deepl_no_key": {
         "ru": "DeepL: укажите API-ключ в настройках",
@@ -630,9 +627,9 @@ _STRINGS = {
         "ru": "Неизвестный движок: {name}",
         "en": "Unknown engine: {name}",
     },
-    "err_argos_package_missing": {
-        "ru": "Пакет {s}→{t} не найден в каталоге Argos",
-        "en": "Package {s}→{t} not found in Argos catalog",
+    "err_honyaku_model_missing": {
+        "ru": "Модель {s}→{t} не найдена в каталоге Honyaku",
+        "en": "Model {s}→{t} not found in Honyaku catalog",
     },
     "err_api_bad_response": {
         "ru": "Некорректный ответ API: {e}",
@@ -642,9 +639,9 @@ _STRINGS = {
         "ru": "API вернул ответ другой длины",
         "en": "API returned response of wrong length",
     },
-    "err_argos_not_installed2": {
-        "ru": "argostranslate не установлен",
-        "en": "argostranslate not installed",
+    "err_honyaku_not_installed2": {
+        "ru": "honyaku не установлен",
+        "en": "honyaku not installed",
     },
 
     # ── Bridge plugin errors ──
@@ -849,12 +846,39 @@ _STRINGS = {
         "en": "Console (Python/JS in game):",
     },
 
+    # ── Save editor (H4) ──
+    "save_load": {"ru": "Загрузить…", "en": "Load…"},
+    "save_drop_ph": {
+        "ru": "Перетащите .save сюда\nили нажмите «Загрузить…»",
+        "en": "Drop .save here\nor press \"Load…\"",
+    },
+    "save_wait_drop": {
+        "ru": "Перетащите .save — «Применить» перезапишет этот файл",
+        "en": "Drop a .save — \"Apply\" will overwrite that file",
+    },
+    "save_apply_hint": {
+        "ru": "Изменения применяются после нажатия «Применить» — файл перезаписывается (оригинал — *.ob_backup).",
+        "en": "Changes apply after pressing \"Apply\" — the file is overwritten (original kept as *.ob_backup).",
+    },
+    "save_saved": {
+        "ru": "Сохранено: {name} ({n} параметров)",
+        "en": "Saved: {name} ({n} parameters)",
+    },
+    "save_browse_tip": {
+        "ru": "Выбрать .save вручную",
+        "en": "Pick a .save manually",
+    },
+
     # ── Resource tab (H2) ──
     "res_select": {
         "ru": "Выберите файл слева",
         "en": "Select a file on the left",
     },
     "res_search_ph": {"ru": "имя файла…", "en": "file name…"},
+    "res_filter_all": {"ru": "Все файлы", "en": "All files"},
+    "res_filter_img": {"ru": "Картинки", "en": "Images"},
+    "res_filter_audio": {"ru": "Аудио", "en": "Audio"},
+    "res_filter_video": {"ru": "Видео", "en": "Videos"},
     "res_back": {"ru": "Назад к папкам", "en": "Back to folders"},
     "res_font": {
         "ru": "Установить шрифт с кириллицей…",
@@ -896,6 +920,24 @@ _STRINGS = {
         "ru": "Не удалось воспроизвести видео",
         "en": "Failed to play video",
     },
+    "res_font_restore": {
+        "ru": "Откатить шрифт",
+        "en": "Restore font",
+    },
+    "res_font_done_renpy": {
+        "ru": "Заменено шрифтов: {n}. Оригиналы в game/ob_fonts_orig — "
+              "кнопка «Откатить шрифт» вернёт их.",
+        "en": "Replaced fonts: {n}. Originals in game/ob_fonts_orig — "
+              "the «Restore font» button brings them back.",
+    },
+    "res_font_already": {
+        "ru": "Все шрифты игры уже поддерживают кириллицу",
+        "en": "All game fonts already support Cyrillic",
+    },
+    "res_font_restored": {
+        "ru": "Оригинальные шрифты восстановлены",
+        "en": "Original fonts restored",
+    },
 
     # ── Ren'Py/Twine cheat tab (H3) ──
     "rpy_search_ph": {
@@ -933,6 +975,29 @@ _STRINGS = {
     "err": {"ru": "Ошибка", "en": "Error"},
     "info": {"ru": "Информация", "en": "Information"},
     "done": {"ru": "Готово", "en": "Done"},
+    "about_title": {"ru": "О программе", "en": "About"},
+    "about_version": {"ru": "Версия {v}", "en": "Version {v}"},
+    "about_engines": {"ru": "Поддерживаемые движки:", "en": "Supported engines:"},
+    "about_engines_list": {
+        "ru": "RPG Maker MV/MZ, Ren'Py, Twine и TyranoScript",
+        "en": "RPG Maker MV/MZ, Ren'Py, Twine and TyranoScript",
+    },
+    "about_check_updates": {"ru": "Проверить обновления", "en": "Check for updates"},
+    "about_close": {"ru": "Закрыть", "en": "Close"},
+    "changelog_title": {"ru": "Что нового в OctopusBridge", "en": "What's new in OctopusBridge"},
+    "updates_title": {"ru": "Доступна новая версия", "en": "Update available"},
+    "updates_msg": {
+        "ru": "OctopusBridge {v} уже доступен.\nОткрыть страницу релизов?",
+        "en": "OctopusBridge {v} is available.\nOpen the release page?",
+    },
+    "updates_none": {
+        "ru": "Установлена последняя версия.",
+        "en": "You have the latest version.",
+    },
+    "updates_check_failed": {
+        "ru": "Не удалось проверить обновления.",
+        "en": "Could not check for updates.",
+    },
 }
 
 
@@ -959,7 +1024,7 @@ def TR(key: str, **fmt) -> str:
 
 
 _PROVIDER_KEYS = {
-    "argos": ("prov_argos", "prov_short_argos"),
+    "honyaku": ("prov_honyaku", "prov_short_honyaku"),
     "google_free": ("prov_google_free", "prov_short_google_free"),
     "bing": ("prov_bing", "prov_short_bing"),
     "rotate": ("prov_rotate", "prov_short_rotate"),
@@ -981,7 +1046,7 @@ def provider_short_name(key: str) -> str:
 
 def engine_hint(name: str) -> str:
     """Локализованная подсказка при недоступном провайдере."""
-    key = {"ai": "hint_engine_ai", "argos": "hint_engine_argos"}.get(name)
+    key = {"ai": "hint_engine_ai", "honyaku": "hint_engine_honyaku"}.get(name)
     if key is None:
         return TR("hint_check_provider")
     return TR(key)

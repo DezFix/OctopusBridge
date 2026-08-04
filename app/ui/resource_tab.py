@@ -32,6 +32,11 @@ AUDIO_EXTS = (".ogg", ".m4a", ".wav", ".mp3")
 RPGM_ENC_AUDIO = (".ogg_", ".m4a_", ".rpgmvo", ".rpgmvm")
 VIDEO_EXTS = (".webm", ".mp4", ".m4v", ".avi")
 RPGM_ENC_VIDEO = (".webm_", ".mp4_")
+# теги типов — на элементах списка (Qt.UserRole + 1) для сортировки/фильтра
+TAG_IMAGE = "image"
+TAG_AUDIO = "audio"
+TAG_VIDEO = "video"
+TAG_ROLE = Qt.UserRole + 1
 _CACHE_DIR = os.path.join(os.path.expanduser("~"), ".octopusbridge", "audio_cache")
 
 
@@ -68,6 +73,31 @@ def _to_wav(src_path: str) -> str | None:
             return wav_path
         try:
             os.remove(wav_path)
+        except OSError:
+            pass
+    except Exception:
+        pass
+    return None
+
+
+def _to_mp4(src_path: str) -> str | None:
+    """Конвертация видео → H.264 MP4 через ffmpeg (надёжно играет везде)."""
+    if not _FFMPEG:
+        return None
+    os.makedirs(_CACHE_DIR, exist_ok=True)
+    mp4_path = os.path.join(_CACHE_DIR, f"_video_{uuid.uuid4().hex[:12]}.mp4")
+    try:
+        import subprocess
+        r = subprocess.run(
+            [_FFMPEG, "-y", "-i", src_path, "-c:v", "libx264",
+             "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+             "-c:a", "aac", "-movflags", "+faststart", mp4_path],
+            capture_output=True, timeout=180,
+        )
+        if r.returncode == 0 and os.path.isfile(mp4_path):
+            return mp4_path
+        try:
+            os.remove(mp4_path)
         except OSError:
             pass
     except Exception:
@@ -221,7 +251,17 @@ class ResourceTab(QWidget):
         self.search = QLineEdit()
         self.search.setPlaceholderText(TR("res_search_ph"))
         self.search.textChanged.connect(self._fill_list)
-        ll.addWidget(self.search)
+        row2 = QHBoxLayout()
+        row2.addWidget(self.search, 1)
+        self.filter_combo = QComboBox()
+        self.filter_combo.addItem(TR("res_filter_all"), "")
+        self.filter_combo.addItem(TR("res_filter_img"), TAG_IMAGE)
+        self.filter_combo.addItem(TR("res_filter_audio"), TAG_AUDIO)
+        self.filter_combo.addItem(TR("res_filter_video"), TAG_VIDEO)
+        self.filter_combo.setFixedWidth(118)
+        self.filter_combo.currentIndexChanged.connect(self._fill_list)
+        row2.addWidget(self.filter_combo)
+        ll.addLayout(row2)
 
         self.list = QListWidget()
         self.list.currentItemChanged.connect(self._on_item_selected)
@@ -341,6 +381,7 @@ class ResourceTab(QWidget):
         self._video_player.playbackStateChanged.connect(self._on_video_state)
         self._video_player.errorOccurred.connect(self._on_video_error)
         self._current_video: str | None = None
+        self._video_tmp_files: list[str] = []
 
         split.addWidget(right)
         split.setSizes([320, 760])
@@ -348,6 +389,26 @@ class ResourceTab(QWidget):
     def _game_dir(self) -> str | None:
         p = self.main.project
         return p.game_dir if p else None
+
+    # ── helpers: тег типа + иконка (основа для сортировки) ──
+    @staticmethod
+    def _mk_item(text: str, tag: str) -> QListWidgetItem:
+        it = QListWidgetItem(text)
+        if tag == TAG_IMAGE:
+            it.setIcon(icon("image"))
+        elif tag == TAG_AUDIO:
+            it.setIcon(icon("audio"))
+        elif tag == TAG_VIDEO:
+            it.setIcon(icon("video"))
+        it.setData(TAG_ROLE, tag)
+        return it
+
+    def _filter_tag(self) -> str:
+        return self.filter_combo.currentData() or ""
+
+    def _tag_ok(self, tag: str) -> bool:
+        ft = self._filter_tag()
+        return not ft or ft == tag
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -439,21 +500,25 @@ class ResourceTab(QWidget):
                 if low.endswith(IMG_EXTS + RPGM_ENC_IMG):
                     if q and q not in low and q not in rel.lower():
                         continue
-                    it = QListWidgetItem(rel.replace(os.sep, "/"))
+                    if not self._tag_ok(TAG_IMAGE):
+                        continue
+                    it = self._mk_item(rel.replace(os.sep, "/"), TAG_IMAGE)
                     it.setData(Qt.UserRole, ("img", os.path.join(root, f)))
                     self.list.addItem(it)
                 elif low.endswith(AUDIO_EXTS + RPGM_ENC_AUDIO):
                     if q and q not in low and q not in rel.lower():
                         continue
-                    it = QListWidgetItem(rel.replace(os.sep, "/"))
-                    it.setIcon(icon("audio"))
+                    if not self._tag_ok(TAG_AUDIO):
+                        continue
+                    it = self._mk_item(rel.replace(os.sep, "/"), TAG_AUDIO)
                     it.setData(Qt.UserRole, ("audio", os.path.join(root, f)))
                     self.list.addItem(it)
                 elif low.endswith(VIDEO_EXTS + RPGM_ENC_VIDEO):
                     if q and q not in low and q not in rel.lower():
                         continue
-                    it = QListWidgetItem(rel.replace(os.sep, "/"))
-                    it.setIcon(icon("play"))
+                    if not self._tag_ok(TAG_VIDEO):
+                        continue
+                    it = self._mk_item(rel.replace(os.sep, "/"), TAG_VIDEO)
                     it.setData(Qt.UserRole, ("video", os.path.join(root, f)))
                     self.list.addItem(it)
 
@@ -476,44 +541,59 @@ class ResourceTab(QWidget):
                 if low.endswith(IMG_EXTS):
                     if q and q not in low:
                         continue
-                    it = QListWidgetItem(name)
+                    if not self._tag_ok(TAG_IMAGE):
+                        continue
+                    it = self._mk_item(name, TAG_IMAGE)
                     it.setData(Qt.UserRole, ("archive_img", (arch_path, name)))
                     self.list.addItem(it)
                 elif low.endswith(AUDIO_EXTS):
                     if q and q not in low:
                         continue
-                    it = QListWidgetItem(name)
-                    it.setIcon(icon("audio"))
+                    if not self._tag_ok(TAG_AUDIO):
+                        continue
+                    it = self._mk_item(name, TAG_AUDIO)
                     it.setData(Qt.UserRole, ("archive_audio", (arch_path, name)))
                     self.list.addItem(it)
                 elif low.endswith(VIDEO_EXTS):
                     if q and q not in low:
                         continue
-                    it = QListWidgetItem(name)
-                    it.setIcon(icon("play"))
+                    if not self._tag_ok(TAG_VIDEO):
+                        continue
+                    it = self._mk_item(name, TAG_VIDEO)
                     it.setData(Qt.UserRole, ("archive_video", (arch_path, name)))
                     self.list.addItem(it)
             return
         game_sub = os.path.join(game_dir, "game")
         for root, dirs, files in os.walk(game_sub):
-            dirs[:] = [d for d in dirs if d not in ("tl", "__pycache__", "ob_fonts")]
+            dirs[:] = [d for d in dirs
+                       if d not in ("tl", "__pycache__", "ob_fonts",
+                                    "ob_fonts_orig")]
             for f in sorted(files):
                 low = f.lower()
+                rel = os.path.relpath(os.path.join(root, f),
+                                      game_dir).replace(os.sep, "/")
                 if low.endswith(IMG_EXTS):
-                    rel = os.path.relpath(os.path.join(root, f),
-                                          game_dir).replace(os.sep, "/")
                     if q and q not in rel.lower():
                         continue
-                    it = QListWidgetItem(rel)
+                    if not self._tag_ok(TAG_IMAGE):
+                        continue
+                    it = self._mk_item(rel, TAG_IMAGE)
                     it.setData(Qt.UserRole, ("img", os.path.join(root, f)))
                     self.list.addItem(it)
-                elif low.endswith(VIDEO_EXTS):
-                    rel = os.path.relpath(os.path.join(root, f),
-                                          game_dir).replace(os.sep, "/")
+                elif low.endswith(AUDIO_EXTS):
                     if q and q not in rel.lower():
                         continue
-                    it = QListWidgetItem(rel)
-                    it.setIcon(icon("play"))
+                    if not self._tag_ok(TAG_AUDIO):
+                        continue
+                    it = self._mk_item(rel, TAG_AUDIO)
+                    it.setData(Qt.UserRole, ("audio", os.path.join(root, f)))
+                    self.list.addItem(it)
+                elif low.endswith(VIDEO_EXTS):
+                    if q and q not in rel.lower():
+                        continue
+                    if not self._tag_ok(TAG_VIDEO):
+                        continue
+                    it = self._mk_item(rel, TAG_VIDEO)
                     it.setData(Qt.UserRole, ("video", os.path.join(root, f)))
                     self.list.addItem(it)
 
@@ -624,6 +704,15 @@ class ResourceTab(QWidget):
         return os.path.getsize(path)
 
     # ── video player ──
+    def _clear_video_tmp(self):
+        for p in self._video_tmp_files:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        self._video_tmp_files = []
+        self._current_video = None
+
     def _show_video(self, data):
         self.image_scroll.setVisible(False)
         self._audio_widget.setVisible(False)
@@ -636,16 +725,24 @@ class ResourceTab(QWidget):
         self.lbl_video_pos.setText("0:00")
         self.lbl_video_dur.setText("0:00")
         self.btn_video_play.setIcon(icon("play"))
+        self._clear_video_tmp()
         try:
             body = self._read_video_bytes(data)
             if not body:
                 raise ValueError(TR("res_empty"))
             ext = self._get_video_ext(data[1])
+            os.makedirs(_CACHE_DIR, exist_ok=True)
             tmp = os.path.join(_CACHE_DIR, f"_video_{uuid.uuid4().hex[:12]}{ext}")
             with open(tmp, "wb") as f:
                 f.write(body)
-            self._current_video = tmp
-            self._video_player.setSource(QUrl.fromLocalFile(tmp))
+            self._video_tmp_files.append(tmp)
+            play_path = tmp
+            conv = _to_mp4(tmp)
+            if conv:
+                self._video_tmp_files.append(conv)
+                play_path = conv
+            self._current_video = play_path
+            self._video_player.setSource(QUrl.fromLocalFile(play_path))
             self._video_player.play()
         except Exception as e:
             self.lbl_info.setText(str(e))
@@ -658,12 +755,7 @@ class ResourceTab(QWidget):
         self.video_slider.setValue(0)
         self.lbl_video_pos.setText("0:00")
         self.lbl_video_dur.setText("0:00")
-        if self._current_video:
-            try:
-                os.remove(self._current_video)
-            except OSError:
-                pass
-            self._current_video = None
+        self._clear_video_tmp()
 
     def _toggle_video_play(self):
         if self._video_player.playbackState() == QMediaPlayer.PlayingState:
@@ -714,6 +806,7 @@ class ResourceTab(QWidget):
     def _show_image(self, data):
         self.image_scroll.setVisible(True)
         self._audio_widget.setVisible(False)
+        self._video_widget.setVisible(False)
         try:
             body = self._read_image_bytes(data)
             if not body:
@@ -779,6 +872,7 @@ class ResourceTab(QWidget):
     def _show_audio_info(self, data):
         self.image_scroll.setVisible(False)
         self._audio_widget.setVisible(True)
+        self._video_widget.setVisible(False)
         path = data[1]
         if isinstance(path, tuple):
             arch = self._archives.get(path[0])
@@ -916,7 +1010,7 @@ class ResourceTab(QWidget):
         with open(path, "wb") as f:
             f.write(body)
 
-    # ── font (RPGM) ──
+    # ── font (RPGM: выбор своего файла; Ren'Py — на главной странице) ──
     def _patch_font(self):
         p = self.main.project
         if not p:

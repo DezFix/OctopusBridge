@@ -21,6 +21,7 @@ import json
 import mimetypes
 import os
 import socketserver
+import sys
 import threading
 import time
 import webbrowser
@@ -327,7 +328,16 @@ class _InjectingHTTPHandler(http_server.SimpleHTTPRequestHandler):
 
     _ws_url: str = ""
     _game_html_rel: str = ""  # относительный путь к .html файлу игры
+    _inject_html: bool = True # True — мост-пэйлоад; False — webapp-режим
+    _shield_html: bool = False # webapp-режим: глушить ошибки игры (диалог WebView2)
     directory: str = ""       # устанавливается перед созданием сервера
+
+    # Синк сейвов (webapp-режим): плагин окна присылает слоты игры,
+    # колбэк пишет их в .save файлы. Импорт — payload, который плагин
+    # забирает и загружает в слот игры.
+    _save_sync_cb = None           # callable(payload: dict) -> int
+    _import_payload: dict = {}     # {'data': LZ-b64, 'slot': str|None}
+    _import_lock = threading.Lock()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=self.__class__.directory, **kwargs)
@@ -342,8 +352,24 @@ class _InjectingHTTPHandler(http_server.SimpleHTTPRequestHandler):
             self.send_header("Location", "/" + quote(rel, safe="/"))
             self.end_headers()
             return
-        # Инжектируем только .html
-        if self.path.endswith(".html") or self.path.endswith(".htm"):
+        # Сейв, который приложение отдаёт игре (плагин забирает по поллу)
+        if self.path.split("?")[0] == "/api/saves/pending-import":
+            with type(self)._import_lock:
+                payload = dict(type(self)._import_payload)
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except (ConnectionResetError, BrokenPipeError, TimeoutError):
+                pass
+            return
+        # .html — инжекция пэйлоада (мост) или экран ошибок (webapp-режим)
+        is_html = self.path.endswith(".html") or self.path.endswith(".htm")
+        if is_html and (self._inject_html or self._shield_html):
             local = self.translate_path(self.path)
             if os.path.isfile(local):
                 try:
@@ -352,20 +378,89 @@ class _InjectingHTTPHandler(http_server.SimpleHTTPRequestHandler):
                 except OSError:
                     self.send_error(404)
                     return
-                script = PAYLOAD_SCRIPT.replace("{WS_URL}", self._ws_url)
-                content = content.replace(b"</body>",
-                                          script.encode() + b"</body>")
-                if b"</body>" not in content:
-                    content = content + script.encode()
+                if self._inject_html:
+                    script = PAYLOAD_SCRIPT.replace("{WS_URL}", self._ws_url)
+                    content = content.replace(b"</body>",
+                                              script.encode() + b"</body>")
+                    if b"</body>" not in content:
+                        content = content + script.encode()
+                else:
+                    # Экран ошибок ДО скриптов игры — WebView2 не показывает
+                    # диалог "An error has occurred" на баги самой игры.
+                    from app.engines.twine.webapp import ERROR_SHIELD_JS
+                    shield = ERROR_SHIELD_JS.encode("utf-8")
+                    idx = content.find(b"<head")
+                    if idx == -1:
+                        idx = content.find(b"<HEAD")
+                    if idx != -1:
+                        end = content.find(b">", idx)
+                        if end != -1:
+                            content = content[:end + 1] + shield + content[end + 1:]
+                        else:
+                            content = content[:idx] + shield + content[idx:]
+                    else:
+                        content = shield + content
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(content)))
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
-                self.wfile.write(content)
+                try:
+                    self.wfile.write(content)
+                except (ConnectionResetError, BrokenPipeError, TimeoutError):
+                    pass  # браузер закрыл соединение — не ошибка
                 return
         # Остальные файлы — как есть
-        super().do_GET()
+        try:
+            super().do_GET()
+        except (ConnectionResetError, BrokenPipeError, TimeoutError):
+            pass
+
+    def do_POST(self):
+        """Синк слотов из окна игры (/api/saves) и подтверждение импорта."""
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+        except ValueError:
+            length = 0
+        raw = self.rfile.read(length) if length else b""
+        path = self.path.split("?")[0]
+        if path == "/api/saves":
+            count = 0
+            cb = type(self)._save_sync_cb
+            if cb:
+                try:
+                    payload = json.loads(raw.decode("utf-8"))
+                    if isinstance(payload, dict):
+                        count = cb(payload)
+                except (ValueError, TypeError):
+                    pass
+            body = json.dumps({"ok": cb is not None, "count": count}
+                              ).encode("utf-8")
+        elif path == "/api/saves/import":
+            with type(self)._import_lock:
+                type(self)._import_payload = {}
+            body = b'{"ok":true}'
+        else:
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (ConnectionResetError, BrokenPipeError, TimeoutError):
+            pass
+
+    def handle_error(self, request, client_address):
+        # Браузер регулярно рвёт соединения (перезагрузка, отмена загрузки,
+        # отключение вкладки). Это не ошибка сервера — не шумим в консоль.
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ConnectionResetError, BrokenPipeError,
+                            TimeoutError)):
+            return
+        super().handle_error(request, client_address)
 
     def log_message(self, fmt, *args):
         pass  # не шумим в консоль
@@ -386,10 +481,11 @@ class _WSServer:
     событийный цикл сервера (run_coroutine_threadsafe).
     """
 
-    def __init__(self, on_message, on_connect, on_disconnect):
+    def __init__(self, on_message, on_connect, on_disconnect, port_hint: int = 0):
         self._on_message = on_message
         self._on_connect = on_connect
         self._on_disconnect = on_disconnect
+        self._port_hint = int(port_hint or 0)
         self._ws = None
         self._loop = None
         self._stop_ev = None
@@ -433,10 +529,21 @@ class _WSServer:
         async def run():
             self._loop = asyncio.get_running_loop()
             self._stop_ev = asyncio.Event()
-            self.port = _find_free_port()
-            self._ready.set()
-            async with ws_server.serve(handler, "127.0.0.1", self.port):
-                await self._stop_ev.wait()
+            # Детерминированный порт по подсказке (стабильный адрес моста для
+            # веб-приложений), при занятости — свободный.
+            ports = []
+            for p in (self._port_hint, _find_free_port()):
+                if p and p not in ports:
+                    ports.append(p)
+            for port in ports:
+                try:
+                    async with ws_server.serve(handler, "127.0.0.1", port):
+                        self.port = port
+                        self._ready.set()
+                        await self._stop_ev.wait()
+                    return
+                except OSError:
+                    continue
 
         def _server():
             try:
@@ -512,8 +619,11 @@ class TwineTentacle(Tentacle):
     key = "twine"
     title = "Twine (HTTP+WS)"
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, use_webapp_window: bool = True):
         super().__init__(parent)
+        self._use_webapp_window = use_webapp_window
+        if os.environ.get("OCTOPUS_BROWSER_MODE"):
+            self._use_webapp_window = False
         self._game_path: str = ""
         self._game_dir: str = ""
         self._httpd: _ThreadedHTTPServer | None = None
@@ -532,10 +642,13 @@ class TwineTentacle(Tentacle):
         self._port_hint = 0               # фиксированный порт (опционально)
         self._restore_sent = False
         self._last_save_backup = ""
+        self._webapp_proc = None          # процесс окна WebView2 (webapp-режим)
 
     # ── перевод с кэшем ──
     def translate(self, text: str) -> str:
         """Переводит текст; реальные переводы кэшируются в папке игры."""
+        if not self._translation_enabled or not text:
+            return text
         cached = self._live_cache.get(text)
         if cached is not None:
             return cached
@@ -551,27 +664,14 @@ class TwineTentacle(Tentacle):
 
     # ── кэш в папке игры ──
     def _load_live_cache(self):
-        try:
-            with open(self._cache_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            pairs = data.get("pairs", {})
-            if isinstance(pairs, dict):
-                self._live_cache = {
-                    k: v for k, v in pairs.items()
-                    if isinstance(k, str) and isinstance(v, str) and v != k}
-        except Exception:  # noqa: BLE001 — файла нет или битый
-            self._live_cache = {}
+        from app.core.translate.game_cache import load_game_cache
+        self._live_cache = load_game_cache(self._game_dir, "twine")
 
     def _save_live_cache(self):
         if not self._cache_path:
             return
-        try:
-            with self._cache_lock:
-                with open(self._cache_path, "w", encoding="utf-8") as f:
-                    json.dump({"pairs": self._live_cache}, f,
-                              ensure_ascii=False)
-        except Exception:  # noqa: BLE001
-            pass
+        from app.core.translate.game_cache import save_game_cache
+        save_game_cache(self._game_dir, "twine", self._live_cache)
 
     def _schedule_cache_save(self):
         with self._cache_lock:
@@ -635,6 +735,12 @@ class TwineTentacle(Tentacle):
 
         if not self._start_http(rel):
             return False
+
+        if self._use_webapp_window:
+            return self._launch_webapp(rel)
+
+        _InjectingHTTPHandler._inject_html = True
+        _InjectingHTTPHandler._shield_html = False
         if not self._start_ws():
             return False
 
@@ -671,12 +777,87 @@ class TwineTentacle(Tentacle):
         self.detach()
         return False
 
+    def _launch_webapp(self, rel: str) -> bool:
+        """WebView2-режим запуска: обёртка ставится в папку игры
+        (octopus_webapp/) и раздаётся этим же HTTP-сервером, игра
+        открывается в окне приложения. Перевод — встроенный в страницу
+        (Google/MyMemory), мост и инжекция пэйлоада не нужны."""
+        from app.engines.twine import webapp as _webapp
+
+        _InjectingHTTPHandler._inject_html = False
+        _InjectingHTTPHandler._shield_html = True
+        _InjectingHTTPHandler._game_html_rel = rel
+        _InjectingHTTPHandler._save_sync_cb = self._on_saves_sync
+        # Старое окно ещё живо — закрываем, чтобы не плодить дубли.
+        self._close_webapp_window()
+        title = _webapp.game_title(self._game_path)
+        wrapper_rel = _webapp.install_webapp(self._game_dir, rel, title)
+        url = f"http://127.0.0.1:{self._http_port}/{wrapper_rel}"
+        profile = _webapp.profile_dir_for(self._game_path)
+        self.log.emit(f"Веб-приложение: {url}")
+        proc = _webapp.open_game_window(_webapp.APP_TITLE, url, profile)
+        if proc is not None:
+            self._webapp_proc = proc
+            self.log.emit("Окно приложения открыто (WebView2).")
+        else:
+            self.log.emit(f"Откройте вручную: {url}")
+        self.attached.emit()
+        return True
+
+    def _close_webapp_window(self):
+        """Закрывает окно WebView2, если оно запущено."""
+        if self._webapp_proc is not None:
+            proc = self._webapp_proc
+            self._webapp_proc = None
+            if proc.poll() is None:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=3)
+                except Exception:  # noqa: BLE001 — уже умерло
+                    pass
+
     def attach(self, pid: int) -> bool:
         self.error.emit("attach через PID не поддерживается — "
                         "запускайте игру через Launch.")
         return False
 
+    def _on_saves_sync(self, payload: dict) -> int:
+        """Слоты игры (плагин окна) → .save файлы в папку игры.
+
+        Плагин присылает {saves: [{id, date, size, data}]}, data — LZ-b64
+        ровно в формате экспортированного .save. Повторный синк
+        перезаписывает те же файлы."""
+        from app.core.twine import savefile
+        saves = payload.get("saves")
+        if not isinstance(saves, list):
+            return 0
+        base = os.path.splitext(os.path.basename(self._game_path))[0]
+        try:
+            paths = savefile.write_slots(self._game_dir, base, saves)
+        except OSError as e:
+            self.log.emit(f"Синк сейвов: не удалось записать: {e}")
+            return 0
+        if paths:
+            self.log.emit(
+                f"Синк сейвов: {len(paths)} файл(а) из игры в папку игры.")
+        return len(paths)
+
+    def push_save_to_game(self, data: str, slot: str | None = None) -> bool:
+        """Отдать .save в игру: плагин окна заберёт в течение ~5 с.
+
+        slot — номер слота игры ('0'..'9'); None — первый свободный."""
+        if not self._use_webapp_window:
+            return False
+        payload = {"data": data, "slot": slot}
+        with _InjectingHTTPHandler._import_lock:
+            _InjectingHTTPHandler._import_payload = payload
+        return True
+
     def detach(self):
+        _InjectingHTTPHandler._save_sync_cb = None
+        with _InjectingHTTPHandler._import_lock:
+            _InjectingHTTPHandler._import_payload = {}
+        self._close_webapp_window()
         self._save_live_cache()
         self._restore_sent = False
         self._live_cache.clear()
@@ -686,6 +867,10 @@ class TwineTentacle(Tentacle):
         self.detached.emit("")
 
     def is_attached(self) -> bool:
+        if self._use_webapp_window:
+            # webapp-режим: прикреплены, пока живо окно приложения
+            return (self._webapp_proc is not None
+                    and self._webapp_proc.poll() is None)
         return self._ws_server is not None and self._ws_server.has_client()
 
     def game_pid(self) -> int | None:
@@ -727,15 +912,33 @@ class TwineTentacle(Tentacle):
         self._http_thread = None
 
     # ── WebSocket ──
+    def _ws_port_hint(self) -> int:
+        """Детерминированный порт моста: 7000 + crc(путь игры) % 1000.
+
+        Стабильный адрес ws://127.0.0.1:... — по нему веб-приложение игры
+        (LABS/webapp_window.py) находит мост перевода без ручной настройки.
+        Диапазон 7000-7999 не пересекается с HTTP-портами (6000-6999).
+        """
+        if self._game_path:
+            crc = zlib.crc32(self._game_path.encode("utf-8", "replace"))
+            return 7000 + (crc % 1000)
+        return 0
+
     def _start_ws(self) -> bool:
         self._ws_server = _WSServer(
             self._on_ws_message,
             lambda: self.log.emit("WebSocket: клиент подключился"),
-            lambda: self.log.emit("WebSocket: клиент отключился"))
+            lambda: self.log.emit("WebSocket: клиент отключился"),
+            port_hint=self._ws_port_hint())
         if not self._ws_server.start():
             self.error.emit("WebSocket-сервер не запустился.")
             self._ws_server = None
             return False
+        if self._ws_server.port != self._ws_port_hint():
+            self.log.emit(
+                f"WebSocket: порт {self._ws_server.port} (детерминированный "
+                f"{self._ws_port_hint()} занят — веб-приложение не сможет "
+                "подключиться автоматически)")
         return True
 
     def _stop_ws(self):

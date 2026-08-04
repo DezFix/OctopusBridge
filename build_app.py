@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Сборка OctopusBridge в приложение (.exe) через PyInstaller.
 
-NLLB-200/torch исключены из состава приложения (перевод — Argos).
+NLLB-200/torch исключены из состава приложения (офлайн-перевод — honyaku).
 
 Использование:
     python build_app.py                # сборка
@@ -9,7 +9,7 @@ NLLB-200/torch исключены из состава приложения (пе
     python build_app.py --installer    # после сборки сделать установщик Inno Setup
     python build_app.py --version 1.2.0  # версия для setup.iss
 
-После сборки exe лежит в dist\\OctopusBridge.exe
+После сборки exe лежит в dist\\OctopusBridge_v<версия>.exe
 """
 from __future__ import annotations
 
@@ -29,36 +29,39 @@ ICON = "ico.ico"
 APP_NAME = "OctopusBridge"
 DIST_DIR = os.path.join(ROOT, "dist")
 BUILD_DIR = os.path.join(ROOT, "build")
-EXE_PATH = os.path.join(DIST_DIR, f"{APP_NAME}.exe")
 
 # Обязательные пакеты (module -> имя пакета для pip).
 REQUIRED_MIN = {
     "PySide6": "PySide6", "requests": "requests", "websockets": "websockets",
-    "argostranslate": "argostranslate", "psutil": "psutil",
+    "psutil": "psutil",
     "frida": "frida", "sentencepiece": "sentencepiece",
+    "ctranslate2": "ctranslate2", "huggingface_hub": "huggingface_hub",
 }
 
 # Исключаем неиспользуемые тяжёлые пакеты, чтобы exe оставался лёгким.
-# ВНИМАНИЕ: sentencepiece нельзя исключать — его требует argostranslate
-# (движок перевода по умолчанию).
+# ВНИМАНИЕ: sentencepiece нельзя исключать — его требует honyaku
+# (встроенный переводчик в app/translators/honyaku, движок по умолчанию).
+# huggingface_hub тоже обязателен: через него honyaku скачивает модели.
 EXCLUDES_MIN = [
     "torch", "torchvision", "torchaudio", "torch_directml",
     "transformers", "tokenizers", "safetensors",
     "accelerate", "datasets", "peft", "einops", "triton", "sympy",
     "networkx", "sklearn", "scipy", "pandas", "matplotlib", "PIL",
-    "IPython", "jupyter_client", "huggingface_hub", "stanza",
+    "IPython", "jupyter_client", "stanza",
 ]
 
 SPEC_TEMPLATE = r'''# -*- mode: python ; coding: utf-8 -*-
 # Сгенерировано build_app.py — не редактируйте вручную.
 from PyInstaller.utils.hooks import collect_all, collect_data_files
 from PyInstaller.utils.win32.versioninfo import (
-    FixedFileInfo, StringFileInfo, StringStruct, VarFileInfo, VarStruct,
-    VSVersionInfo)
+    FixedFileInfo, StringFileInfo, StringStruct, StringTable,
+    VarFileInfo, VarStruct, VSVersionInfo)
 
 datas = collect_data_files('app') + [('ico.ico', '.')]
 binaries, hiddenimports = [], []
-for _pkg in ("argostranslate", "ctranslate2"):
+# honyaku — встроенный модуль app/translators/honyaku: PyInstaller
+# подхватит его из импортов app. Внешние пакеты — с бинарями и данными:
+for _pkg in ("ctranslate2", "huggingface_hub"):
     try:
         _d, _b, _h = collect_all(_pkg)
     except Exception:
@@ -79,15 +82,17 @@ version_info = VSVersionInfo(
         date=(0, 0),
     ),
     kids=[
-        StringFileInfo([StringStruct('040904B0', {
-            'CompanyName': 'OctopusBridge',
-            'FileDescription': 'OctopusBridge - game translation & modding tool',
-            'FileVersion': '__VERSION__',
-            'InternalName': 'OctopusBridge',
-            'OriginalFilename': 'OctopusBridge.exe',
-            'ProductName': 'OctopusBridge',
-            'ProductVersion': '__VERSION__',
-        })]),
+        StringFileInfo([
+            StringTable('040904B0', [
+                StringStruct('CompanyName', 'OctopusBridge'),
+                StringStruct('FileDescription', 'OctopusBridge - game translation & modding tool'),
+                StringStruct('FileVersion', '__VERSION__'),
+                StringStruct('InternalName', 'OctopusBridge'),
+                StringStruct('OriginalFilename', '__EXE_NAME__'),
+                StringStruct('ProductName', 'OctopusBridge'),
+                StringStruct('ProductVersion', '__VERSION__'),
+            ]),
+        ]),
         VarFileInfo([VarStruct('Translation', [1033, 1200])]),
     ],
 )
@@ -113,7 +118,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='__APP_NAME__',
+    name='__EXE_NAME__',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -194,6 +199,15 @@ def _version_tuple(version: str) -> tuple:
     return tuple(parts[:4])
 
 
+def exe_name(version: str) -> str:
+    """'0.3.4' -> 'OctopusBridge_v0.3.4.exe'."""
+    return f"{APP_NAME}_v{version}.exe"
+
+
+def exe_path(version: str) -> str:
+    return os.path.join(DIST_DIR, exe_name(version))
+
+
 def current_version() -> str:
     """Единый источник версии — app/__init__.py."""
     if ROOT not in sys.path:
@@ -206,13 +220,13 @@ def write_spec() -> None:
     version = current_version()
     spec = (SPEC_TEMPLATE
             .replace("__EXCLUDES__", repr(EXCLUDES_MIN))
-            .replace("__APP_NAME__", APP_NAME)
+            .replace("__EXE_NAME__", exe_name(version))
             .replace("__ICON__", ICON)
             .replace("__VERSION__", version)
             .replace("__FILEVERS__", repr(_version_tuple(version))))
     with open(SPEC_PATH, "w", encoding="utf-8") as f:
         f.write(spec)
-    log(f"Спека записана (минимальная сборка, Argos, без NLLB, версия {version})")
+    log(f"Спека записана (минимальная сборка, Honyaku, без NLLB, версия {version})")
 
 
 def clean() -> None:
@@ -241,11 +255,12 @@ def build(python: str) -> None:
         sys.exit("ОШИБКА: сборка PyInstaller не удалась")
 
 
-def verify() -> None:
-    if not os.path.isfile(EXE_PATH):
-        sys.exit(f"ОШИБКА: {EXE_PATH} не найден после сборки")
-    size_mb = os.path.getsize(EXE_PATH) / (1024 * 1024)
-    log(f"Готово: {EXE_PATH} ({size_mb:.1f} МБ)")
+def verify(version: str) -> None:
+    path = exe_path(version)
+    if not os.path.isfile(path):
+        sys.exit(f"ОШИБКА: {path} не найден после сборки")
+    size_mb = os.path.getsize(path) / (1024 * 1024)
+    log(f"Готово: {path} ({size_mb:.1f} МБ)")
 
 
 def build_installer(python: str, version: str) -> None:
@@ -253,17 +268,18 @@ def build_installer(python: str, version: str) -> None:
     if iscc is None:
         log("ВНИМАНИЕ: iscc (Inno Setup) не найден в PATH, установщик пропущен")
         return
-    if version:
-        if not os.path.isfile(ISS_PATH):
-            log("setup.iss не найден, установщик пропущен")
-            return
-        with open(ISS_PATH, "r", encoding="utf-8") as f:
-            iss = f.read()
-        iss = re.sub(r'(#define MyAppVersion ")[^"]*(")',
-                     rf'\g<1>{version}\g<2>', iss)
-        with open(ISS_PATH, "w", encoding="utf-8") as f:
-            f.write(iss)
-        log(f"Версия в setup.iss обновлена на {version}")
+    if not os.path.isfile(ISS_PATH):
+        log("setup.iss не найден, установщик пропущен")
+        return
+    with open(ISS_PATH, "r", encoding="utf-8") as f:
+        iss = f.read()
+    iss = re.sub(r'(#define MyAppVersion ")[^"]*(")',
+                 rf'\g<1>{version}\g<2>', iss)
+    iss = re.sub(r'(Source: "dist\\)[^"]*(\.exe")',
+                 rf'\g<1>{exe_name(version)}\g<2>', iss)
+    with open(ISS_PATH, "w", encoding="utf-8") as f:
+        f.write(iss)
+    log(f"setup.iss обновлён: версия {version}, exe {exe_name(version)}")
     log("Сборка установщика Inno Setup...")
     r = run([iscc, ISS_PATH])
     if r.returncode != 0:
@@ -306,11 +322,11 @@ def main() -> None:
         run_tests(python)
     write_spec()
     build(python)
-    verify()
+    verify(args.version)
     if args.installer:
         build_installer(python, args.version)
     log(f"Итого: {time.time() - t0:.0f} сек")
-    print(f"\nEXE: {EXE_PATH}")
+    print(f"\nEXE: {exe_path(args.version)}")
 
 
 if __name__ == "__main__":

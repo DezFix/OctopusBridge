@@ -38,16 +38,6 @@ def detect_version_from_exe(exe_path: str) -> str | None:
 
 def _get_file_version(exe_path: str) -> str | None:
     try:
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "(Get-Item '{}').VersionInfo.FileVersion".format(exe_path)],
-            capture_output=True, text=True, timeout=5)
-        ver = result.stdout.strip()
-        if ver and re.match(r"^[\d.]+", ver):
-            return ver
-    except Exception:
-        pass
-    try:
         import ctypes
         from ctypes import wintypes
         GetFileVersionInfoSizeW = ctypes.windll.version.GetFileVersionInfoSizeW
@@ -73,6 +63,16 @@ def _get_file_version(exe_path: str) -> str | None:
             ver = ctypes.wstring_at(ptr, ulen.value)
             if ver:
                 return ver
+    except Exception:
+        pass
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "(Get-Item '{}').VersionInfo.FileVersion".format(exe_path)],
+            capture_output=True, text=True, timeout=5)
+        ver = result.stdout.strip()
+        if ver and re.match(r"^[\d.]+", ver):
+            return ver
     except Exception:
         pass
     return None

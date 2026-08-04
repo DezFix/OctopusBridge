@@ -46,21 +46,32 @@ class RpaArchive:
         # Parse hex offset and key from human-readable header
         try:
             off_str = head[8:24].decode("ascii").strip()
-            offset = int(off_str, 16)
+            index_offset = int(off_str, 16)
             key_str = head[25:33].decode("ascii").strip()
-            key_int = int(key_str, 16)
+            key = int(key_str, 16)
         except (ValueError, IndexError):
             raise ValueError(f"Invalid RPA-3.0 header in {self.path}")
 
         with open(self.path, "rb") as f:
-            f.seek(offset)
+            f.seek(index_offset)
             data = f.read()
 
-        # No XOR before zlib in RPA-3.0 (key used inside index only)
-        if data[:2] in (b"\x78\x9c", b"\x78\xda", b"\x78\x01"):
-            data = zlib.decompress(data)
-
-        self._parse_index_v3_0(data, key_int)
+        # Ren'Py 8: индекс — zlib(pickle) со словарём
+        # {name: [(offset, dlen) | (offset, dlen, start)]}, поля XOR'ены с key.
+        try:
+            import pickle
+            index = pickle.loads(zlib.decompress(data))
+        except Exception as e:
+            raise ValueError(f"Broken RPA-3.0 index in {self.path}: {e}")
+        self._index_offset = index_offset
+        for name, entries in index.items():
+            if not entries:
+                continue
+            first = entries[0]
+            if len(first) < 2:
+                continue
+            offset, length = first[0] ^ key, first[1] ^ key
+            self._index[name] = (offset, length)
 
     def _parse_index_v3_0(self, data: bytes, key: int):
         """Parse RPA-3.0 index format (Ren'Py 8+).
@@ -122,12 +133,14 @@ class RpaArchive:
 
         # Build index — compute length from consecutive offsets
         self._index = {}
-        fsize = os.path.getsize(self.path) if entries else 0
+        index_off = getattr(self, "_index_offset", None)
+        if index_off is None:
+            index_off = os.path.getsize(self.path)
         for idx, entry in enumerate(entries):
             if idx + 1 < len(entries):
                 length = entries[idx + 1]["offset"] - entry["offset"]
             else:
-                length = fsize - entry["offset"]
+                length = index_off - entry["offset"]
             self._index[entry["path"]] = (entry["offset"], length)
 
     def _load_v3(self, head: bytes):

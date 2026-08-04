@@ -68,16 +68,13 @@ class TwineModule(EngineModule):
                             target_lang=kwargs.get("target_lang", "ru"))
 
     def ui_tabs(self, main_window) -> list[tuple]:
-        from app.ui.translate_tab import TranslateTab
-        from app.ui.renpy_cheat_tab import VariablesTab, TriggersTab
         from app.ui.save_editor_tab import SaveEditorTab
         translate = main_window.translate_tab
-        vars_tab = VariablesTab(main_window)
-        triggers_tab = TriggersTab(main_window)
         save_tab = SaveEditorTab(main_window)
+        # Переменные и триггеры для Twine не нужны: живого моста в
+        # webapp-режиме нет, а правка .save — отдельный Save Editor.
+        # (renpy_cheat_tab остаётся за Ren'Py — не трогать.)
         return [
             (translate, TR("tab_translate"), "translate"),
-            (vars_tab, TR("tab_vars"), "cheats"),
-            (triggers_tab, TR("tab_triggers"), "cheats"),
             (save_tab, TR("tab_save_editor"), "module"),
         ]

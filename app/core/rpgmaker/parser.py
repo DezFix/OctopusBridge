@@ -96,6 +96,8 @@ def parse_path(path: str) -> list:
 def get_by_path(obj, path: str):
     node = obj
     for key in parse_path(path):
+        if isinstance(node, str):
+            raise TypeError("path goes into a string")
         node = node[key]
     return node
 
@@ -312,8 +314,14 @@ def apply(game_dir: str, entries: list[TranslationEntry],
                     print(f"[parser] {rel}: path {e.json_path} not found ({exc})")
                 continue
             if isinstance(current, str):
-                set_by_path(data, e.json_path, e.translation)
-                written += 1
+                try:
+                    set_by_path(data, e.json_path, e.translation)
+                    written += 1
+                except (KeyError, IndexError, TypeError) as exc:
+                    if on_skip:
+                        on_skip(e, f"cannot write: {exc}")
+                    else:
+                        print(f"[parser] {rel}: cannot write {e.json_path} ({exc})")
             elif on_skip:
                 on_skip(e, "current value is not a string")
         with open(abs_path, "w", encoding="utf-8") as f:

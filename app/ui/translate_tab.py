@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog,
                                 QTableWidget, QTableWidgetItem,
                                 QVBoxLayout, QWidget)
 
-from app.core.rpgmaker import parser
 from app.core.models import TranslationEntry
 from app.core.translate.service import Translator
 from app.ui.i18n import TR, engine_hint
@@ -376,9 +375,8 @@ class TranslateTab(QWidget):
         filt.addWidget(QLabel(TR("tr_filter")))
         self.filter_combo = QComboBox()
         self.filter_combo.addItems([
-            TR("tr_filter_all"), TR("tr_filter_cjk"),
-            TR("tr_filter_untranslated"), TR("tr_filter_translated"),
-            TR("tr_filter_skipped"),
+            TR("tr_filter_all"), TR("tr_filter_untranslated"),
+            TR("tr_filter_translated"), TR("tr_filter_skipped"),
         ])
         self.filter_combo.currentIndexChanged.connect(self.fill_table)
         filt.addWidget(self.filter_combo)
@@ -540,13 +538,11 @@ class TranslateTab(QWidget):
             if q and q not in e.original.lower() \
                     and q not in e.translation.lower():
                 continue
-            if mode == 1 and not parser.has_cjk(e.original):
+            if mode == 1 and e.translation.strip():
                 continue
-            if mode == 2 and e.translation.strip():
+            if mode == 2 and not e.translation.strip():
                 continue
-            if mode == 3 and not e.translation.strip():
-                continue
-            if mode == 4 and e.status != "skip":
+            if mode == 3 and e.status != "skip":
                 continue
             out.append(e)
         return out
@@ -620,7 +616,7 @@ class TranslateTab(QWidget):
                                  TR("tr_engine_create_fail"))
             return
         s = self.main.settings
-        engine_name = s.value("engine_files", s.value("engine", "argos"))
+        engine_name = s.value("engine_files", s.value("engine", "honyaku"))
         if not engine.ping():
             QMessageBox.warning(self, TR("err"), engine_hint(engine_name))
             return
@@ -740,7 +736,10 @@ class TranslateTab(QWidget):
     def edit_glossary(self):
         p = self._project()
         texts = [e.original for e in p.entries] if p else []
-        engine = self.main.create_engine("files")
+        if self.main.settings.value("glossary_use_ai", True, type=bool):
+            engine = self.main.create_engine("corrector")
+        else:
+            engine = None
         GlossaryDialog(self.main.glossary, self.main.settings, self,
                        texts=texts, engine=engine).exec()
 

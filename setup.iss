@@ -1,6 +1,6 @@
-; Inno Setup скрипт для OctopusBridge
+﻿; Inno Setup скрипт для OctopusBridge
 #define MyAppName "OctopusBridge"
-#define MyAppVersion "0.2.0"
+#define MyAppVersion "0.3.4"
 #define MyAppPublisher "OctopusBridge"
 #define MyAppExeName "OctopusBridge.exe"
 
@@ -27,7 +27,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
-Source: "dist\OctopusBridge.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\OctopusBridge_v0.3.4.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"
@@ -36,3 +36,6 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+
+
+

@@ -2,15 +2,11 @@
 """Диалог настроек: три вкладки — Основные, Реалтайм, Файлы."""
 from __future__ import annotations
 
-from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFormLayout,
                                 QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-                                QMessageBox, QPushButton, QSpinBox,
-                                QTabWidget, QVBoxLayout, QWidget)
+                                QPushButton, QTabWidget, QVBoxLayout, QWidget)
 
-from app.core.translate.engines import (PROVIDERS, AI_PROVIDERS,
-                                        argos_download,
-                                        argos_missing_pairs_all)
+from app.core.translate.engines import PROVIDERS, AI_PROVIDERS
 from app.ui.i18n import TR, provider_name
 
 PRESETS = {
@@ -22,33 +18,11 @@ PRESETS = {
 }
 
 
-class DownloadWorker(QThread):
-    progressed = Signal(str)
-    done = Signal(object)
-    failed = Signal(str)
-
-    def __init__(self, pairs):
-        super().__init__()
-        self.setObjectName("DownloadWorker")
-        self.pairs = pairs
-
-    def run(self):
-        try:
-            installed = argos_download(
-                self.pairs,
-                progress=lambda i, n, name: self.progressed.emit(
-                    f"Package {i}/{n}: {name}"))
-            self.done.emit(installed)
-        except Exception as e:  # noqa: BLE001
-            self.failed.emit(str(e))
-
-
 class SettingsDialog(QDialog):
     def __init__(self, main_window, parent=None):
         super().__init__(parent)
         self.main = main_window
         s = main_window.settings
-        self.worker: DownloadWorker | None = None
 
         self.setWindowTitle(TR("settings_title"))
         self.setMinimumWidth(650)
@@ -56,9 +30,11 @@ class SettingsDialog(QDialog):
         lay = QVBoxLayout(self)
 
         tabs = QTabWidget()
+        self.tabs = tabs
         tabs.addTab(self._build_general_tab(s), TR("settings_general"))
         tabs.addTab(self._build_live_tab(s), TR("settings_live"))
         tabs.addTab(self._build_files_tab(s), TR("settings_files"))
+        tabs.addTab(self._build_ai_tab(s), TR("settings_corr_tab"))
         lay.addWidget(tabs, 1)
 
         bottom = QHBoxLayout()
@@ -84,7 +60,7 @@ class SettingsDialog(QDialog):
         provs = providers or PROVIDERS
         for key in provs:
             combo.addItem(provider_name(key), key)
-        idx = combo.findData(s.value(engine_key, "argos"))
+        idx = combo.findData(s.value(engine_key, "honyaku"))
         combo.setCurrentIndex(max(idx, 0))
         form.addRow(TR("settings_provider_lbl"), combo)
 
@@ -117,9 +93,7 @@ class SettingsDialog(QDialog):
 
         btn_row = QHBoxLayout()
         btn_ping = QPushButton(TR("settings_check"))
-        btn_dl = QPushButton(TR("settings_argos"))
         btn_row.addWidget(btn_ping)
-        btn_row.addWidget(btn_dl)
         btn_row.addStretch(1)
         form.addRow(btn_row)
 
@@ -130,7 +104,7 @@ class SettingsDialog(QDialog):
         box._eng = {
             "engine": combo, "base_url": base_url, "api_key": api_key, "model": model,
             "preset_row": preset_row, "preset_buttons": preset_buttons,
-            "btn_ping": btn_ping, "btn_dl": btn_dl,
+            "btn_ping": btn_ping,
             "lbl_status": lbl_status, "form": form,
         }
         return box
@@ -159,7 +133,7 @@ class SettingsDialog(QDialog):
         ui_form = QFormLayout(ui_box)
         self.ui_lang = QComboBox()
         self.ui_lang.addItems(["Русский", "English"])
-        self.ui_lang.setCurrentIndex(0 if s.value("ui_lang", "ru") == "ru" else 1)
+        self.ui_lang.setCurrentIndex(0 if s.value("ui_lang", "en") == "ru" else 1)
         ui_form.addRow(TR("settings_ui_lang"), self.ui_lang)
         lay.addWidget(ui_box)
 
@@ -190,7 +164,6 @@ class SettingsDialog(QDialog):
             self._on_live_provider_changed)
         self.live_eng["btn_ping"].clicked.connect(
             lambda: self._ping("realtime"))
-        self.live_eng["btn_dl"].clicked.connect(self.download_packages)
         lay.addWidget(self.live_engine_box)
 
         live_box = QGroupBox(TR("live_title"))
@@ -199,10 +172,6 @@ class SettingsDialog(QDialog):
         self.auto_launch.setChecked(s.value("auto_launch", False, type=bool))
         live_form.addRow(self.auto_launch)
         lay.addWidget(live_box)
-
-        info = QLabel(TR("settings_ws_info"))
-        info.setWordWrap(True)
-        lay.addWidget(info)
         lay.addStretch(1)
         return w
 
@@ -218,7 +187,6 @@ class SettingsDialog(QDialog):
             self._on_files_provider_changed)
         self.files_eng["btn_ping"].clicked.connect(
             lambda: self._ping("files"))
-        self.files_eng["btn_dl"].clicked.connect(self.download_packages)
         lay.addWidget(self.files_engine_box)
 
         self.corrector_engine_box = self._build_engine_group(
@@ -229,8 +197,6 @@ class SettingsDialog(QDialog):
             self._on_corrector_provider_changed)
         self.corr_eng["btn_ping"].clicked.connect(
             lambda: self._ping("corrector"))
-        self.corr_eng["btn_dl"].clicked.connect(self.download_packages)
-        lay.addWidget(self.corrector_engine_box)
 
         opt_box = QGroupBox(TR("settings_files"))
         opt_form = QFormLayout(opt_box)
@@ -250,6 +216,27 @@ class SettingsDialog(QDialog):
         info = QLabel(TR("settings_files_info"))
         info.setWordWrap(True)
         lay.addWidget(info)
+        lay.addStretch(1)
+        return w
+
+    # ── Tab 4: AI Corrector (corrector + AI glossary) ──
+    def _build_ai_tab(self, s) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+
+        lay.addWidget(self.corrector_engine_box)
+
+        gloss_box = QGroupBox(TR("settings_glossary_box"))
+        gloss_form = QFormLayout(gloss_box)
+        self.glossary_use_ai = QCheckBox(TR("settings_glossary_ai"))
+        self.glossary_use_ai.setChecked(
+            s.value("glossary_use_ai", True, type=bool))
+        gloss_form.addRow(self.glossary_use_ai)
+        info = QLabel(TR("settings_glossary_info"))
+        info.setWordWrap(True)
+        gloss_form.addRow(info)
+        lay.addWidget(gloss_box)
+
         lay.addStretch(1)
         return w
 
@@ -322,45 +309,6 @@ class SettingsDialog(QDialog):
         eng["lbl_status"].setText(
             TR("settings_status_ready") if ok else TR("settings_status_fail"))
 
-    # ── Download Argos packages ──
-    def download_packages(self):
-        try:
-            missing = argos_missing_pairs_all()
-        except Exception as e:  # noqa: BLE001
-            QMessageBox.critical(self, "Argos", str(e))
-            return
-        if not missing:
-            QMessageBox.information(self, "Argos", "All packages installed")
-            return
-        pairs_text = ", ".join(f"{a}→{b}" for a, b in missing)
-        if QMessageBox.question(
-                self, "Download",
-                f"Packages: {pairs_text}?\n(~100-300 MB each)"
-        ) != QMessageBox.Yes:
-            return
-        self.live_eng["btn_dl"].setEnabled(False)
-        self.files_eng["btn_dl"].setEnabled(False)
-        self.worker = DownloadWorker(missing)
-        self.worker.progressed.connect(
-            lambda t: self.live_eng["lbl_status"].setText(t))
-        self.worker.done.connect(self._on_downloaded)
-        self.worker.failed.connect(self._on_download_failed)
-        self.worker.start()
-
-    def _on_downloaded(self, installed: list):
-        self.live_eng["btn_dl"].setEnabled(True)
-        self.files_eng["btn_dl"].setEnabled(True)
-        self.worker = None
-        msg = "Installed: " + ", ".join(installed)
-        self.live_eng["lbl_status"].setText(msg)
-        self.files_eng["lbl_status"].setText(msg)
-
-    def _on_download_failed(self, msg: str):
-        self.live_eng["btn_dl"].setEnabled(True)
-        self.files_eng["btn_dl"].setEnabled(True)
-        self.worker = None
-        QMessageBox.critical(self, "Argos", msg)
-
     # ── Save & close ──
     def _save_engine(self, eng: dict, engine_key: str, prefix: str):
         s = self.main.settings
@@ -381,7 +329,8 @@ class SettingsDialog(QDialog):
         s.setValue("close_to_tray", self.close_behavior.currentIndex() == 0)
         s.setValue("file_overwrite_mode", self.overwrite_mode.currentIndex())
         s.setValue("auto_backup", self.auto_backup.isChecked())
-        old_lang = s.value("ui_lang", "ru")
+        s.setValue("glossary_use_ai", self.glossary_use_ai.isChecked())
+        old_lang = s.value("ui_lang", "en")
         new_lang = "ru" if self.ui_lang.currentIndex() == 0 else "en"
         s.setValue("ui_lang", new_lang)
         if new_lang != old_lang:
@@ -391,8 +340,3 @@ class SettingsDialog(QDialog):
         if hasattr(self.main, "refresh_status_bar"):
             self.main.refresh_status_bar()
         self.accept()
-
-    def closeEvent(self, event):
-        if self.worker and self.worker.isRunning():
-            self.worker.wait(5000)
-        super().closeEvent(event)

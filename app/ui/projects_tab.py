@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 
 from PySide6.QtCore import QSize, Qt
@@ -22,16 +23,17 @@ from PySide6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QLabel,
 import app as app_paths
 from app.ui.i18n import TR
 from app.ui.icons import icon
-from app.ui.theme import (C_CARD, C_CARD_HOVER, C_PRIMARY, C_SURFACE,
-                           C_TEXT, C_TEXT_DIM, C_TEXT_SECONDARY, RADIUS_LG,
-                           RADIUS_MD)
+from app.ui.theme import (C_BORDER, C_CARD, C_CARD_HOVER, C_PRIMARY,
+                          C_SURFACE, C_TEXT, C_TEXT_DIM, C_TEXT_SECONDARY,
+                          RADIUS_LG, RADIUS_MD)
 
 _ENGINE_COLORS = {
     "mz": "#43a047",
     "mv": "#43a047",
     "renpy": "#8e24aa",
     "twine": "#fb8c00",
-    "argos": "#1e88e5",
+    "tyrano": "#e53935",
+    "honyaku": "#1e88e5",
     "ai": "#e53935",
 }
 
@@ -40,6 +42,7 @@ _ENGINE_LOGOS = {
     "mv": "rpgmaker-mv.svg",
     "renpy": "renpy.svg",
     "twine": "twine.svg",
+    "tyrano": "tyrano.svg",
 }
 
 
@@ -64,6 +67,7 @@ class ProjectsTab(QWidget):
     def __init__(self, main_window):
         super().__init__()
         self.main = main_window
+        self.setAcceptDrops(True)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(28, 20, 28, 20)
@@ -113,36 +117,18 @@ class ProjectsTab(QWidget):
         recent = self.main._recent_list()
         self.btn_clear.setEnabled(bool(recent))
         if not recent:
-            empty = QFrame()
-            empty.setStyleSheet(
-                f"QFrame {{ background: {C_CARD}; border-radius: {RADIUS_LG}px;"
-                f" border: 1px dashed {C_TEXT_DIM}; }}")
+            empty = QWidget()
+            empty.setStyleSheet("background: transparent;")
             elay = QVBoxLayout(empty)
-            elay.setContentsMargins(24, 48, 24, 48)
-            elay.setSpacing(10)
-            lbl_icon = QLabel()
-            lbl_icon.setPixmap(icon("folder", 44, "#5b6b7f").pixmap(44, 44))
-            lbl_icon.setAlignment(Qt.AlignCenter)
-            elay.addWidget(lbl_icon)
+            elay.setContentsMargins(24, 24, 24, 24)
+            elay.addStretch(1)
             lbl_t = QLabel(TR("projects_empty_title"))
             lbl_t.setAlignment(Qt.AlignCenter)
             lbl_t.setStyleSheet(
                 f"font-size: 16px; font-weight: bold; color: {C_TEXT}; "
                 f"background: transparent;")
             elay.addWidget(lbl_t)
-            lbl_h = QLabel(TR("projects_empty_hint"))
-            lbl_h.setAlignment(Qt.AlignCenter)
-            lbl_h.setWordWrap(True)
-            lbl_h.setStyleSheet(
-                f"font-size: 12px; color: {C_TEXT_SECONDARY}; "
-                f"background: transparent;")
-            elay.addWidget(lbl_h)
-            btn_go = QPushButton(TR("projects_add"))
-            btn_go.setObjectName("accent")
-            btn_go.setIcon(icon("plus", 16))
-            btn_go.setMinimumWidth(180)
-            btn_go.clicked.connect(self._browse)
-            elay.addWidget(btn_go, 0, Qt.AlignHCenter)
+            elay.addStretch(1)
             self._recent_lay.addWidget(empty)
             return
 
@@ -234,6 +220,20 @@ class ProjectsTab(QWidget):
                 f"background: transparent; border: none;")
             lay.addWidget(date)
 
+        # кнопка: открыть папку в проводнике
+        btn_dir = QPushButton("")
+        btn_dir.setIcon(icon("folder-open", 16, "#8899aa"))
+        btn_dir.setFixedSize(34, 34)
+        btn_dir.setCursor(Qt.PointingHandCursor)
+        btn_dir.setStyleSheet(
+            f"QPushButton {{ background: transparent; border: 1px solid "
+            f"{C_TEXT_DIM}; border-radius: {RADIUS_MD}px; }}"
+            f"QPushButton:hover {{ border-color: {C_PRIMARY}; "
+            f"background: {C_SURFACE}; }}")
+        btn_dir.setToolTip(TR("projects_open_folder"))
+        btn_dir.clicked.connect(lambda _=False, p=path: self._open_folder(p))
+        lay.addWidget(btn_dir)
+
         # кнопка открыть
         btn_open = QPushButton("")
         btn_open.setIcon(icon("arrow-right", 16, "#8899aa"))
@@ -263,15 +263,31 @@ class ProjectsTab(QWidget):
             f"QMenu::item {{ padding: 6px 20px; color: {C_TEXT}; }}"
             f"QMenu::item:selected {{ background: {C_PRIMARY}; color: #fff; }}")
         act_open = menu.addAction(TR("welcome_open"))
+        act_folder = menu.addAction(TR("projects_open_folder"))
         act_rename = menu.addAction(TR("welcome_edit_name"))
         act_del = menu.addAction(TR("welcome_remove"))
         action = menu.exec(card.mapToGlobal(pos))
         if action == act_open:
             self._open_recent(path)
+        elif action == act_folder:
+            self._open_folder(path)
         elif action == act_rename:
             self._rename_project(path)
         elif action == act_del:
             self._remove_project(path)
+
+    # ── drag & drop: открыть игру, не переключаясь на главную ──
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event):
+        event.accept()
+
+    def dropEvent(self, event):
+        urls = event.mimeData().urls()
+        if urls:
+            self.main.welcome_tab.open_path(urls[0].toLocalFile())
 
     # ── действия ──
     def _browse(self):
@@ -279,6 +295,21 @@ class ProjectsTab(QWidget):
                                              os.getcwd())
         if d:
             self.main.welcome_tab.open_path(d)
+
+    def _open_folder(self, path: str):
+        if not os.path.isdir(path):
+            QMessageBox.warning(self, TR("err"),
+                                f"Folder not found:\n{path}")
+            return
+        try:
+            if sys.platform == "win32":
+                os.startfile(path)  # noqa: S606
+            else:
+                import subprocess
+                subprocess.Popen(["xdg-open", path])
+        except OSError:
+            QMessageBox.warning(self, TR("err"),
+                                f"Can't open folder:\n{path}")
 
     def _open_recent(self, path: str):
         if not os.path.isdir(path):

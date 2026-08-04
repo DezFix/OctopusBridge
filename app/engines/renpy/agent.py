@@ -8,6 +8,7 @@ Ren'Py 8 (Python 3.x) — поэтому никаких f-строк и daemon-�
 from __future__ import annotations
 
 import json
+import re
 
 AGENT_TEMPLATE = r'''
 # OctopusBridge Ren'Py agent — bootstrap (init-time).
@@ -21,14 +22,19 @@ import threading
 import time
 import re
 import types
+import io
 
 _OB_PORT = %PORT%
 _OB_FONT = %FONT_PATH%
 _OB_FONT_ABS = %FONT_ABS%
+_OB_ABI = "%ABI%"
 _OB_STRS = (type(u""), type(""))   # Py2: (unicode, str); Py3: (str, str)
 
 # --- префильтры: что не отправляем на сервер перевода ---
 _OB_LATIN_RE = re.compile(r"[A-Za-z]")
+# японские символы (кана + кандзи): строки без латиницы, но с каной —
+# это японский текст игры, его тоже отправляем на перевод
+_OB_JP_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 # трейсбеки, пути к файлам, код движка — не переводятся
 _OB_JUNK_RE = re.compile(
     r"Traceback|Full traceback|uncaught exception|While running game code|"
@@ -38,15 +44,23 @@ _OB_JUNK_RE = re.compile(
 # "gui/scrollbar/vertical_[prefix_]bar.png") — перевод имени файла
 # ломает загрузку ассетов (краш "could not find image")
 _OB_ASSET_RE = re.compile(r"/[^/]{1,120}\.[A-Za-z0-9]{1,4}$")
+# строки форматирования (strftime/printf: "%A %B %d, %Y", "%.1f") — перевод
+# добавляет кириллицу ("г."), и time.strftime падает (locale codec)
+_OB_FMT_RE = re.compile(r"%[-+#0-9]*\.?[0-9]*[A-Za-z%]")
 _OB_MAX_LEN = 500
 
 
 # Глобальная подмена шрифта: font_replacement_map с "wildcard"-get().
 # get_font (renpy/text/font.py) вызывает map.get(имя) ДО кэшей лиц —
 # любой шрифт игры (диалоги, меню, gui.default_font и т.д.) рендерится
-# нашим NotoSans. Файлы игры НЕ трогаем: нет блокировок Windows
+# нашим шрифтом. Файлы игры НЕ трогаем: нет блокировок Windows
 # (WinError 32 при attach к запущенной игре), оригиналы остаются на
 # диске, toggle восстанавливает карту как была.
+#
+# Шрифт NotoSans-Regular.ttf — универсальный (JP+RU+EN+латиница):
+# и японский, и русский текст рендерятся без квадратиков. Поэтому
+# подменять можно любой шрифт игры, включая японские (у которых есть
+# только кана/кандзи) — наш шрифт покрывает все используемые скрипты.
 class _OB_FontMap(dict):
     def get(self, _k, _d=None):
         try:
@@ -71,41 +85,104 @@ def _ob_bootstrap():
         "response_events": {}, "response_events_lock": threading.Lock(),
     }
     renpy._ob_agent = A
-    # загружаем кэш перевода из файла игры
-    try:
-        _cp = renpy.config.gamedir + "/.octopus_cache.json"
-        with open(_cp, "r", encoding="utf-8") as _f:
-            _raw = json.load(_f)
+    # загружаем кэш перевода из файла игры (единый формат octopus_cache.json)
+    A["cache_path"] = renpy.config.gamedir + "/octopus_cache.json"
+
+    def _ob_filter_pairs(_pairs):
         # отфильтровываем identity-записи, трейсбеки, пути кода и пути
         # ассетов (в т.ч. испорченные прежними сессиями переводы
         # DynamicImage-путей — они давали краш "could not find image")
-        A["cache"] = {k: v for k, v in _raw.items()
-                      if isinstance(v, _OB_STRS)
-                      and k != v and len(k) <= _OB_MAX_LEN
-                      and not _OB_JUNK_RE.search(k)
-                      and not _OB_ASSET_RE.search(k)
-                      and not _OB_ASSET_RE.search(v)}
+        return {k: v for k, v in _pairs.items()
+                if isinstance(v, _OB_STRS)
+                and k != v and len(k) <= _OB_MAX_LEN
+                and not _OB_JUNK_RE.search(k)
+                and not _OB_FMT_RE.search(k)
+                and not _OB_FMT_RE.search(v)
+                and not _OB_ASSET_RE.search(k)
+                and not _OB_ASSET_RE.search(v)}
+
+    try:
+        with io.open(A["cache_path"], "r", encoding="utf-8") as _f:
+            _raw = json.load(_f)
+        if isinstance(_raw, dict) and isinstance(_raw.get("pairs"), dict):
+            A["cache"] = _ob_filter_pairs(_raw["pairs"])
+            _ob_skip = _raw.get("skip")
+            if isinstance(_ob_skip, list):
+                A["skip"] = set(x for x in _ob_skip
+                                if isinstance(x, _OB_STRS))
+        elif isinstance(_raw, dict):
+            A["cache"] = _ob_filter_pairs(_raw)
         A["translated"] = set(A["cache"].values())
-        A["cache_path"] = _cp
     except Exception:
+        # старый формат: плоский .octopus_cache.json
         try:
-            A["cache_path"] = renpy.config.gamedir + "/.octopus_cache.json"
+            _cp_old = renpy.config.gamedir + "/.octopus_cache.json"
+            with io.open(_cp_old, "r", encoding="utf-8") as _f:
+                _raw = json.load(_f)
+            if isinstance(_raw, dict):
+                A["cache"] = _ob_filter_pairs(_raw)
+                A["translated"] = set(A["cache"].values())
         except Exception:
             pass
+    # старый отдельный файл identity-строк
+    try:
+        _sp_old = renpy.config.gamedir + "/.octopus_skip.json"
+        with io.open(_sp_old, "r", encoding="utf-8") as _f:
+            _ob_skip = json.load(_f)
+        if isinstance(_ob_skip, list):
+            A["skip"] |= set(x for x in _ob_skip
+                             if isinstance(x, _OB_STRS))
+    except Exception:
+        pass
+    # Чиним известные баги игр (свежий persistent без сохранений):
+    # The Roommate — экран настроек читает persistent.fetish_level, а
+    # default задан только в preferences → None + 0.5 крашит игру.
+    try:
+        if getattr(renpy.config, "name", "") == "The Roommate":
+            if getattr(renpy.persistent, "fetish_level", None) is None:
+                renpy.persistent.fetish_level = int(
+                    getattr(renpy.preferences, "fetish_level", 2))
+    except Exception:
+        pass
     # identity-строки: не перезапрашиваем перевод, который вернулся
     # без изменений
     try:
         A["skip_path"] = renpy.config.gamedir + "/.octopus_skip.json"
-        with open(A["skip_path"], "r", encoding="utf-8") as _f:
+        with io.open(A["skip_path"], "r", encoding="utf-8") as _f:
             A["skip"] = set(json.load(_f))
     except Exception:
         pass
 
+    # Версионный сериализатор: Py2 json.dumps может вернуть str (байты)
+    # или unicode; Py3 — всегда str. Превращаем в байты надёжно в обоих.
+    #@@ABI:py2@@
+    def _ob_json_bytes(obj):
+        _d = json.dumps(obj, ensure_ascii=False)
+        if isinstance(_d, type(u"")):
+            return _d.encode("utf-8") + b"\n"
+        return _d + b"\n"
+    #@@ABI:end@@
+    #@@ABI:py3@@
+    def _ob_json_bytes(obj):
+        return json.dumps(obj, ensure_ascii=False).encode("utf-8") + b"\n"
+    #@@ABI:end@@
+
+    def _is_skipping():
+        """Идёт ли перемотка (skip): при ней нельзя блокировать и слать
+        сотни строк на сервер — берём только кэш, остальное пропускаем."""
+        try:
+            _iface = getattr(renpy, "game", None)
+            _iface = getattr(_iface, "interface", None)
+            if _iface is None:
+                return False
+            return bool(getattr(_iface, "skipping", False))
+        except Exception:
+            return False
+
     def _send(obj):
         try:
             if A["connected"] and A["sock"]:
-                data = json.dumps(obj, ensure_ascii=False).encode("utf-8") + b"\n"
-                A["sock"].sendall(data)
+                A["sock"].sendall(_ob_json_bytes(obj))
         except Exception:
             pass
 
@@ -178,7 +255,11 @@ def _ob_bootstrap():
     _restart_interval = 0.5
 
     def _do_restart():
-        now = time.monotonic()
+        # во время перемотки не перерисовываем: Ren'Py сам пересоздаёт
+        # виджеты каждую строку, лишний restart только лагает
+        if _is_skipping():
+            return
+        now = time.time()
         if now - _restart_lock[0] >= _restart_interval:
             _restart_lock[0] = now
             _restart_needed[0] = False  # сброс: рестарт только по новым переводам
@@ -232,23 +313,36 @@ def _ob_bootstrap():
             pass
 
     def _save_cache():
-        if not A["cache_dirty"] or not A["cache_path"]:
+        if not (A["cache_dirty"] or A["skip_dirty"]) \
+                or not A["cache_path"]:
             return
         A["cache_dirty"] = False
+        A["skip_dirty"] = False
         try:
-            # не сохраняем identity-записи
+            # не сохраняем identity-записи; единый формат + skip
             _clean = {k: v for k, v in A["cache"].items() if k != v}
-            with open(A["cache_path"], "w", encoding="utf-8") as _f:
-                json.dump(_clean, _f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
-        if A["skip_dirty"] and A["skip_path"]:
-            A["skip_dirty"] = False
+            _payload = {"format": 1, "engine": "renpy", "pairs": _clean}
+            if A["skip"]:
+                _payload["skip"] = sorted(A["skip"])
+            _tmp = A["cache_path"] + ".tmp"
+            with io.open(_tmp, "w", encoding="utf-8") as _f:
+                json.dump(_payload, _f, ensure_ascii=False, indent=2)
             try:
-                with open(A["skip_path"], "w", encoding="utf-8") as _f:
-                    json.dump(sorted(A["skip"]), _f, ensure_ascii=False)
+                os.remove(A["cache_path"])
             except Exception:
                 pass
+            os.rename(_tmp, A["cache_path"])
+        except Exception:
+            pass
+        # старые файлы кэша больше не пишем — убираем (best effort)
+        try:
+            os.remove(renpy.config.gamedir + "/.octopus_cache.json")
+        except Exception:
+            pass
+        try:
+            os.remove(renpy.config.gamedir + "/.octopus_skip.json")
+        except Exception:
+            pass
 
     def _extract_brackets(text):
         """Extract balanced [...] and {...} groups from text (handles nesting).
@@ -291,7 +385,17 @@ def _ob_bootstrap():
                     # НЕ кэшируем identity-переводы (экстрактор возвращает то же самое).
                     # Если закэшировать identity, то _translate вернёт оригинал
                     # из кэша и НЕ отправит текст на реальный сервер перевода.
-                    if trans != orig:
+                    # paused: перевод приостановлен пользователем — строку
+                    # не кэшируем и в skip не добавляем (после включения
+                    # перевода она уйдёт на сервер заново).
+                    if not msg.get("paused") and trans != orig:
+                        # строки форматирования (strftime и т.п.) — не
+                        # кэшируем даже если сервер их уже перевёл
+                        if (_OB_FMT_RE.search(orig)
+                                or _OB_FMT_RE.search(trans)):
+                            A["skip"].add(orig)
+                            A["skip_dirty"] = True
+                            trans = orig
                         # проверяем что [interpolation]/[code] коды сохранены
                         _codes = _extract_brackets(orig)
                         _is_pure = False
@@ -308,12 +412,12 @@ def _ob_bootstrap():
                                 if _c not in trans:
                                     _ok = False
                                     break
-                        if _ok:
+                        if _ok and trans != orig:
                             A["cache"][orig] = trans
                             A["translated"].add(trans)
                             A["cache_dirty"] = True
                             _do_replace = True
-                    else:
+                    elif not msg.get("paused"):
                         # identity — больше не перезапрашиваем эту строку
                         A["skip"].add(orig)
                         A["skip_dirty"] = True
@@ -340,15 +444,20 @@ def _ob_bootstrap():
         if not isinstance(what, _OB_STRS) or not what.strip():
             return what
         key = what.strip().replace("%%", "%")  # unescape для поиска/отправки
-        # без латиницы — строка уже переведена (или это коды/имена):
-        # не тратим сервер и не создаём identity-записи
-        if not _OB_LATIN_RE.search(key):
+        # без латиницы и без японских символов — строка уже переведена
+        # (кириллица, коды, имена): не тратим сервер и не создаём
+        # identity-записи. Японский текст (кана/кандзи) переводим.
+        if not _OB_LATIN_RE.search(key) and not _OB_JP_RE.search(key):
             return what
         # трейсбеки/пути/код движка и слишком длинные строки — не переводим
         if len(key) > _OB_MAX_LEN or _OB_JUNK_RE.search(key):
             return what
         # пути ассетов (gui/...png и т.п.) — перевод ломает загрузку
         if _OB_ASSET_RE.search(key):
+            return what
+        # строки форматирования времени/чисел — strftime не переживёт
+        # кириллицу, которую добавит переводчик ("%Y" -> "%Y г.")
+        if _OB_FMT_RE.search(key):
             return what
         with A["lock"]:
             cached = A["cache"].get(key)
@@ -363,6 +472,10 @@ def _ob_bootstrap():
                 return what
             if not A["connected"]:
                 return what
+            # перемотка (skip): не шлём на сервер и не блокируем —
+            # перемотка гонит сотни строк за секунды, ждать нельзя
+            if _is_skipping():
+                return what
             if key in A["pending"].values():
                 return what
             mid = A["next_id"]
@@ -375,14 +488,14 @@ def _ob_bootstrap():
                 A["response_events"][mid] = ev
             # ждём с проверкой connected (timeout=None = макс 30s)
             _timeout = 30.0 if timeout is None else timeout
-            _start_all = time.monotonic()
+            _start_all = time.time()
             while _timeout > 0:
-                _start = time.monotonic()
+                _start = time.time()
                 if not A["connected"]:
                     break
                 if ev.wait(timeout=min(_timeout, 0.5)):
                     break
-                _timeout -= time.monotonic() - _start
+                _timeout -= time.time() - _start
             with A["response_events_lock"]:
                 A["response_events"].pop(mid, None)
             with A["lock"]:
@@ -495,7 +608,14 @@ def _ob_bootstrap():
         for k, v in items:
             if len(out) >= _OB_VARS_MAX:
                 break
+            # Py2: str(unicode-ключ с кириллицей) падает — используем
+            # ключ как есть, если он строка
+            #@@ABI:py2@@
+            sk = k if isinstance(k, _OB_STRS) else str(k)
+            #@@ABI:end@@
+            #@@ABI:py3@@
             sk = str(k)
+            #@@ABI:end@@
             if sk.startswith("_") or sk in _OB_VARS_SKIP:
                 continue
             name = prefix + "." + sk if prefix else sk
@@ -535,8 +655,14 @@ def _ob_bootstrap():
                 _teleport(msg.get("label", ""))
             elif cmd == "exec":
                 result = renpy.python.py_eval(msg.get("code", "None"))
+                #@@ABI:py2@@
+                value = result if isinstance(result, _OB_STRS) else repr(result)
+                #@@ABI:end@@
+                #@@ABI:py3@@
+                value = str(result)
+                #@@ABI:end@@
                 _send({"type": "cheat_ack", "cmd": cmd, "ok": True,
-                       "value": str(result)})
+                       "value": value})
                 return
             elif cmd == "get_vars":
                 _send_vars()
@@ -558,7 +684,10 @@ def _ob_bootstrap():
             def _chained_say(what):
                 if prev_say is not None:
                     what = prev_say(what)
-                tr = _translate(what, blocking=True, timeout=None)
+                # при перемотке не блокируем (кэш-перевод внутри
+                # _translate всё равно применится, отправки нет)
+                tr = _translate(what, blocking=not _is_skipping(),
+                                timeout=None)
                 if tr is not what and isinstance(tr, _OB_STRS):
                     tr = tr.replace("%", "%%")
                 return tr
@@ -746,9 +875,9 @@ def _ob_bootstrap():
                 _font_clear_faces()
                 _restart_needed[0] = True
                 try:
-                    with open(os.path.join(renpy.config.gamedir,
-                                           "ob_font_log.txt"), "w",
-                              encoding="utf-8") as _f:
+                    with io.open(os.path.join(renpy.config.gamedir,
+                                              "ob_font_log.txt"), "w",
+                                 encoding="utf-8") as _f:
                         _f.write("OB-FONT-MAP installed font=" + _OB_FONT)
                 except Exception:
                     pass
@@ -766,8 +895,8 @@ def _ob_bootstrap():
         _gamedir = renpy.config.gamedir
         _bdir = os.path.join(_gamedir, "ob_fonts_orig")
         try:
-            with open(os.path.join(_bdir, "manifest.json"), "r",
-                      encoding="utf-8") as _f:
+            with io.open(os.path.join(_bdir, "manifest.json"), "r",
+                         encoding="utf-8") as _f:
                 _manifest = json.loads(_f.read())
         except Exception:
             return
@@ -800,7 +929,7 @@ def _ob_bootstrap():
     _font_periodic_lock = [0.0]
 
     def _font_periodic():
-        _now = time.monotonic()
+        _now = time.time()
         if _now - _font_periodic_lock[0] >= 2.0:
             _font_periodic_lock[0] = _now
             _patch_font()
@@ -826,18 +955,37 @@ _ob_bootstrap()
 '''
 
 
+_ABI_RE = re.compile(
+    r"^[ \t]*#@@ABI:(\w+)@@\n?(.*?)^[ \t]*#@@ABI:end@@[ \t]*\n?",
+    re.S | re.M)
+
+
+def _trim_abi(template: str, abi: str) -> str:
+    """Оставляет в шаблоне только секции нужной ветки Ren'Py.
+
+    Секции в шаблоне помечаются строками #@@ABI:py2@@ ... #@@ABI:end@@
+    и #@@ABI:py3@@ ... #@@ABI:end@@. Для выбранной ветки секция
+    оставляется, чужая — вырезается целиком.
+    """
+
+    def _pick(m: re.Match) -> str:
+        return m.group(2) if m.group(1) == abi else ""
+    return _ABI_RE.sub(_pick, template)
+
+
 def agent_source(port: int, font_path: str = "ob_fonts/NotoSans-Regular.ttf",
-                 font_abs: str = "") -> str:
+                 font_abs: str = "", abi: str = "py3") -> str:
     s = AGENT_TEMPLATE.replace("%PORT%", str(port))
     s = s.replace("%FONT_PATH%", json.dumps(font_path, ensure_ascii=False))
     s = s.replace("%FONT_ABS%", json.dumps(font_abs, ensure_ascii=False))
-    return s
+    s = s.replace("%ABI%", abi)
+    return _trim_abi(s, abi)
 
 
 def agent_rpy_source(port: int, font_path: str = "ob_fonts/NotoSans-Regular.ttf",
-                     font_abs: str = "") -> str:
+                     font_abs: str = "", abi: str = "py3") -> str:
     """Генерирует .rpy с init python: блоком (полный бутстрап агента)."""
-    bootstrap_body = agent_source(port, font_path, font_abs).strip()
+    bootstrap_body = agent_source(port, font_path, font_abs, abi).strip()
 
     def _indent(text: str) -> str:
         lines = text.split("\n")
