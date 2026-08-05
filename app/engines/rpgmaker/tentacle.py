@@ -614,6 +614,38 @@ def _worth_translating(text: str) -> bool:
     return any(ch.isalpha() for ch in text)
 
 
+def clean_nwjs_profile(game_dir: str) -> bool:
+    """Чинит «Ваш профиль не может использоваться, поскольку он от более
+    новой версии NW.js».
+
+    Причина: в папке игры остался профиль NW.js (файл Local State рядом
+    с Game.exe), созданный более новой версией NW.js, чем движок игры —
+    например, в папке запускали более новую сборку или папку скопировали
+    вместе с профилем. Старую запись не удаляем, а переименовываем в
+    Local State.bak — NW.js создаст свежий профиль. Сейвы RPG Maker
+    лежат в www/save, профиль их не содержит.
+    """
+    ls = os.path.join(game_dir, "Local State")
+    if not os.path.isfile(ls):
+        return False
+    try:
+        with open(ls, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return False
+    # профиль без маркера версии — старой записи, не мешает
+    if not isinstance(data.get("user_data_version"), int):
+        return False
+    bak = ls + ".bak"
+    try:
+        if os.path.exists(bak):
+            os.remove(bak)
+        os.rename(ls, bak)
+        return True
+    except OSError:
+        return False
+
+
 class RpgMakerTentacle(CDPTentacle):
     key = "rpgmaker"
     title = "RPG Maker (CDP)"
@@ -640,6 +672,10 @@ class RpgMakerTentacle(CDPTentacle):
             return False
         port = browser.free_port()
         game_dir = os.path.dirname(exe)
+        if clean_nwjs_profile(game_dir):
+            self.log.emit(
+                "Профиль NW.js от другой версии: Local State переименован "
+                "в Local State.bak (сейвы не тронуты).")
         try:
             self._proc = subprocess.Popen(
                 [exe, f"--remote-debugging-port={port}"],

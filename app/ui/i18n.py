@@ -796,6 +796,10 @@ _STRINGS = {
         "en": "Map {id}: {w}×{h} {name}",
     },
     "map_save": {"ru": "Сохранить карту в игру", "en": "Save map to game"},
+    "map_rendering": {
+        "ru": "Отрисовка карты…",
+        "en": "Rendering map…",
+    },
     "map_saved": {
         "ru": "Карта сохранена ({path}). Оригинал — в .ob_backup.",
         "en": "Map saved ({path}). Original in .ob_backup.",

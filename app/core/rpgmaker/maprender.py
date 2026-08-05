@@ -16,6 +16,7 @@ import json
 import os
 
 from . import crypto
+from .fileview import DiskFileView, FileView
 
 TILE = 48
 
@@ -71,28 +72,33 @@ def tile_source(tile_id: int) -> tuple[int, int, int] | None:
     return None
 
 
-def data_root(game_dir: str) -> str:
-    for rel in ("data", os.path.join("www", "data")):
-        p = os.path.join(game_dir, rel)
-        if os.path.isdir(p):
-            return p
-    return os.path.join(game_dir, "data")
+def data_root(game_dir: str, view: FileView | None = None) -> str:
+    """Относительный путь к data/ ("data" или "www/data")."""
+    view = view or DiskFileView(game_dir)
+    if view.is_dir("data"):
+        return "data"
+    return "www/data"
 
 
-def map_path(game_dir: str, map_id: int) -> str | None:
-    path = os.path.join(data_root(game_dir), f"Map{map_id:03d}.json")
-    return path if os.path.isfile(path) else None
+def map_path(game_dir: str, map_id: int,
+             view: FileView | None = None) -> str | None:
+    rel = f"{data_root(game_dir, view)}/Map{map_id:03d}.json"
+    view = view or DiskFileView(game_dir)
+    return rel if view.exists(rel) else None
 
 
-def load_map(game_dir: str, map_id: int) -> dict | None:
+def load_map(game_dir: str, map_id: int,
+             view: FileView | None = None) -> dict | None:
     """Загружает MapXXX.json. None, если карты нет/битая."""
-    path = map_path(game_dir, map_id)
-    if not path:
+    rel = map_path(game_dir, map_id, view)
+    if not rel:
+        return None
+    text = (view or DiskFileView(game_dir)).read_text(rel)
+    if text is None:
         return None
     try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
         return None
     return data if isinstance(data, dict) else None
 
@@ -109,13 +115,15 @@ def map_layers(data: dict) -> tuple[int, int, list, list, list]:
     return w, h, ground, overlay, shadow
 
 
-def load_tilesets(game_dir: str) -> list[dict]:
+def load_tilesets(game_dir: str, view: FileView | None = None) -> list[dict]:
     """Tilesets.json -> список словарей (index 0 пустой-служебный)."""
-    path = os.path.join(data_root(game_dir), "Tilesets.json")
+    view = view or DiskFileView(game_dir)
+    text = view.read_text(f"{data_root(game_dir, view)}/Tilesets.json")
+    if text is None:
+        return []
     try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
         return []
     return [t for t in data if isinstance(t, dict)]
 
@@ -127,15 +135,16 @@ def tileset_for_map(tilesets: list[dict], tileset_id: int) -> dict | None:
     return tilesets[0] if tilesets else None
 
 
-def tileset_page_paths(game_dir: str, tileset: dict) -> dict[int, str]:
-    """{страница: путь_к_png_без_расширения} — только существующие файлы."""
+def tileset_page_paths(game_dir: str, tileset: dict,
+                       view: FileView | None = None) -> dict[int, str]:
+    """{страница: rel_png_без_расширения} — только существующие файлы."""
     names = tileset.get("tilesetNames") or []
     out: dict[int, str] = {}
     for page, name in enumerate(names):
         if not name:
             continue
         rel = f"img/tilesets/{name}"
-        if crypto.find_resource(game_dir, rel, (".png",)):
+        if crypto.find_resource(game_dir, rel, (".png",), view=view):
             out[page] = rel
     return out
 
@@ -198,15 +207,21 @@ def visibility_text(page: dict) -> str:
 
 
 def save_map(game_dir: str, map_id: int, data: dict,
-             backup_suffix: str = ".ob_backup") -> str:
-    """Перезаписывает MapXXX.json (с бэкапом рядом). Возвращает путь."""
-    path = map_path(game_dir, map_id)
-    if not path:
+             backup_suffix: str = ".ob_backup",
+             view: FileView | None = None) -> str:
+    """Перезаписывает MapXXX.json (с бэкапом рядом). Возвращает путь/rel."""
+    rel = map_path(game_dir, map_id, view)
+    if not rel:
         raise FileNotFoundError(f"Map{map_id:03d}.json не найдена")
-    backup = path + backup_suffix
-    if not os.path.exists(backup):
-        import shutil
-        shutil.copy2(path, backup)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
-    return path
+    text = json.dumps(data, ensure_ascii=False)
+    if view is None:
+        view = DiskFileView(game_dir)
+        path = os.path.join(game_dir, *rel.split("/"))
+        backup = path + backup_suffix
+        if not os.path.exists(backup):
+            import shutil
+            shutil.copy2(path, backup)
+    view.write_text(rel, text)
+    if not isinstance(view, DiskFileView):
+        view.commit()
+    return rel

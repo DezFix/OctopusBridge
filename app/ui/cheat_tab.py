@@ -351,11 +351,14 @@ class CheatTab(QWidget):
     def on_project_opened(self):
         if not self.main.project:
             return
-        v, s = extract_names(self.main.project.game_dir)
+        mod = self.main.engine_module
+        game_dir = self.main.project.game_dir
+        view = mod.file_view(game_dir) if mod else None
+        v, s = extract_names(game_dir, view)
         self.var_names = v
         self.switch_names = s
-        self.item_names = extract_item_names(self.main.project.game_dir)
-        self.state_names = extract_state_names(self.main.project.game_dir)
+        self.item_names = extract_item_names(game_dir, view)
+        self.state_names = extract_state_names(game_dir, view)
         self._fill_vars()
         self._fill_switches()
         self._fill_items()

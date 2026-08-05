@@ -14,6 +14,10 @@ def create_tentacle(engine_key: str) -> Tentacle | None:
     if engine_key == "rpgmaker":
         from app.engines.rpgmaker.tentacle import RpgMakerTentacle
         return RpgMakerTentacle()
+    if engine_key == "rpgmaker_asar":
+        # старые профили (до слияния движков) — то же щупальце RPG Maker
+        from app.engines.rpgmaker.tentacle import RpgMakerTentacle
+        return RpgMakerTentacle()
     if engine_key == "renpy":
         from app.engines.renpy.tentacle import RenPyTentacle
         return RenPyTentacle()

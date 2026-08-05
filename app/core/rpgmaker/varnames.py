@@ -11,7 +11,8 @@
 from __future__ import annotations
 
 import json
-import os
+
+from .fileview import DiskFileView, FileView
 
 VAR_ID_KEYS = {"variableid", "varid", "variable", "var", "variable_id"}
 SWITCH_ID_KEYS = {"switchid", "swid", "switch", "switch_id"}
@@ -43,31 +44,35 @@ def _walk(node, out: dict, id_keys: set[str]):
                 pass
 
 
-def _read_plugins_js(game_dir: str) -> list:
-    path = os.path.join(game_dir, "js", "plugins.js")
-    if not os.path.exists(path):
-        path = os.path.join(game_dir, "www", "js", "plugins.js")
-    if not os.path.exists(path):
-        return []
-    with open(path, encoding="utf-8") as f:
-        text = f.read()
-    try:
-        return json.loads(text[text.index("["):text.rindex("]") + 1])
-    except (ValueError, json.JSONDecodeError):
-        return []
+def _read_plugins_js(game_dir: str, view: FileView | None = None) -> list:
+    view = view or DiskFileView(game_dir)
+    for rel in ("js/plugins.js", "www/js/plugins.js"):
+        text = view.read_text(rel)
+        if text is None:
+            continue
+        try:
+            return json.loads(text[text.index("["):text.rindex("]") + 1])
+        except (ValueError, json.JSONDecodeError):
+            return []
+    return []
 
 
-def _system_names(game_dir: str) -> tuple[dict[int, str], dict[int, str]]:
+def _system_names(game_dir: str,
+                  view: FileView | None = None) -> tuple[dict[int, str], dict[int, str]]:
     """Имена из data/System.json (индекс 0 пустой, пропускаем)."""
-    path = os.path.join(game_dir, "data", "System.json")
-    if not os.path.exists(path):
-        path = os.path.join(game_dir, "www", "data", "System.json")
+    view = view or DiskFileView(game_dir)
     var_names: dict[int, str] = {}
     switch_names: dict[int, str] = {}
+    text = None
+    for rel in ("data/System.json", "www/data/System.json"):
+        text = view.read_text(rel)
+        if text is not None:
+            break
+    if text is None:
+        return var_names, switch_names
     try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
         return var_names, switch_names
     for i, name in enumerate(data.get("variables") or []):
         if name:
@@ -78,13 +83,14 @@ def _system_names(game_dir: str) -> tuple[dict[int, str], dict[int, str]]:
     return var_names, switch_names
 
 
-def extract_names(game_dir: str) -> tuple[dict[int, str], dict[int, str]]:
+def extract_names(game_dir: str,
+                  view: FileView | None = None) -> tuple[dict[int, str], dict[int, str]]:
     """Возвращает (имена переменных, имена переключателей)."""
-    var_names, switch_names = _system_names(game_dir)
+    var_names, switch_names = _system_names(game_dir, view)
     # плагины заполняют пробелы, не затирая System.json
     plugin_vars: dict[int, str] = {}
     plugin_switches: dict[int, str] = {}
-    for plugin in _read_plugins_js(game_dir):
+    for plugin in _read_plugins_js(game_dir, view):
         params = plugin.get("parameters") if isinstance(plugin, dict) else None
         if not isinstance(params, dict):
             continue
@@ -97,15 +103,20 @@ def extract_names(game_dir: str) -> tuple[dict[int, str], dict[int, str]]:
     return var_names, switch_names
 
 
-def extract_maps(game_dir: str) -> list[tuple[int, str]]:
+def extract_maps(game_dir: str,
+                 view: FileView | None = None) -> list[tuple[int, str]]:
     """Список карт (id, имя) из MapInfos.json для телепорта."""
-    path = os.path.join(game_dir, "data", "MapInfos.json")
-    if not os.path.exists(path):
-        path = os.path.join(game_dir, "www", "data", "MapInfos.json")
+    view = view or DiskFileView(game_dir)
+    text = None
+    for rel in ("data/MapInfos.json", "www/data/MapInfos.json"):
+        text = view.read_text(rel)
+        if text is not None:
+            break
+    if text is None:
+        return []
     try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
         return []
     maps = []
     for obj in data:
@@ -114,34 +125,39 @@ def extract_maps(game_dir: str) -> list[tuple[int, str]]:
     return maps
 
 
-def _read_data_file(game_dir: str, filename: str) -> list:
-    path = os.path.join(game_dir, "data", filename)
-    if not os.path.exists(path):
-        path = os.path.join(game_dir, "www", "data", filename)
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return []
-    return data if isinstance(data, list) else []
+def _read_data_file(game_dir: str, filename: str,
+                    view: FileView | None = None) -> list:
+    view = view or DiskFileView(game_dir)
+    for rel in (f"data/{filename}", f"www/data/{filename}"):
+        text = view.read_text(rel)
+        if text is None:
+            continue
+        try:
+            data = json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            return []
+        return data if isinstance(data, list) else []
+    return []
 
 
-def extract_item_names(game_dir: str) -> dict[tuple[str, int], str]:
+def extract_item_names(game_dir: str,
+                       view: FileView | None = None) -> dict[tuple[str, int], str]:
     """Имена предметов/оружия/брони: {(kind, id): name}."""
     result: dict[tuple[str, int], str] = {}
     for kind, fname in [("item", "Items.json"),
                         ("weapon", "Weapons.json"),
                         ("armor", "Armors.json")]:
-        for obj in _read_data_file(game_dir, fname):
+        for obj in _read_data_file(game_dir, fname, view):
             if isinstance(obj, dict) and obj.get("id") and obj.get("name"):
                 result[(kind, obj["id"])] = obj["name"]
     return result
 
 
-def extract_state_names(game_dir: str) -> dict[int, str]:
+def extract_state_names(game_dir: str,
+                        view: FileView | None = None) -> dict[int, str]:
     """Имена состояний (отравление, баффы и т.д.)."""
     result: dict[int, str] = {}
-    for obj in _read_data_file(game_dir, "States.json"):
+    for obj in _read_data_file(game_dir, "States.json", view):
         if isinstance(obj, dict) and obj.get("id") and obj.get("name"):
             result[obj["id"]] = obj["name"]
     return result

@@ -4,12 +4,17 @@
 Левая колонка: список карт + текущая карта игрока.
 Правая колонка: полная отрисовка карты (тайлсеты) + зум.
 Клик по карте: пустой клетка → телепорт; событие → меню редактирования.
+
+Отрисовка тяжёлых слоёв (тайлы+тени) вынесена в фоновый поток —
+интерфейс не замирает на больших картах; зум лишь перекомпоновывает
+кэшированные слои без повторного рендера.
 """
 from __future__ import annotations
 
+import copy
 import os
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QGroupBox,
                                 QHBoxLayout, QLabel, QLineEdit, QListWidget,
@@ -24,7 +29,180 @@ from app.ui.icons import icon
 
 ZOOM_LEVELS = [25, 50, 75, 100, 150, 200]
 
+# капы разрешения: базовый слой (тайлы+тени) и итоговая картинка
+# не дают QImage раздуться до гигабайтов на больших картах/зуме
+MAX_BASE = 4096
+MAX_VIEW = 8192
+
 _DIR_ROW = {2: 0, 4: 1, 6: 2, 8: 3}
+
+
+def _layer_scale(w: int, h: int) -> float:
+    return min(1.0, MAX_BASE / max(w, h, 1) / maprender.TILE)
+
+
+class _LayerPainter:
+    """Рисование слоёв карты: работает и в фоновом потоке, и в GUI.
+
+    QPainter на QImage безопасен вне GUI-потока; файловые чтения идут
+    через кэшируемый file_view (asar/диск).
+    """
+
+    def __init__(self, game_dir: str | None, view, tileset_names: list[str],
+                 pages: dict[int, QImage | None],
+                 chars: dict[str, QImage | None]):
+        self._game_dir = game_dir
+        self._view = view
+        self._names = tileset_names
+        self.pages = pages
+        self.chars = chars
+
+    def page_image(self, page: int) -> QImage | None:
+        if page in self.pages:
+            return self.pages[page]
+        if page >= len(self._names) or not self._names[page]:
+            self.pages[page] = None
+            return None
+        raw = crypto.read_image(
+            self._game_dir or "", f"img/tilesets/{self._names[page]}",
+            view=self._view) if self._game_dir else None
+        if not raw:
+            self.pages[page] = None
+            return None
+        img = QImage.fromData(raw, "PNG")
+        self.pages[page] = img if not img.isNull() else None
+        return self.pages[page]
+
+    def draw_tile(self, painter: QPainter, tile_id: int, dx: int, dy: int):
+        src = maprender.tile_source(tile_id)
+        if not src:
+            return
+        page, sx, sy = src
+        img = self.page_image(page)
+        t = maprender.TILE
+        if img is None:
+            painter.fillRect(dx, dy, t, t, QColor(70, 40, 40, 160))
+            return
+        if sx + t > img.width() or sy + t > img.height():
+            return
+        painter.drawImage(dx, dy, img, sx, sy, t, t)
+
+    def char_image(self, name: str) -> QImage | None:
+        if name in self.chars:
+            return self.chars[name]
+        raw = crypto.read_image(
+            self._game_dir or "", f"img/characters/{name}",
+            view=self._view) if self._game_dir else None
+        img = QImage.fromData(raw, "PNG") if raw else QImage()
+        self.chars[name] = img if not img.isNull() else None
+        return self.chars[name]
+
+    def draw_char(self, painter, name, img_ev, ex, ey):
+        ch = self.char_image(name)
+        if ch is None:
+            painter.fillRect(ex + 8, ey + 8, maprender.TILE - 16,
+                             maprender.TILE - 16, QColor(220, 160, 40, 110))
+            return
+        t = maprender.TILE
+        idx = img_ev.get("characterIndex", 0)
+        big = name.startswith("$")
+        if big:
+            cw, ch_h = ch.width() / 3, ch.height() / 4
+            sx = (img_ev.get("pattern", 1) % 3) * cw
+            sy = _DIR_ROW.get(img_ev.get("direction", 2), 0) * ch_h
+        else:
+            cw, ch_h = ch.width() / 12, ch.height() / 8
+            col, row = idx % 4, idx // 4
+            sx = col * 3 * cw + (img_ev.get("pattern", 1) % 3) * cw
+            sy = row * 4 * ch_h + _DIR_ROW.get(
+                img_ev.get("direction", 2), 0) * ch_h
+        scale = t / cw
+        painter.drawImage(
+            int(ex), int(ey + t - ch_h * scale), ch,
+            int(sx), int(sy), int(cw), int(ch_h))
+
+    def draw_events(self, painter, events: list):
+        t = maprender.TILE
+        painter.setPen(Qt.NoPen)
+        for evd in events:
+            if not isinstance(evd, dict):
+                continue
+            ex, ey = evd.get("x", 0) * t, evd.get("y", 0) * t
+            pages = evd.get("pages") or []
+            img_ev = (pages[0].get("image") or {}) if pages else {}
+            ch_name = img_ev.get("characterName", "")
+            if ch_name:
+                self.draw_char(painter, ch_name, img_ev, ex, ey)
+            elif img_ev.get("tileId"):
+                self.draw_tile(painter, img_ev["tileId"], ex, ey)
+            else:
+                painter.fillRect(ex + 8, ey + 8, t - 16, t - 16,
+                                 QColor(220, 160, 40, 110))
+            painter.setPen(QColor(255, 200, 60, 180))
+            painter.drawRect(ex + 1, ey + 1, t - 2, t - 2)
+            painter.setPen(Qt.NoPen)
+
+
+class _MapRenderThread(QThread):
+    """Фоновый рендер слоёв карты (тайлы+тени, маркеры событий)."""
+
+    result_ready = Signal(int, object, object, object, object, bool)
+    # (token, base_img, ev_img, pages_cache, chars_cache, base_capped)
+
+    def __init__(self, token, game_dir, view, tileset_names, w, h,
+                 ground, overlay, shadow, events, pages, chars):
+        super().__init__()
+        self._token = token
+        self._w, self._h = w, h
+        self._ground, self._overlay, self._shadow = ground, overlay, shadow
+        self._events = events
+        self._lp = _LayerPainter(game_dir, view, tileset_names, pages, chars)
+
+    def run(self):
+        t = maprender.TILE
+        w, h = self._w, self._h
+        scale = _layer_scale(w, h)
+        bw, bh = max(1, int(w * t * scale)), max(1, int(h * t * scale))
+        img = QImage(bw, bh, QImage.Format_ARGB32)
+        img.fill(QColor(24, 24, 24))
+        painter = QPainter(img)
+        if scale != 1.0:
+            painter.scale(scale, scale)
+        gl, ol = len(self._ground), len(self._overlay)
+        for cy in range(h):
+            row = cy * w
+            for cx in range(w):
+                i = row + cx
+                if i < gl:
+                    self._lp.draw_tile(painter, self._ground[i], cx * t, cy * t)
+                if i < ol:
+                    self._lp.draw_tile(painter, self._overlay[i], cx * t, cy * t)
+        painter.setPen(Qt.NoPen)
+        sl = len(self._shadow)
+        if sl:
+            half = t // 2
+            for cy in range(h):
+                for cx in range(w):
+                    i = cy * w + cx
+                    if i >= sl or not self._shadow[i]:
+                        continue
+                    v = self._shadow[i]
+                    for bit, (qx, qy) in ((1, (0, 0)), (2, (half, 0)),
+                                          (4, (0, half)), (8, (half, half))):
+                        if v & bit:
+                            painter.fillRect(cx * t + qx, cy * t + qy,
+                                             half, half, QColor(0, 0, 40, 90))
+        painter.end()
+        ev = QImage(bw, bh, QImage.Format_ARGB32_Premultiplied)
+        ev.fill(Qt.transparent)
+        painter = QPainter(ev)
+        if scale != 1.0:
+            painter.scale(scale, scale)
+        self._lp.draw_events(painter, self._events)
+        painter.end()
+        self.result_ready.emit(self._token, img, ev,
+                               self._lp.pages, self._lp.chars,
+                               scale != 1.0)
 
 
 class MapCanvas(QLabel):
@@ -70,7 +248,13 @@ class MapTab(QWidget):
         self._map_id: int = 0
         self._pages_img: dict[int, QImage] = {}
         self._char_img: dict[str, QImage] = {}
-        self._tilesets_loaded = False
+        self._tileset_names: list[str] = []
+        self._base_img: QImage | None = None
+        self._ev_img: QImage | None = None
+        self._base_capped: bool = False
+        self._loaded_game: str | None = None
+        self._render_seq: int = 0
+        self._render_thread: _MapRenderThread | None = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -142,6 +326,13 @@ class MapTab(QWidget):
         p = self.main.project
         return p.game_dir if p else None
 
+    def _view(self):
+        mod = self.main.engine_module
+        p = self.main.project
+        if mod and p:
+            return mod.file_view(p.game_dir)
+        return None
+
     # ── загрузка ──
     def showEvent(self, event):
         super().showEvent(event)
@@ -149,7 +340,14 @@ class MapTab(QWidget):
 
     def reload(self):
         game_dir = self._game_dir()
-        self._maps = extract_maps(game_dir) if game_dir else []
+        if game_dir != self._loaded_game:
+            # сменился проект — сбрасываем карту и слои предыдущей игры
+            self._loaded_game = game_dir
+            self._render_seq += 1
+            self._map_data = None
+            self._base_img = None
+            self._ev_img = None
+        self._maps = extract_maps(game_dir, self._view()) if game_dir else []
         self._fill_maps()
 
     def _fill_maps(self):
@@ -170,145 +368,113 @@ class MapTab(QWidget):
 
     def _load_map(self, map_id: int):
         game_dir = self._game_dir()
-        self._map_data = maprender.load_map(game_dir, map_id) \
+        self._map_data = maprender.load_map(game_dir, map_id, self._view()) \
             if game_dir else None
         self._map_id = map_id
         self._pages_img.clear()
         self._char_img.clear()
-        self._tilesets_loaded = False
+        # тайлсеты читаем один раз на карту (вкладки страниц кэшируются)
+        view = self._view()
+        tilesets = maprender.load_tilesets(game_dir, view) if game_dir else []
+        tileset = maprender.tileset_for_map(
+            tilesets, (self._map_data or {}).get("tilesetId", 1))
+        self._tileset_names = list(tileset.get("tilesetNames") or []) \
+            if tileset else []
         self._render_canvas()
 
-    # ── рендер: полный (с тайлсетами, кеш) ──
-    def _page_image(self, page: int) -> QImage | None:
-        if page in self._pages_img:
-            return self._pages_img[page]
-        game_dir = self._game_dir()
-        tileset = maprender.tileset_for_map(
-            maprender.load_tilesets(game_dir),
-            (self._map_data or {}).get("tilesetId", 1)) if game_dir else None
-        if not tileset:
-            return None
-        names = tileset.get("tilesetNames") or []
-        if page >= len(names) or not names[page]:
-            return None
-        raw = crypto.read_image(game_dir, f"img/tilesets/{names[page]}")
-        if not raw:
-            self._pages_img[page] = None
-            return None
-        img = QImage.fromData(raw, "PNG")
-        self._pages_img[page] = img if not img.isNull() else None
-        return self._pages_img[page]
-
-    def _draw_tile(self, painter: QPainter, tile_id: int, dx: int, dy: int):
-        src = maprender.tile_source(tile_id)
-        if not src:
-            return
-        page, sx, sy = src
-        img = self._page_image(page)
-        t = maprender.TILE
-        if img is None:
-            painter.fillRect(dx, dy, t, t, QColor(70, 40, 40, 160))
-            return
-        if sx + t > img.width() or sy + t > img.height():
-            return
-        painter.drawImage(dx, dy, img, sx, sy, t, t)
-
     def _render_canvas(self):
+        """Запускает фоновый рендер слоёв (интерфейс не замирает)."""
         if not self._map_data:
             self.canvas.setText(TR("map_none"))
             self.canvas.setPixmap(QPixmap())
             return
         w, h, ground, overlay, shadow = maprender.map_layers(self._map_data)
-        t = maprender.TILE
-        img = QImage(w * t, h * t, QImage.Format_ARGB32)
-        img.fill(QColor(24, 24, 24))
-        painter = QPainter(img)
-        for cy in range(h):
-            for cx in range(w):
-                i = cy * w + cx
-                if i < len(ground):
-                    self._draw_tile(painter, ground[i], cx * t, cy * t)
-                if i < len(overlay):
-                    self._draw_tile(painter, overlay[i], cx * t, cy * t)
-        painter.setPen(Qt.NoPen)
-        for cy in range(h):
-            for cx in range(w):
-                i = cy * w + cx
-                if i >= len(shadow) or not shadow[i]:
-                    continue
-                v = shadow[i]
-                half = t // 2
-                for bit, (qx, qy) in ((1, (0, 0)), (2, (half, 0)),
-                                      (4, (0, half)), (8, (half, half))):
-                    if v & bit:
-                        painter.fillRect(cx * t + qx, cy * t + qy,
-                                         half, half, QColor(0, 0, 40, 90))
-        # события — маркеры
-        for ev in self._map_data.get("events") or []:
-            if not isinstance(ev, dict):
-                continue
-            ex, ey = ev.get("x", 0) * t, ev.get("y", 0) * t
-            pages = ev.get("pages") or []
-            img_ev = (pages[0].get("image") or {}) if pages else {}
-            ch_name = img_ev.get("characterName", "")
-            if ch_name:
-                self._draw_char(painter, ch_name, img_ev, ex, ey)
-            elif img_ev.get("tileId"):
-                self._draw_tile(painter, img_ev["tileId"], ex, ey)
-            else:
-                painter.fillRect(ex + 8, ey + 8, t - 16, t - 16,
-                                 QColor(220, 160, 40, 110))
-            painter.setPen(QColor(255, 200, 60, 180))
-            painter.drawRect(ex + 1, ey + 1, t - 2, t - 2)
-            painter.setPen(Qt.NoPen)
-        painter.end()
+        events = copy.deepcopy(self._map_data.get("events") or [])
+        self._render_seq += 1
+        token = self._render_seq
+        self._base_img = None
+        self._ev_img = None
+        self.canvas.setText(TR("map_rendering"))
+        self.canvas.setPixmap(QPixmap())
+        th = _MapRenderThread(
+            token, self._game_dir(), self._view(),
+            list(self._tileset_names), w, h, ground, overlay, shadow,
+            events, dict(self._pages_img), dict(self._char_img))
+        th.result_ready.connect(self._on_render_done)
+        th.finished.connect(th.deleteLater)
+        self._render_thread = th
+        th.start()
 
+    def _on_render_done(self, token, base, ev, pages, chars, capped):
+        if token != self._render_seq or base is None:
+            return
+        self._pages_img = pages
+        self._char_img = chars
+        self._base_img = base
+        self._ev_img = ev
+        self._base_capped = capped
+        self._compose()
+
+    def _redraw_events(self):
+        """Перерисовывает только слой маркеров событий (дёшево)."""
+        if self._map_data is None or self._base_img is None:
+            return
+        w, h, *_ = maprender.map_layers(self._map_data)
+        scale = _layer_scale(w, h)
+        bw, bh = self._base_img.width(), self._base_img.height()
+        ev = QImage(bw, bh, QImage.Format_ARGB32_Premultiplied)
+        ev.fill(Qt.transparent)
+        painter = QPainter(ev)
+        if scale != 1.0:
+            painter.scale(scale, scale)
+        lp = _LayerPainter(self._game_dir(), self._view(),
+                           self._tileset_names, self._pages_img,
+                           self._char_img)
+        lp.draw_events(painter, self._map_data.get("events") or [])
+        painter.end()
+        self._ev_img = ev
+
+    def _compose(self):
+        """Собирает итоговую картинку: зум-масштаб двух слоёв + наложение."""
+        if self._base_img is None:
+            return
         zoom = self.zoom_factor()
-        pm = QPixmap.fromImage(img).scaled(
-            int(w * t * zoom), int(h * t * zoom),
-            Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        bw, bh = self._base_img.width(), self._base_img.height()
+        dw, dh = max(1, int(bw * zoom)), max(1, int(bh * zoom))
+        m = max(dw, dh)
+        if m > MAX_VIEW:
+            s = MAX_VIEW / m
+            dw, dh = max(1, int(dw * s)), max(1, int(dh * s))
+        # вниз — быстро (сетка тайлов); вверх — сглаживание, но если база
+        # уже усечена (большая карта), апскейл без сглаживания
+        transform = Qt.SmoothTransformation \
+            if (zoom > 1.0 and not self._base_capped) \
+            else Qt.FastTransformation
+        if (dw, dh) == (bw, bh):
+            pm = QPixmap.fromImage(self._base_img)
+            if self._ev_img is not None:
+                p = QPainter(pm)
+                p.drawImage(0, 0, self._ev_img)
+                p.end()
+        else:
+            pm = QPixmap.fromImage(self._base_img).scaled(
+                dw, dh, Qt.KeepAspectRatio, transform)
+            if self._ev_img is not None:
+                evp = QPixmap.fromImage(self._ev_img).scaled(
+                    dw, dh, Qt.KeepAspectRatio, transform)
+                p = QPainter(pm)
+                p.drawPixmap(0, 0, evp)
+                p.end()
         self.canvas.setPixmap(pm)
         self.canvas.resize(pm.size())
+        w, h, *_ = maprender.map_layers(self._map_data)
         name = self._map_data.get("displayName") or ""
         self.lbl_map_info.setText(
             TR("map_info", id=self._map_id, w=w, h=h, name=name))
 
-    def _draw_char(self, painter, name, img_ev, ex, ey):
-        ch = self._char_image(name)
-        if ch is None:
-            painter.fillRect(ex + 8, ey + 8, maprender.TILE - 16,
-                             maprender.TILE - 16, QColor(220, 160, 40, 110))
-            return
-        t = maprender.TILE
-        idx = img_ev.get("characterIndex", 0)
-        big = name.startswith("$")
-        if big:
-            cw, ch_h = ch.width() / 3, ch.height() / 4
-            sx = (img_ev.get("pattern", 1) % 3) * cw
-            sy = _DIR_ROW.get(img_ev.get("direction", 2), 0) * ch_h
-        else:
-            cw, ch_h = ch.width() / 12, ch.height() / 8
-            col, row = idx % 4, idx // 4
-            sx = col * 3 * cw + (img_ev.get("pattern", 1) % 3) * cw
-            sy = row * 4 * ch_h + _DIR_ROW.get(img_ev.get("direction", 2), 0) * ch_h
-        scale = t / cw
-        painter.drawImage(
-            int(ex), int(ey + t - ch_h * scale), ch,
-            int(sx), int(sy), int(cw), int(ch_h))
-
-    def _char_image(self, name: str) -> QImage | None:
-        if name in self._char_img:
-            return self._char_img[name]
-        game_dir = self._game_dir()
-        raw = crypto.read_image(game_dir, f"img/characters/{name}") \
-            if game_dir else None
-        img = QImage.fromData(raw, "PNG") if raw else QImage()
-        self._char_img[name] = img if not img.isNull() else None
-        return self._char_img[name]
-
     def _refresh_canvas(self):
-        if self._map_data:
-            self._render_canvas()
+        # зум — только перекомпоновка кэшированных слоёв (без ре-рендера)
+        self._compose()
 
     # ── контекстное меню по клику на тайле ──
     def show_tile_menu(self, x: int, y: int, global_pos):
@@ -459,7 +625,9 @@ class MapTab(QWidget):
             c2["switch1Id"] = sp_sw1.value()
             c2["switch2Valid"] = cb_sw2.isChecked()
             c2["switch2Id"] = sp_sw2.value()
-        self._render_canvas()
+        # изменились только события — перерисовываем лёгкий слой
+        self._redraw_events()
+        self._compose()
 
     # ── live: телепорт / переключатель ──
     def _send_teleport(self, map_id: int, x: int, y: int):
@@ -481,13 +649,14 @@ class MapTab(QWidget):
         if not game_dir or not self._map_data:
             return
         try:
-            path = maprender.save_map(game_dir, self._map_id, self._map_data)
+            rel = maprender.save_map(game_dir, self._map_id, self._map_data,
+                                     view=self._view())
         except OSError as e:
             QMessageBox.critical(self, TR("err"), str(e))
             return
         self._render_canvas()
         QMessageBox.information(self, TR("done"),
-                                TR("map_saved", path=os.path.basename(path)))
+                                TR("map_saved", path=os.path.basename(rel)))
 
     # ── текущая карта игрока ──
     def _on_state(self, state):

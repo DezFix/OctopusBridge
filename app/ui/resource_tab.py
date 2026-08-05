@@ -207,6 +207,7 @@ class ResourceTab(QWidget):
         super().__init__()
         self.main = main_window
         self._mode = ""
+        self._view = None
         self._archives: dict[str, object] = {}
         self._in_archive = False
         self._current_item_data = None
@@ -420,6 +421,7 @@ class ResourceTab(QWidget):
         game_dir = self._game_dir()
         mod = self.main.engine_module
         self._mode = mod.key if mod else ""
+        self._view = mod.file_view(game_dir) if (mod and game_dir) else None
         self._archives.clear()
         self._in_archive = False
         self.btn_back.setVisible(False)
@@ -440,25 +442,25 @@ class ResourceTab(QWidget):
 
     # ── RPG Maker dirs ──
     def _fill_dirs_rpgm(self, game_dir: str):
-        roots = [game_dir]
-        if os.path.isdir(os.path.join(game_dir, "www")):
-            roots.append(os.path.join(game_dir, "www"))
-        for root in roots:
+        view = self._view
+        if not view:
+            return
+        for root in ("", "www"):
             for base, prefix in (("img", "img"), ("audio", "audio"),
                                  ("movies", "movies")):
-                base_path = os.path.join(root, base)
-                if not os.path.isdir(base_path):
+                rel = f"{root}/{base}" if root else base
+                if not view.is_dir(rel):
                     continue
-                for d in sorted(os.listdir(base_path)):
-                    if os.path.isdir(os.path.join(base_path, d)):
-                        label = f"{prefix}/{d}"
-                        if root.endswith("www"):
-                            label = "www/" + label
-                        self.dir_combo.addItem(label)
+                for d in sorted(view.list_dir(rel)):
+                    if not view.is_dir(f"{rel}/{d}"):
+                        continue
+                    label = f"{prefix}/{d}"
+                    if root:
+                        label = "www/" + label
+                    self.dir_combo.addItem(label)
 
     def _rpgm_folder(self, game_dir: str) -> str:
-        rel = self.dir_combo.currentText()
-        return os.path.join(game_dir, *rel.split("/"))
+        return self.dir_combo.currentText()
 
     # ── Ren'Py dirs ──
     def _fill_dirs_renpy(self, game_dir: str):
@@ -490,37 +492,36 @@ class ResourceTab(QWidget):
 
     def _fill_list_rpgm(self, game_dir: str, q: str):
         folder = self._rpgm_folder(game_dir)
-        if not os.path.isdir(folder):
+        view = self._view
+        if not view or not view.is_dir(folder):
             return
-        for root, dirs, files in os.walk(folder):
-            dirs[:] = sorted(dirs)
-            for f in sorted(files):
-                low = f.lower()
-                rel = os.path.relpath(os.path.join(root, f), folder)
-                if low.endswith(IMG_EXTS + RPGM_ENC_IMG):
-                    if q and q not in low and q not in rel.lower():
-                        continue
-                    if not self._tag_ok(TAG_IMAGE):
-                        continue
-                    it = self._mk_item(rel.replace(os.sep, "/"), TAG_IMAGE)
-                    it.setData(Qt.UserRole, ("img", os.path.join(root, f)))
-                    self.list.addItem(it)
-                elif low.endswith(AUDIO_EXTS + RPGM_ENC_AUDIO):
-                    if q and q not in low and q not in rel.lower():
-                        continue
-                    if not self._tag_ok(TAG_AUDIO):
-                        continue
-                    it = self._mk_item(rel.replace(os.sep, "/"), TAG_AUDIO)
-                    it.setData(Qt.UserRole, ("audio", os.path.join(root, f)))
-                    self.list.addItem(it)
-                elif low.endswith(VIDEO_EXTS + RPGM_ENC_VIDEO):
-                    if q and q not in low and q not in rel.lower():
-                        continue
-                    if not self._tag_ok(TAG_VIDEO):
-                        continue
-                    it = self._mk_item(rel.replace(os.sep, "/"), TAG_VIDEO)
-                    it.setData(Qt.UserRole, ("video", os.path.join(root, f)))
-                    self.list.addItem(it)
+        for rel in view.walk(folder):
+            low = rel.lower()
+            disp = os.path.relpath(rel, folder).replace(os.sep, "/")
+            if low.endswith(IMG_EXTS + RPGM_ENC_IMG):
+                if q and q not in low and q not in rel.lower():
+                    continue
+                if not self._tag_ok(TAG_IMAGE):
+                    continue
+                it = self._mk_item(disp, TAG_IMAGE)
+                it.setData(Qt.UserRole, ("img", rel))
+                self.list.addItem(it)
+            elif low.endswith(AUDIO_EXTS + RPGM_ENC_AUDIO):
+                if q and q not in low and q not in rel.lower():
+                    continue
+                if not self._tag_ok(TAG_AUDIO):
+                    continue
+                it = self._mk_item(disp, TAG_AUDIO)
+                it.setData(Qt.UserRole, ("audio", rel))
+                self.list.addItem(it)
+            elif low.endswith(VIDEO_EXTS + RPGM_ENC_VIDEO):
+                if q and q not in low and q not in rel.lower():
+                    continue
+                if not self._tag_ok(TAG_VIDEO):
+                    continue
+                it = self._mk_item(disp, TAG_VIDEO)
+                it.setData(Qt.UserRole, ("video", rel))
+                self.list.addItem(it)
 
     def _fill_list_renpy(self, game_dir: str, current: str, q: str):
         if self.dir_combo.currentIndex() > 0:
@@ -628,16 +629,28 @@ class ResourceTab(QWidget):
             self._show_video(data)
 
     # ── byte readers ──
+    def _read_body(self, payload) -> bytes | None:
+        """Байты ресурса: абсолютный путь (Ren'Py/диск) или rel через view."""
+        if os.path.isabs(payload):
+            try:
+                with open(payload, "rb") as f:
+                    return f.read()
+            except OSError:
+                return None
+        view = self._view
+        return view.read_bytes(payload) if view else None
+
     def _read_image_bytes(self, data) -> bytes | None:
         kind, payload = data
         if kind == "archive_img":
             arch = self._archives.get(payload[0])
             return arch.read(payload[1]) if arch else None
-        with open(payload, "rb") as f:
-            body = f.read()
+        body = self._read_body(payload)
+        if body is None:
+            return None
         if payload.lower().endswith(RPGM_ENC_IMG):
             from app.core.rpgmaker import crypto
-            key = crypto.get_key(self._game_dir() or "")
+            key = crypto.get_key(self._game_dir() or "", view=self._view)
             if not key:
                 raise ValueError(TR("res_no_key"))
             return crypto.decrypt_bytes(body, key)
@@ -650,11 +663,12 @@ class ResourceTab(QWidget):
             return arch.read(payload[1]) if arch else None
         if kind == "archive_img":
             return None
-        with open(payload, "rb") as f:
-            body = f.read()
+        body = self._read_body(payload)
+        if body is None:
+            return None
         if payload.lower().endswith(RPGM_ENC_AUDIO):
             from app.core.rpgmaker import crypto
-            key = crypto.get_key(self._game_dir() or "")
+            key = crypto.get_key(self._game_dir() or "", view=self._view)
             if key:
                 try:
                     return crypto.decrypt_bytes(body, key)
@@ -676,11 +690,12 @@ class ResourceTab(QWidget):
         if kind == "archive_video":
             arch = self._archives.get(payload[0])
             return arch.read(payload[1]) if arch else None
-        with open(payload, "rb") as f:
-            body = f.read()
+        body = self._read_body(payload)
+        if body is None:
+            return None
         if payload.lower().endswith(RPGM_ENC_VIDEO):
             from app.core.rpgmaker import crypto
-            key = crypto.get_key(self._game_dir() or "")
+            key = crypto.get_key(self._game_dir() or "", view=self._view)
             if key:
                 try:
                     return crypto.decrypt_bytes(body, key)
@@ -701,6 +716,12 @@ class ResourceTab(QWidget):
         if isinstance(path, tuple):
             arch = self._archives.get(path[0])
             return arch._index.get(path[1], (0, 0))[1] if arch else 0
+        if not os.path.isabs(path):
+            if self._view is not None:
+                size = self._view.size(path)
+                if size is not None:
+                    return size
+            return 0
         return os.path.getsize(path)
 
     # ── video player ──

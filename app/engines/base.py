@@ -35,3 +35,8 @@ class EngineModule(ABC):
         """Движковые вкладки: [(widget, заголовок, роль)].
         Роль: 'live' | 'cheats' | 'module' — для профилей видимости."""
         return []
+
+    def file_view(self, game_dir: str):
+        """Файловый доступ для вкладок движка (по умолчанию — диск)."""
+        from app.core.rpgmaker.fileview import DiskFileView
+        return DiskFileView(game_dir)

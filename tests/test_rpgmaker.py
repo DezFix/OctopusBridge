@@ -140,5 +140,33 @@ assert maprender.tile_source(2816)[0] == maprender.PAGE_A2
 assert maprender.tile_source(99999) is None
 print("   OK")
 
+print("8) Профиль NW.js: чистим Local State от более новой версии...")
+from app.engines.rpgmaker.tentacle import clean_nwjs_profile
+with tempfile.TemporaryDirectory() as td:
+    # нет файла — нечего чинить
+    assert clean_nwjs_profile(td) is False
+    # свежий профиль без маркера версии не трогаем
+    with open(os.path.join(td, "Local State"), "w",
+              encoding="utf-8") as f:
+        json.dump({"profile": "ok"}, f)
+    assert clean_nwjs_profile(td) is False
+    assert os.path.exists(os.path.join(td, "Local State"))
+    # профиль от более новой версии — переименовываем, игра стартует
+    with open(os.path.join(td, "Local State"), "w",
+              encoding="utf-8") as f:
+        json.dump({"user_data_version": 9999}, f)
+    assert clean_nwjs_profile(td) is True
+    assert not os.path.exists(os.path.join(td, "Local State"))
+    assert os.path.exists(os.path.join(td, "Local State.bak"))
+    # повторный запуск: новой записи нет — чинить нечего
+    assert clean_nwjs_profile(td) is False
+    # битый JSON — не трогаем
+    with open(os.path.join(td, "Local State"), "w",
+              encoding="utf-8") as f:
+        f.write("{not-json")
+    assert clean_nwjs_profile(td) is False
+    assert os.path.exists(os.path.join(td, "Local State"))
+print("   OK")
+
 print()
 print("ВСЕ ТЕСТЫ RPG MAKER ПРОШЛИ")

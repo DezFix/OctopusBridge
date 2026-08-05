@@ -11,24 +11,39 @@ import json
 import os
 import re
 
+from app.core.rpgmaker.fileview import DiskFileView
+
 SIGNATURE = b"RPGMV\x00\x00\x00\x00\x03\x01\x00\x00\x00\x00\x00"
 HEADER_LEN = 16
 
 
-def get_key_mz(game_dir: str) -> str | None:
-    path = os.path.join(game_dir, "data", "System.json")
-    if not os.path.exists(path):
-        return None
-    with open(path, encoding="utf-8") as f:
-        return json.load(f).get("encryptionKey")
+def _view(game_dir: str, view=None):
+    return view or DiskFileView(game_dir)
 
 
-def get_key_mv(game_dir: str) -> str | None:
-    path = os.path.join(game_dir, "js", "rpg_core.js")
-    if not os.path.exists(path):
+def get_key_mz(game_dir: str, view=None) -> str | None:
+    view = _view(game_dir, view)
+    for rel in ("data/System.json", "www/data/System.json"):
+        text = view.read_text(rel)
+        if text is None:
+            continue
+        try:
+            key = json.loads(text).get("encryptionKey")
+        except ValueError:
+            continue
+        if key:
+            return key
+    return None
+
+
+def get_key_mv(game_dir: str, view=None) -> str | None:
+    view = _view(game_dir, view)
+    text = view.read_text("js/rpg_core.js")
+    if text is None:
+        text = view.read_text("www/js/rpg_core.js")
+    if text is None:
         return None
-    with open(path, encoding="utf-8", errors="ignore") as f:
-        m = re.search(r'encryptionKey["\s:]+([0-9a-f]{32})', f.read())
+    m = re.search(r'encryptionKey["\s:]+([0-9a-f]{32})', text)
     return m.group(1) if m else None
 
 
@@ -57,54 +72,57 @@ def is_encrypted_name(filename: str) -> bool:
     return filename.lower().endswith(ENCRYPTED_SUFFIXES)
 
 
-def get_key(game_dir: str) -> str | None:
+def get_key(game_dir: str, view=None) -> str | None:
     """Ключ шифрования: MZ (System.json) или MV (rpg_core.js), и в www/."""
-    key = get_key_mz(game_dir) or get_key_mv(game_dir)
-    if key:
-        return key
-    www = os.path.join(game_dir, "www")
-    if os.path.isdir(www):
-        return get_key_mz(www) or get_key_mv(www)
-    return None
+    view = _view(game_dir, view)
+    return get_key_mz(game_dir, view) or get_key_mv(game_dir, view)
 
 
 # варианты имени для незашифрованного ext: (MZ-суффикс, MV-замена ext)
 _MV_ENC_EXT = {".png": ".rpgmvp", ".ogg": ".rpgmvo", ".m4a": ".rpgmvm"}
 
 
+def _resource_rels(rel_no_ext: str, exts: tuple[str, ...]) -> list[str]:
+    """Кандидаты путей ресурса: www/, MZ-суффиксы, MV-замены ext."""
+    out: list[str] = []
+    for base in (rel_no_ext, "www/" + rel_no_ext):
+        for ext in exts:
+            out.append(base + ext)
+            out.append(base + ext + "_")
+            mv_ext = _MV_ENC_EXT.get(ext)
+            if mv_ext:
+                out.append(base + mv_ext)
+    return out
+
+
 def find_resource(game_dir: str, rel_no_ext: str,
-                  exts: tuple[str, ...] = (".png",)) -> str | None:
+                  exts: tuple[str, ...] = (".png",), view=None) -> str | None:
     """Ищет ресурс с учётом деплоя в www/ и шифрованных вариантов имени.
 
     find_resource(game, "img/tilesets/Outside") найдёт
     img/tilesets/Outside.png, Outside.png_ (MZ) или Outside.rpgmvp (MV),
-    в том числе в www/.
+    в том числе в www/. Возвращает относительный путь (rel) или None.
     """
-    roots = [game_dir, os.path.join(game_dir, "www")]
-    for root in roots:
-        base = os.path.join(root, *rel_no_ext.split("/"))
-        for ext in exts:
-            candidates = [base + ext, base + ext + "_"]
-            mv_ext = _MV_ENC_EXT.get(ext)
-            if mv_ext:
-                candidates.append(base + mv_ext)
-            for path in candidates:
-                if os.path.isfile(path):
-                    return path
+    view = _view(game_dir, view)
+    for rel in _resource_rels(rel_no_ext, exts):
+        if view.exists(rel):
+            return rel
     return None
 
 
 def read_image(game_dir: str, rel_no_ext: str,
-               key: str | None = None) -> bytes | None:
+               key: str | None = None, view=None) -> bytes | None:
     """Возвращает байты PNG (расшифровывая при необходимости) или None."""
-    path = find_resource(game_dir, rel_no_ext, (".png",))
-    if not path:
+    view = _view(game_dir, view)
+    rel = find_resource(game_dir, rel_no_ext, (".png",), view=view)
+    if not rel:
         return None
-    with open(path, "rb") as f:
-        body = f.read()
-    if is_encrypted_name(path):
+    body = view.read_bytes(rel)
+    if body is None:
+        return None
+    if is_encrypted_name(rel):
         if key is None:
-            key = get_key(game_dir)
+            key = get_key(game_dir, view=view)
         if not key:
             return None
         try:

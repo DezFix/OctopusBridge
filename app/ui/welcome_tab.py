@@ -295,16 +295,33 @@ class WelcomeTab(QWidget):
         if not p:
             return
         game = p.game_dir
-        try:
-            import json as _json
-            sys_path = os.path.join(game, "data", "System.json")
-            if not os.path.exists(sys_path):
-                sys_path = os.path.join(game, "www", "data", "System.json")
-            with open(sys_path, encoding="utf-8") as f:
-                sysd = _json.load(f)
+        mod = self.main.engine_module
+        sysd = None
+        if mod is not None:
+            try:
+                view = mod.file_view(game)
+                text = view.read_text("data/System.json")
+                if text is None:
+                    text = view.read_text("www/data/System.json")
+                if text:
+                    import json as _json
+                    sysd = _json.loads(text)
+            except Exception:
+                sysd = None
+        if sysd is None:
+            try:
+                import json as _json
+                sys_path = os.path.join(game, "data", "System.json")
+                if not os.path.exists(sys_path):
+                    sys_path = os.path.join(game, "www", "data", "System.json")
+                with open(sys_path, encoding="utf-8") as f:
+                    sysd = _json.load(f)
+            except Exception:
+                sysd = None
+        if sysd:
             enc = sysd.get("hasEncryptedImages") or sysd.get("hasEncryptedAudio")
             self.lbl_enc.setText(TR("dash_enc_yes") if enc else TR("dash_enc_no"))
-        except Exception:
+        else:
             self.lbl_enc.setText("—")
         save_dir = os.path.join(game, "save")
         n = len([f for f in os.listdir(save_dir)
