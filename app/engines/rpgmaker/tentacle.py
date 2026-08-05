@@ -52,6 +52,7 @@ try {
 
 const cache = new Map();
 const requested = new Set();
+const failed = new Set();  // строки, вернувшие identity/таймаут: не спамим
 let waitingWindows = new Set();
 let _autoStateTimer = null;
 
@@ -99,14 +100,18 @@ function autoSendState() {
 }
 
 // ---------- перевод ----------
-// Не отправляем только строки без единой буквы (символы, цифры, пустые):
-// это не текст, а иконки/разделители.
+// Не отправляем: строки без единой буквы (символы, цифры, пустые) и
+// одиночные кана-символы (кнопки кана-клавиатуры: ホ, ァ, ヴ) — это
+// буквы, а не слова, перевода у них нет. «あらあら……」 — это уже слово,
+// переводим.
 const HAS_LETTER_RE = /[A-Za-z\u00C0-\u024F\u0370-\u03FF\u0400-\u04FF\u3040-\u30FF\u31F0-\u31FF\u3400-\u9FFF\uAC00-\uD7A3\uFF66-\uFF9F]/;
+const SINGLE_KANA_RE = /^[\u3040-\u30FF\u31F0-\u31FF\uFF65-\uFF9F]$/;
 
 function translatable(text) {
   if (typeof text !== "string") return false;
   text = text.trim();
   if (text.length < 1) return false;
+  if (SINGLE_KANA_RE.test(text)) return false;
   if (!HAS_LETTER_RE.test(text)) return false;
   return true;
 }
@@ -131,6 +136,20 @@ function isFastForwarding(win) {
   return false;
 }
 
+// Игрок хочет пролистать диалог: удержание OK или Ctrl — гейт «…» не
+// должен его блокировать. _showFast не выставляется, пока страница
+// заморожена — смотрим сырое состояние ввода.
+function skipRequested(win) {
+  if (isFastForwarding(win)) return true;
+  try {
+    if (typeof Input !== "undefined") {
+      if (Input.isPressed("ok")) return true;
+      if (Input.isPressed("control")) return true;
+    }
+  } catch (e) {}
+  return false;
+}
+
 function requestBackground(text, win) {
   if (!translatable(text) || requested.has(text)) {
     if (win) waitingWindows.add(win);
@@ -143,9 +162,13 @@ function requestBackground(text, win) {
     if (tr !== text) {
       cache.set(text, tr);
     } else {
-      // перевод приостановлен пользователем: не запоминаем identity,
-      // чтобы после включения перевести строку заново
+      // перевод приостановлен пользователем или не успел за таймаут
+      // канала: identity не запоминаем (после включения переведём
+      // заново), но помечаем «не удалось» — полл не будет долбить
+      // повторными запросами каждые 150мс
       requested.delete(text);
+      failed.add(text);
+      setTimeout(() => { failed.delete(text); }, 30000);
     }
     refreshMessageIfShowing(text);
     const wins = waitingWindows;
@@ -334,8 +357,16 @@ function installHooks() {
     Window_Message.prototype.startMessage = function () {
       const texts = ($gameMessage && $gameMessage._texts) || [];
       const missing = texts.filter(
-        (t) => translatable(t) && !cache.has(t));
+        (t) => translatable(t) && !cache.has(t) && !failed.has(t));
       if (missing.length === 0) {
+        this._octWaiting = false;
+        this._octWaitToken = (this._octWaitToken || 0) + 1;
+        rewrapMessage(this);
+        return _startMessage.call(this);
+      }
+      // скип (удержание OK/Ctrl): гейт не держит — показываем что есть:
+      // переводы для готового, оригиналы для остального
+      if (skipRequested(this)) {
         this._octWaiting = false;
         this._octWaitToken = (this._octWaitToken || 0) + 1;
         rewrapMessage(this);
@@ -369,8 +400,8 @@ function installHooks() {
         // $gameMessage._texts — уже плейсхолдеры «…», их в кэше нет
         const originals = win._octOriginals || [];
         const left = originals.filter(
-          (t) => translatable(t) && !cache.has(t));
-        if (left.length === 0 || Date.now() > deadline) {
+          (t) => translatable(t) && !cache.has(t) && !failed.has(t));
+        if (left.length === 0 || Date.now() > deadline || skipRequested(win)) {
           win._octWaiting = false;
           win._octWaitToken = (win._octWaitToken || 0) + 1;
           win._octOriginals = null;

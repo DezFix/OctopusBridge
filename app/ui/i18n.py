@@ -504,72 +504,6 @@ _STRINGS = {
         "en": "Language will change after restarting the app.",
     },
 
-    # ── Офлайн-модели honyaku ──
-    "models_title": {
-        "ru": "Офлайн-модели",
-        "en": "Offline models",
-    },
-    "models_prompt": {
-        "ru": "Офлайн-модели перевода не скачаны: {pairs}.\n"
-              "Без них офлайн-перевод (Honyaku) работать не будет.",
-        "en": "Offline translation models are missing: {pairs}.\n"
-              "Without them offline translation (Honyaku) won't work.",
-    },
-    "models_prompt_size": {
-        "ru": "Модели — часть приложения (~1,2 ГБ). Скачать сейчас?",
-        "en": "Models are part of the app (~1.2 GB). Download now?",
-    },
-    "models_download": {
-        "ru": "Скачать",
-        "en": "Download",
-    },
-    "models_later": {
-        "ru": "Позже",
-        "en": "Later",
-    },
-    "models_downloading": {
-        "ru": "Скачивание офлайн-моделей…",
-        "en": "Downloading offline models…",
-    },
-    "models_cancel": {
-        "ru": "Отмена",
-        "en": "Cancel",
-    },
-    "models_done": {
-        "ru": "Офлайн-модели готовы. Перевод работает автономно, "
-              "без интернета.",
-        "en": "Offline models are ready. Translation works autonomously, "
-              "no internet needed.",
-    },
-    "models_group": {
-        "ru": "Офлайн-модели Honyaku",
-        "en": "Honyaku offline models",
-    },
-    "models_ready": {
-        "ru": "Все модели на месте ({size}).",
-        "en": "All models present ({size}).",
-    },
-    "models_partial": {
-        "ru": "Скачано {done} из {total} пар ({size}). Остальное "
-              "докачается кнопкой «Скачать».",
-        "en": "{done} of {total} pairs downloaded ({size}). Download "
-              "the rest with the button below.",
-    },
-    "models_missing0": {
-        "ru": "Модели не скачаны (нужно ~{size}). Перевод включится "
-              "после скачивания.",
-        "en": "Models not downloaded yet (need ~{size}). Translation "
-              "will work after download.",
-    },
-    "models_status_hint": {
-        "ru": "Модели хранятся в папке models/ рядом с приложением — "
-              "приложение работает автономно, без интернета.",
-        "en": "Models are stored in models/ next to the app — the app "
-              "works autonomously, no internet needed.",
-    },
-    "models_unit_gb": {"ru": "ГБ", "en": "GB"},
-    "models_unit_mb": {"ru": "МБ", "en": "MB"},
-
     # ── Status bar ──
     "status_provider": {
         "ru": "Провайдер: {name}",
@@ -622,13 +556,11 @@ _STRINGS = {
     },
     "hint_engine_honyaku": {
         "ru": "Офлайн-движок не готов.\n\n"
-              "Если это первый запуск — скачайте модели кнопкой "
-              "«Модели Honyaku» в настройках (fast ~60 МБ на пару, "
-              "NLLB best ~1.2 ГБ, один раз).",
+              "Модели идут в комплекте с приложением (папка models/ "
+              "рядом с exe).",
         "en": "Offline engine is not ready.\n\n"
-              "If this is the first launch — download models with "
-              "'Honyaku Models' button in Settings (~60 MB per fast pair, "
-              "~1.2 GB for NLLB best, one-time download).",
+              "Models are bundled with the app (models/ folder next "
+              "to the exe).",
     },
 
     # ── Engine tab titles ──
@@ -682,8 +614,12 @@ _STRINGS = {
         "en": "honyaku package not installed (pip install honyaku)",
     },
     "err_honyaku_no_models": {
-        "ru": "Офлайн-перевод {s}→{t} невозможен: {e}\nСкачайте модели на вкладке «Настройки».",
-        "en": "Offline translation {s}→{t} failed: {e}\nDownload models in Settings.",
+        "ru": "Офлайн-перевод {s}→{t} невозможен: {e}\n"
+              "Модели идут в комплекте — проверьте папку models/ "
+              "рядом с приложением.",
+        "en": "Offline translation {s}→{t} failed: {e}\n"
+              "Models are bundled with the app — check the models/ "
+              "folder next to the exe.",
     },
     "err_deepl_no_key": {
         "ru": "DeepL: укажите API-ключ в настройках",

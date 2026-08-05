@@ -24,7 +24,7 @@ from app.ui.theme import (C_CARD, C_PRIMARY, C_TEXT, C_TEXT_SECONDARY,
                            RADIUS_MD, RADIUS_LG)
 
 # GitHub-репозиторий вида "owner/repo". Пусто — проверка обновлений отключена.
-GITHUB_REPO = ""
+GITHUB_REPO = "DezFix/OctopusBridge"
 
 # Ключ QSettings, где хранится последняя просмотренная версия «Что нового».
 _LAST_SEEN_KEY = "last_seen_version"

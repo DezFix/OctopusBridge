@@ -149,50 +149,8 @@ class SettingsDialog(QDialog):
         close_form.addRow(TR("settings_close_behavior"), self.close_behavior)
         lay.addWidget(close_box)
 
-        models_box = QGroupBox(TR("models_group"))
-        models_form = QFormLayout(models_box)
-        self.models_status = QLabel("—")
-        self.models_status.setWordWrap(True)
-        models_form.addRow(self.models_status)
-        btn_models = QPushButton(TR("models_download"))
-        btn_models.setObjectName("accent")
-        btn_models.clicked.connect(self._on_download_models)
-        models_form.addRow(btn_models)
-        hint = QLabel(TR("models_status_hint"))
-        hint.setWordWrap(True)
-        models_form.addRow(hint)
-        lay.addWidget(models_box)
-
-        self._refresh_models_status()
-
         lay.addStretch(1)
         return w
-
-    # ── офлайн-модели honyaku ──
-    def _on_download_models(self):
-        try:
-            from app.core.translate.engines import honyaku_missing_pairs_all
-            missing = honyaku_missing_pairs_all()
-        except Exception:  # noqa: BLE001
-            missing = []
-        self.main._download_models(missing)
-        self._refresh_models_status()
-
-    def _refresh_models_status(self):
-        try:
-            from app.core.translate.engines import honyaku_models_status
-            done, total, size_mb = honyaku_models_status()
-        except Exception:  # noqa: BLE001
-            done, total, size_mb = 0, 0, 0
-        size = (f"{size_mb / 1024:.1f} {TR('models_unit_gb')}"
-                if size_mb >= 1024 else f"{size_mb} {TR('models_unit_mb')}")
-        if total and done >= total:
-            self.models_status.setText(TR("models_ready", size=size))
-        elif done:
-            self.models_status.setText(
-                TR("models_partial", done=done, total=total, size=size))
-        else:
-            self.models_status.setText(TR("models_missing0", size=size))
 
     # ── Tab 2: Realtime (engine + port + auto_launch) ──
     def _build_live_tab(self, s) -> QWidget:

@@ -4,7 +4,6 @@ Google Free, Bing."""
 from __future__ import annotations
 
 import json
-import os
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -167,43 +166,58 @@ class AIEngine(BaseEngine):
         return result
 
 
+# ── общий кэш моделей honyaku ────────────────────────────────────────
+# Прогрев и все экземпляры HonyakuEngine (realtime/files/corrector)
+# делят одни и те же Translator'ы: модель грузится в память ровно один
+# раз за сессию, а не заново для каждой вкладки и каждого запроса.
+_WARMED: dict[str, object] = {}
+_WARM_LOCK = threading.Lock()
+
+
+def _warmed_translator(pair: str):
+    """Создаёт/возвращает общий Translator honyaku для пары.
+
+    Только NLLB (best): fast-тир (OPUS-MT) удалён из-за галлюцинаций —
+    одна мультиязычная модель покрывает все пары. Создание — вне
+    блокировки: загрузка модели занимает десятки секунд и не должна
+    держать лок для других потоков.
+    """
+    from app.translators.honyaku import Translator
+    with _WARM_LOCK:
+        tr = _WARMED.get(pair)
+        if tr is not None:
+            return tr
+    # fallback="best": подозрительный перевод пересчитывается с beam=4;
+    # если и это мусор — возвращается оригинал (качество важнее скорости)
+    tr = Translator(pair=pair, fallback="best")
+    with _WARM_LOCK:
+        existing = _WARMED.get(pair)
+        if existing is not None:
+            return existing
+        _WARMED[pair] = tr
+    return tr
+
+
 class HonyakuEngine(BaseEngine):
     """Встроенный офлайн-перевод на собственной библиотеке honyaku
     (CTranslate2 + SentencePiece, без PyTorch).
 
-    Два тира моделей:
-      * fast — OPUS-MT, отдельная маленькая модель на ядровые пары
-        (ja→ru, ja→en, en→ru), максимальная скорость;
-      * best — NLLB-200 distilled 600M, ОДНА модель на все пары
-        (ja/zh/ko/ru/en/fr/de/es/it/pt), заметно лучше смысл.
-
-    Модели качаются автоматически при первом переводе (обе тиры —
-    fast для ядровых пар, best как запасная и для остальных пар).
+    Одна модель на все пары — NLLB-200 distilled 600M (int8),
+    идёт в комплекте поставки, скачивать ничего не нужно.
+    Трансляторы общие: все экземпляры движка делят общий кэш
+    `_WARMED`, каждая модель грузится ровно один раз за сессию.
     """
 
     name = "honyaku"
-    DEFAULT_PAIRS = [
-        ("ja", "ru"), ("ja", "en"), ("zh", "ru"), ("zh", "en"),
-        ("en", "ru"),
-    ]
-    _FAST_PAIRS = ("ja-ru", "ja-en", "en-ru", "zh-en")
 
-    def __init__(self, tier: str = "best"):
+    def __init__(self):
         try:
             from app.translators.honyaku import Translator
             self._Translator = Translator
         except ImportError:
             self._Translator = None
-        self.tier = tier
         self._translators: dict[str, object] = {}
         self._lock = threading.Lock()
-
-    def _tiers_for(self, pair: str) -> list[str]:
-        # для ядерных пар можно "fast"; для остальных (zh, ko…) —
-        # только best (NLLB)
-        if pair in self._FAST_PAIRS:
-            return [self.tier, "fast", "best"]
-        return [self.tier, "best"]
 
     def _translator(self, source: str, target: str):
         pair = f"{source}-{target}"
@@ -211,21 +225,18 @@ class HonyakuEngine(BaseEngine):
             tr = self._translators.get(pair)
             if tr is not None:
                 return tr
-            last_err = None
-            for tier in self._tiers_for(pair):
-                try:
-                    tr = self._Translator(pair=pair, tier=tier)
-                    self._translators[pair] = tr
-                    return tr
-                except (ValueError, RuntimeError) as e:
-                    last_err = e
-            raise EngineError from last_err
+        try:
+            tr = _warmed_translator(pair)
+        except (ValueError, RuntimeError) as e:
+            raise EngineError from e
+        with self._lock:
+            self._translators[pair] = tr
+        return tr
 
     def ping(self) -> bool:
-        # Движок готов всегда: модели качаются автоматически при первом
-        # переводе. Проверка скачанных моделей здесь НЕ нужна — иначе
-        # реалтайм молча подменяется identity-функцией и перевод
-        # «не работает» без всякой ошибки.
+        # Движок готов всегда: модели идут в комплекте. Проверка моделей
+        # здесь НЕ нужна — иначе реалтайм молча подменяется
+        # identity-функцией и перевод «не работает» без всякой ошибки.
         return self._Translator is not None
 
     def translate(self, texts: list[str], source: str, target: str,
@@ -236,19 +247,15 @@ class HonyakuEngine(BaseEngine):
         if source == target:
             return list(texts)
         pair = f"{source}-{target}"
-        # Модели качаются ТОЛЬКО фоновой задачей приложения (prefetch):
-        # синхронная докачка здесь блокирует живой перевод — серверный
-        # поток Ren'Py / CDP-поток Tyrano замирает на минуты (HF без
-        # таймаута), игра в это время «висит» по 30с на строку диалога.
-        # Если модели нет — мгновенный отказ; перевод заработает сам,
-        # как только фоновая загрузка завершится.
+        # Модели идут в комплекте поставки. Если каталога модели нет —
+        # мгновенный отказ с внятной ошибкой (не должна была пропасть,
+        # но быстрая проверка ничего не стоит).
         try:
             from app.translators.honyaku.download import is_downloaded
-            if not any(is_downloaded(t, pair) for t in self._tiers_for(pair)):
+            if not is_downloaded("best", pair):
                 raise EngineError(
-                    f"Offline models for {source}→{target} are not "
-                    "downloaded yet (background download in progress — "
-                    "translation resumes automatically).")
+                    f"Offline models for {source}→{target} are missing "
+                    "(reinstall the app or restore the models folder).")
         except EngineError:
             raise
         except ImportError:
@@ -258,7 +265,7 @@ class HonyakuEngine(BaseEngine):
         except Exception as e:  # noqa: BLE001
             raise EngineError(
                 f"No offline models for {source}→{target} "
-                "(models download automatically on first use).") from e
+                "(reinstall the app or restore the models folder).") from e
         return list(tr.translate_batch(texts))
 
 
@@ -436,7 +443,7 @@ class RotateEngine(BaseEngine):
     Тексты переводятся параллельно (пул потоков): каждый запрос к
     Google/Bing ждёт только сеть, CPU почти не тратится, поэтому
     несколько параллельных запросов дают почти линейный прирост.
-    У Bing несколько сессий — у каждой свой токен и своя квота.
+    У Bing несколько независимых сессий — у каждой свой токен и квота.
     """
 
     name = "rotate"
@@ -444,8 +451,8 @@ class RotateEngine(BaseEngine):
     BING_SESSIONS = 2
 
     def __init__(self):
-        self._engines = ([GoogleFreeEngine(), BingEngine()]
-                         * self.BING_SESSIONS)
+        self._engines = [GoogleFreeEngine()] + [
+            BingEngine() for _ in range(self.BING_SESSIONS)]
         self._cursor = 0
         self._lock = threading.Lock()
 
@@ -497,7 +504,7 @@ class NllbEngine(BaseEngine):
 
     def translate(self, texts, source, target, *args, **kwargs):
         raise EngineError(
-            "NLLB-200 перенесён в honyaku (tier=best) — выберите провайдера "
+            "NLLB-200 перенесён в Honyaku — выберите провайдера "
             "Honyaku в настройках.")
 
 
@@ -547,8 +554,8 @@ ENGINE_HINTS = {
     ),
     "honyaku": (
         "Offline engine is not ready.\n\n"
-        "Models download automatically on first translation "
-        "(~60 MB per fast pair, ~1.2 GB for NLLB best, one-time download)."
+        "The model (NLLB-200, ~600 MB) is bundled with the app — "
+        "make sure the 'models' folder sits next to the executable."
     ),
 }
 
@@ -557,86 +564,26 @@ def engine_hint(name: str) -> str:
     return ENGINE_HINTS.get(name, "Check that the engine is running.")
 
 
-# ---------- скачивание моделей honyaku ----------
-
-HONYAKU_ALL_PAIRS = [
-    ("ja", "ru"), ("ja", "en"), ("zh", "ru"), ("zh", "en"), ("en", "ru"),
-]
-
-_FAST_PAIRS = ("ja-ru", "ja-en", "en-ru", "zh-en")
-
-
-def honyaku_missing_pairs_all() -> list[tuple[str, str]]:
-    try:
-        from app.translators.honyaku.download import is_downloaded
-    except ImportError:
-        raise EngineError("honyaku not installed")
-    missing = []
-    for src, tgt in HONYAKU_ALL_PAIRS:
-        pair = f"{src}-{tgt}"
-        tiers = ("fast", "best") if pair in _FAST_PAIRS else ("best",)
-        if not any(is_downloaded(t, pair) for t in tiers):
-            missing.append((src, tgt))
-    return missing
-
-
-def honyaku_download(pairs: list[tuple[str, str]],
-                     progress=None, cancel=None) -> list[str]:
-    from app.translators.honyaku.download import ensure_model
-    done = []
-    for i, (src, dst) in enumerate(pairs):
-        if cancel is not None and cancel.is_set():
-            break
-        pair = f"{src}-{dst}"
-        tier = "fast" if pair in _FAST_PAIRS else "best"
-        if progress:
-            progress(i + 1, len(pairs), f"{src}→{dst} ({tier})")
-        ensure_model(tier, pair)
-        done.append(f"{src}→{dst}")
-    return done
-
+# ---------- прогрев honyaku ----------
 
 def honyaku_warm(pairs: list[tuple[str, str]]):
     """Прогревает движки honyaku: загружает модели в память в фоне.
 
-    Первый перевод живой сессии иначе платит полную стоимость загрузки
-    модели (fast ~1-3с, NLLB best ~10-30с) прямо в серверном/CDP-потоке —
-    игра бы замерла на первые строки. Best-effort: при ошибке модель
-    дозагрузится при первом переводе (тентент с таймаут-страховкой).
+    Трансляторы складываются в общий кэш _WARMED — ими пользуются все
+    экземпляры HonyakuEngine, так что каждая модель грузится ровно один
+    раз за сессию. NLLB (best) один — все пары берут его же.
+
+    Реально грузим модель (первый перевод создаёт движок): иначе первый
+    перевод живой сессии платит полную стоимость загрузки NLLB
+    (~10-30с CPU) прямо в серверном/CDP-потоке — игра замирает на
+    первые строки. Пары для прогрева передаёт вызывающий код (обычно
+    одна активная пара из настроек — грузить все 5 пар = ~3 ГБ RAM).
+    Вызовы идут под общим _model_lock, так что гонки с живым переводом
+    нет. Best-effort: при ошибке модель дозагрузится при первом переводе.
     """
-    from app.translators.honyaku import Translator
     for src, dst in pairs:
-        pair = f"{src}-{dst}"
-        tier = "fast" if pair in _FAST_PAIRS else "best"
         try:
-            Translator(pair=pair, tier=tier)._ensure_engine()
+            tr = _warmed_translator(f"{src}-{dst}")
+            tr.translate("ウォームアップ。")
         except Exception:  # noqa: BLE001
             continue
-
-
-def honyaku_models_status() -> tuple[int, int, int]:
-    """Статус офлайн-моделей: (скачано пар, всего пар, размер МБ).
-
-    Размер считается по каталогу модели honyaku (model_root()).
-    """
-    from app.translators.honyaku.download import model_root, is_downloaded
-    total = len(HONYAKU_ALL_PAIRS)
-    done = 0
-    for src, tgt in HONYAKU_ALL_PAIRS:
-        pair = f"{src}-{tgt}"
-        tiers = ("fast", "best") if pair in _FAST_PAIRS else ("best",)
-        if any(is_downloaded(t, pair) for t in tiers):
-            done += 1
-    size_mb = 0
-    root = model_root()
-    try:
-        for dirpath, _dirnames, filenames in os.walk(str(root)):
-            for name in filenames:
-                try:
-                    size_mb += os.path.getsize(
-                        os.path.join(dirpath, name)) // (1024 * 1024)
-                except OSError:
-                    pass
-    except OSError:
-        pass
-    return done, total, size_mb

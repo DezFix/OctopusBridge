@@ -7,6 +7,7 @@ import re
 from typing import Callable
 
 from app.core.models import TranslationEntry
+from .alphabets import is_single_letter
 from .detect import detect_lang
 from .engines import BaseEngine
 from .fixers import apply_fixers
@@ -75,6 +76,12 @@ class Translator:
                 return text
             src_lang = detected
 
+        # одиночный знак алфавита (кана/кириллица/латиница) — не слово,
+        # перевода не имеет; раньше чем TM: старый мусор «Домой» не должен
+        # вылезать из кеша
+        if is_single_letter(text):
+            return text
+
         cached = self.tm.get(text, src_lang, tgt_lang) if self.tm else None
         if cached:
             return cached
@@ -97,6 +104,11 @@ class Translator:
                 continue
             # TextPreserve check: строка только из кодов — движку не нужна
             if is_code_only(segment.strip()):
+                out_parts.append(segment)
+                continue
+            # одиночный знак алфавита (кнопка кана-клавиатуры, хоткей) —
+            # движку не отправляем, отдаём как есть
+            if is_single_letter(segment.strip()):
                 out_parts.append(segment)
                 continue
             # движки нормализуют пробелы по краям — сохраняем их сами
@@ -257,6 +269,13 @@ class Translator:
             masked, codes = mask(mid)
             if is_code_only(masked):
                 # TextPreserve check: строка только из кодов — без движка
+                for e in holders:
+                    e.translation = original
+                    e.status = "translated"
+                    done[0] += 1
+                continue
+            # одиночный знак алфавита — без движка, как есть
+            if is_single_letter(masked):
                 for e in holders:
                     e.translation = original
                     e.status = "translated"

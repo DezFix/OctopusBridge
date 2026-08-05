@@ -1,17 +1,11 @@
 from __future__ import annotations
 
-PAIRS = ("ja-ru", "ja-en", "en-ru", "zh-en")
-TIERS = ("fast", "best")
-
-FAST_REPOS = {
-    "ja-ru": "ooeoeo/opus-mt-ja-ru-ct2-float16",
-    "ja-en": "ooeoeo/opus-mt-ja-en-ct2-float16",
-    "en-ru": "ooeoeo/opus-mt-en-ru-ct2-float16",
-    "zh-en": "ooeoeo/opus-mt-zh-en-ct2-float16",
-}
+TIERS = ("best",)
 
 NLLB_REPO = "JustFrederik/nllb-200-distilled-600M-ct2-int8"
 
+# Код языков в терминологии NLLB-200. Модель знает все 200 языков NLLB —
+# достаточно добавить код сюда (и в LANG_NAMES) одной строкой.
 NLLB_CODES = {
     "ja": "jpn_Jpan",
     "en": "eng_Latn",
@@ -39,8 +33,7 @@ LANG_NAMES = {
 }
 
 TIER_INFO = {
-    "fast": "OPUS-MT: отдельная маленькая модель на каждую пару (~60 МБ), очень быстро, база Tatoeba",
-    "best": "NLLB-200 distilled 600M: одна модель на все пары (~1.2 ГБ), заметно лучше смысл, медленнее",
+    "best": "NLLB-200 distilled 600M: одна модель на все пары (~1.2 ГБ), 200 языков, int8",
 }
 
 
@@ -48,17 +41,13 @@ def check(tier: str, pair: str) -> None:
     if tier not in TIERS:
         raise ValueError(f"Неизвестный tier: {tier!r}. Доступно: {', '.join(TIERS)}")
     src, tgt = pair.split("-", 1)
-    if tier == "fast":
-        if pair not in PAIRS:
-            raise ValueError(f"fast поддерживает только пары: {', '.join(PAIRS)}")
-    elif src not in NLLB_CODES or tgt not in NLLB_CODES:
+    if src not in NLLB_CODES or tgt not in NLLB_CODES:
         raise ValueError(
-            f"best-модель не поддерживает язык {src if src not in NLLB_CODES else tgt!r}. "
-            f"Доступно: {', '.join(NLLB_CODES)}")
+            f"Модель не поддерживает язык {src if src not in NLLB_CODES else tgt!r}. "
+            f"Доступно: {', '.join(NLLB_CODES)}"
+        )
 
 
 def repo_for(tier: str, pair: str) -> str:
     check(tier, pair)
-    if tier == "fast":
-        return FAST_REPOS[pair]
     return NLLB_REPO

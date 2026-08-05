@@ -57,7 +57,7 @@ from PyInstaller.utils.win32.versioninfo import (
     FixedFileInfo, StringFileInfo, StringStruct, StringTable,
     VarFileInfo, VarStruct, VSVersionInfo)
 
-datas = collect_data_files('app') + [('ico.ico', '.')]
+datas = collect_data_files('app') + [('ico.ico', '.'), ('CHANGELOG.md', '.')]
 binaries, hiddenimports = [], []
 # honyaku — встроенный модуль app/translators/honyaku: PyInstaller
 # подхватит его из импортов app. Внешние пакеты — с бинарями и данными:

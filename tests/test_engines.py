@@ -98,5 +98,43 @@ try:
 except Exception as e:  # noqa: BLE001
     print("   SKIP:", e)
 
+print("5) Одиночные знаки алфавитов не идут в переводчик...")
+from app.core.translate.alphabets import is_single_letter
+from app.core.translate.service import Translator as CoreTranslator
+
+for ch in "ホァィゥェォヴありがАБЯabcdё":
+    assert is_single_letter(ch), ch
+assert not is_single_letter("ホラ"), "два знака — уже слово"
+assert not is_single_letter("hello"), "слово"
+assert not is_single_letter("ホララ"), "слово из трёх знаков"
+assert not is_single_letter(""), "пусто — не буква"
+assert is_single_letter(" ホ "), "пробелы не мешают"
+
+
+class CountingEngine:  # сервис не должен обращаться к движку для букв
+    calls = 0
+
+    def translate(self, texts, source, target, **kw):
+        self.calls += 1
+        return ["МУСОР"] * len(texts)   # «Домой»-галлюцинация движка
+
+
+ce = CountingEngine()
+svc = CoreTranslator(ce)
+assert svc.translate_text("ホ", "ja", "ru") == "ホ"
+assert svc.translate_text("ァ", "ja", "ru") == "ァ"
+assert svc.translate_text("B", "ja", "ru") == "B"
+assert svc.translate_text("Ё", "ru", "en") == "Ё"
+assert ce.calls == 0, "движок не вызывался ни разу"
+from app.core.models import TranslationEntry
+entries = [TranslationEntry(1, "f", "p", "c", "ホ", "", "new"),
+           TranslationEntry(2, "f", "p", "c", "この世界へようこそ", "", "new")]
+n = svc.translate_entries(entries, "ja", "ru")
+assert n == 2 and entries[0].translation == "ホ" \
+    and entries[1].translation == "МУСОР", (n, entries[0].translation,
+                                           entries[1].translation)
+assert ce.calls == 1, "движок вызван только для настоящей строки"
+print("   OK")
+
 print()
 print("ВСЕ ТЕСТЫ ДВИЖКОВ ПРОШЛИ")

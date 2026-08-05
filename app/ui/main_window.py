@@ -9,7 +9,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import threading
 
 from PySide6.QtCore import QSettings, QThread, Signal
 from PySide6.QtGui import QIcon, QCloseEvent
@@ -89,42 +88,28 @@ def _migrate_project_files():
                 pass
 
 
-class _ModelPrefetch(QThread):
-    """Фоновая загрузка офлайн-моделей honyaku (fast+best).
+class _HonyakuWarm(QThread):
+    """Фоновая загрузка офлайн-моделей honyaku в память (без UI).
 
-    progress: (сделано, всего, метка) для прогресс-диалога;
-    status: текстовые сообщения для лога.
+    Модели идут в комплекте с приложением (папка models/ рядом с exe),
+    поэтому ничего не скачивается — только прогрев: первый перевод
+    живой сессии не должен платить загрузку модели (NLLB best ~10-30с)
+    в серверном/CDP-потоке.
     """
 
-    progress = Signal(int, int, str)
     status = Signal(str)
 
-    def __init__(self, pairs, parent=None):
+    def __init__(self, parent=None, pairs=()):
         super().__init__(parent)
-        self.setObjectName("ModelPrefetch")
-        self.pairs = pairs
-        self.cancel_event = threading.Event()
-
-    def cancel(self):
-        self.cancel_event.set()
+        self._pairs = list(pairs)
 
     def run(self):
-        from app.core.translate.engines import honyaku_download, honyaku_warm
         try:
-            honyaku_download(
-                self.pairs,
-                progress=lambda i, n, lbl: self.progress.emit(i, n, lbl),
-                cancel=self.cancel_event)
-            if not self.cancel_event.is_set():
-                # прогреваем модели: первый перевод живой сессии не должен
-                # платить загрузку модели прямо в серверном/CDP-потоке
-                honyaku_warm(self.pairs)
-                self.status.emit("Офлайн-модели готовы к работе.")
+            from app.core.translate.engines import honyaku_warm
+            honyaku_warm(self._pairs)
+            self.status.emit("Офлайн-модели готовы к работе.")
         except Exception as e:  # noqa: BLE001
-            if not self.cancel_event.is_set():
-                self.status.emit(
-                    f"Автозагрузка моделей не удалась ({e}) — "
-                    f"перевод включится после повторной попытки.")
+            self.status.emit(f"Прогрев моделей не удался ({e}).")
 
 
 class MainWindow(QMainWindow):
@@ -207,7 +192,6 @@ class MainWindow(QMainWindow):
         self.refresh_status_bar()
 
         from PySide6.QtCore import QTimer
-        QTimer.singleShot(500, self._check_models_on_start)
         from app.ui.app_info import maybe_show_changelog
         QTimer.singleShot(900, lambda: maybe_show_changelog(self))
 
@@ -516,6 +500,10 @@ class MainWindow(QMainWindow):
             ok = self.session.launch(tentacle, target)
         if not ok:
             self.status_bar.set_connected(False)
+            return ok
+        # модели honyaku грузим в фоне сразу при старте сессии: пока игра
+        # загружается, NLLB уже прогрет — первые строки не ждут модель
+        self._start_honyaku_warm()
         return ok
 
     def stop_session(self, kill_game: bool = True):
@@ -553,98 +541,35 @@ class MainWindow(QMainWindow):
         self.status_bar.set_connected(connected,
                                       backend=self._backend_name())
 
-    # ---------- офлайн-модели: проверка и загрузка ----------
-    def _check_models_on_start(self):
-        """Всплывающее окно: офлайн-модели не скачаны — предложить
-        загрузку. Показывается при каждом старте, пока модели не будут
-        установлены (иначе офлайн-перевод работать не будет)."""
-        if not self.isVisible():   # модальный попап — только в реальном UI
+    # ---------- офлайн-модели: фоновый прогрев ----------
+    def _start_honyaku_warm(self):
+        """Прогревает модели honyaku в фоне (модели в комплекте,
+        скачивать не нужно). Запускается при старте живой сессии —
+        в пустом окне приложение процессор не грузит. Если honyaku
+        не установлен — тихо.
+
+        Греем только активную пару из настроек: NLLB один, но каждый
+        Translator грузит собственную копию модели — 5 пар = ~3 ГБ RAM.
+        """
+        if getattr(self, "_warm_thread", None) \
+                and self._warm_thread.isRunning():
             return
         engine = self.settings.value("engine", "honyaku")
         realtime = self.settings.value("engine_realtime", "honyaku")
         files = self.settings.value("engine_files", "honyaku")
         if not any(e in ("honyaku", "argos", "")
                    for e in (engine, realtime, files)):
-            self.settings.setValue("setup_done", True)
             return
-        try:
-            from app.core.translate.engines import honyaku_missing_pairs_all
-            missing = honyaku_missing_pairs_all()
-        except Exception:  # noqa: BLE001
-            self.settings.setValue("setup_done", True)
-            return
-        if not missing:
-            self.settings.setValue("setup_done", True)
-            return
-        self._ask_download_models(missing)
-
-    def _ask_download_models(self, missing):
-        """Диалог «модели не скачаны»: Скачать / Позже."""
-        pairs_text = ", ".join(f"{a}→{b}" for a, b in missing)
-        from PySide6.QtWidgets import QMessageBox
-        mb = QMessageBox(self)
-        mb.setIcon(QMessageBox.Icon.Information)
-        mb.setWindowTitle(TR("models_title"))
-        mb.setText(TR("models_prompt", pairs=pairs_text))
-        mb.setInformativeText(TR("models_prompt_size"))
-        btn_yes = mb.addButton(TR("models_download"),
-                               QMessageBox.ButtonRole.AcceptRole)
-        mb.addButton(TR("models_later"),
-                     QMessageBox.ButtonRole.RejectRole)
-        mb.setDefaultButton(btn_yes)
-        mb.exec()
-        if mb.clickedButton() is btn_yes:
-            self._download_models(missing)
-
-    def _download_models(self, pairs):
-        """Загрузка моделей с прогресс-диалогом (общая точка: стартовое
-        окно и кнопка в настройках)."""
-        if getattr(self, "_prefetch_thread", None) \
-                and self._prefetch_thread.isRunning():
-            return
-        from PySide6.QtCore import Qt
-        from PySide6.QtWidgets import QProgressDialog
-        dlg = QProgressDialog(TR("models_downloading"),
-                              TR("models_cancel"), 0, len(pairs), self)
-        dlg.setWindowTitle(TR("models_title"))
-        dlg.setWindowModality(Qt.WindowModality.WindowModal)
-        dlg.setMinimumDuration(0)
-        dlg.setMinimumWidth(420)
-        worker = _ModelPrefetch(pairs)
-        worker.setObjectName("HonyakuDownload")
-        worker.progress.connect(
-            lambda done, total, label: (
-                dlg.setMaximum(max(total, 1)),
-                dlg.setValue(done),
-                dlg.setLabelText(
-                    f"{TR('models_downloading')}\n{label} ({done}/{total})")))
+        s = self.settings
+        src = s.value("source_lang", "auto")
+        tgt = s.value("target_lang", "ru")
+        if src not in ("ja", "zh", "en"):
+            src = "ja"   # auto/прочее: греем самую ходовую пару
+        worker = _HonyakuWarm(self, pairs=[(src, tgt)])
+        worker.setObjectName("HonyakuWarm")
         worker.status.connect(self.bridge_log)
-        worker.finished.connect(self._on_models_finished)
-        worker.finished.connect(worker.deleteLater)
-        dlg.canceled.connect(worker.cancel)
-        self._prefetch_thread = worker
+        self._warm_thread = worker
         worker.start()
-        dlg.exec()
-        if dlg.wasCanceled():
-            worker.cancel()
-
-    def _on_models_progress(self, done: int, total: int, label: str):
-        self.bridge_log.emit(f"[{done}/{total}] {label}")
-
-    def _on_models_finished(self):
-        from PySide6.QtWidgets import QMessageBox
-        worker = self._prefetch_thread
-        self._prefetch_thread = None
-        if worker is None or worker.cancel_event.is_set():
-            return
-        try:
-            from app.core.translate.engines import honyaku_missing_pairs_all
-            if not honyaku_missing_pairs_all():
-                self.settings.setValue("setup_done", True)
-        except Exception:  # noqa: BLE001
-            pass
-        QMessageBox.information(self, TR("models_title"),
-                                TR("models_done"))
 
     def _stop_workers(self):
         """Мягко останавливает фоновые QThread перед выходом —
@@ -657,17 +582,20 @@ class MainWindow(QMainWindow):
                  getattr(tt.worker_correct.corrector, "cancel", None)
                  if tt.worker_correct else None),
                 (getattr(self, "_extract_worker", None), None),
-                (getattr(self, "_prefetch_thread", None), None),
+                (getattr(self, "_warm_thread", None), None),
                 (getattr(self.cheat_tab, "_names_worker", None)
                  if self.cheat_tab else None, None)):
             if not worker:
                 continue
-            if cancel:
-                cancel()
-            worker.requestInterruption()
-            if not worker.wait(3000):
-                worker.terminate()
-                worker.wait(1000)
+            try:
+                if cancel:
+                    cancel()
+                worker.requestInterruption()
+                if not worker.wait(3000):
+                    worker.terminate()
+                    worker.wait(1000)
+            except RuntimeError:   # C++-объект уже удалён (deleteLater)
+                pass
         # вкладки движка: останавливаем их фоновые потоки
         for widget, _role in self._engine_tabs:
             cleanup = getattr(widget, "cleanup", None)

@@ -18,24 +18,23 @@ SAMPLES = [
 ]
 
 
-def run(pair: str = "ja-ru", tier: str | None = None, repeats: int = 3) -> None:
-    tiers = [tier] if tier else ["fast", "best"]
+def run(pair: str = "ja-ru", repeats: int = 3) -> None:
     print(f"Пара: {pair}, прогонов: {repeats}\n")
-    for tier in tiers:
-        tr = Translator(pair=pair, tier=tier)
-        tr.translate("ウォームアップ。")
-        times = []
-        for _ in range(repeats):
-            t0 = time.perf_counter()
-            results = tr.translate_batch(SAMPLES)
-            times.append(time.perf_counter() - t0)
-        best = min(times)
-        chars = sum(len(s) for s in SAMPLES)
-        print(f"[{tier}] {len(SAMPLES)} фраз за {best:.3f} c -> "
-              f"{len(SAMPLES) / best:.0f} фраз/с, {chars / best:.0f} симв/с")
-        for src, dst in zip(SAMPLES, results):
-            print(f"  {src}  ->  {dst}")
-        print()
+    tr = Translator(pair=pair)
+    tr.translate("ウォームアップ。")
+    times = []
+    for _ in range(repeats):
+        t0 = time.perf_counter()
+        results = tr.translate_batch(SAMPLES)
+        times.append(time.perf_counter() - t0)
+        tr._cache.clear()  # честный замер без попаданий в кэш
+    best = min(times)
+    chars = sum(len(s) for s in SAMPLES)
+    print(f"{len(SAMPLES)} фраз за {best:.3f} c -> "
+          f"{len(SAMPLES) / best:.0f} фраз/с, {chars / best:.0f} симв/с")
+    for src, dst in zip(SAMPLES, results):
+        print(f"  {src}  ->  {dst}")
+    print()
     _bench_argos(pair)
 
 
@@ -62,7 +61,5 @@ def _bench_argos(pair: str) -> None:
 if __name__ == "__main__":
     import sys
 
-    if len(sys.argv) > 1:
-        run(tier=sys.argv[1] if sys.argv[1] in ("fast", "best") else None)
-    else:
-        run()
+    pair = sys.argv[1] if len(sys.argv) > 1 else "ja-ru"
+    run(pair)
