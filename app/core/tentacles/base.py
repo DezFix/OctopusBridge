@@ -16,11 +16,20 @@ OctopusBridge не модифицирует файлы игры ради реа�
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
 from PySide6.QtCore import QObject, Signal
 
 TranslateFn = Callable[[str], str]
+
+# Лимит времени на один перевод живой сессии. Живой перевод идёт в
+# серверном потоке (Ren'Py) или CDP-потоке (Tyrano/RPG Maker): если
+# движок завис (сетевая недоступность, долгая загрузка модели,
+# бесконечный ретрай), игра не должна замирать на строку дольше лимита.
+_LIVE_TRANSLATE_TIMEOUT = 12.0
+_LIVE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="ob-live-translate")
 
 
 class Tentacle(QObject):
@@ -55,12 +64,16 @@ class Tentacle(QObject):
         self._translation_enabled = bool(enabled)
 
     def translate(self, text: str) -> str:
-        """Переводит текст текущей функцией; при любой ошибке — оригинал."""
+        """Переводит текст текущей функцией; при любой ошибке или
+        таймауте — оригинал. Таймаут защищает игру: зависший движок
+        больше не «морозит» диалог на 30с (агент Ren'Py ждёт ответа
+        блокирующе), а CDP-поток Tyrano/RPG Maker не встаёт колом."""
         if (not self._translation_enabled or not self._translate_fn
                 or not text):
             return text
         try:
-            return self._translate_fn(text)
+            fut = _LIVE_EXECUTOR.submit(self._translate_fn, text)
+            return fut.result(timeout=_LIVE_TRANSLATE_TIMEOUT)
         except Exception:  # noqa: BLE001
             return text
 

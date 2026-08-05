@@ -1,4 +1,4 @@
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/k_k) · Поддержать проект — [ko-fi.com/k_k](https://ko-fi.com/k_k)
+Поддержать проект —[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/k_k)
 
 # OctopusBridge
 

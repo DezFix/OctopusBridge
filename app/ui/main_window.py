@@ -98,9 +98,12 @@ class _ModelPrefetch(QThread):
         self.pairs = pairs
 
     def run(self):
-        from app.core.translate.engines import honyaku_download
+        from app.core.translate.engines import honyaku_download, honyaku_warm
         try:
             honyaku_download(self.pairs)
+            # прогреваем модели: первый перевод живой сессии не должен
+            # платить загрузку модели прямо в серверном/CDP-потоке
+            honyaku_warm(self.pairs)
         except Exception as e:  # noqa: BLE001
             self.progress.emit(
                 f"Автозагрузка моделей не удалась ({e}) — модели "

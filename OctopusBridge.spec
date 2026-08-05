@@ -20,8 +20,8 @@ for _pkg in ("ctranslate2", "huggingface_hub"):
 
 version_info = VSVersionInfo(
     ffi=FixedFileInfo(
-        filevers=(0, 5, 0, 0),
-        prodvers=(0, 5, 0, 0),
+        filevers=(0, 5, 1, 0),
+        prodvers=(0, 5, 1, 0),
         mask=0x3F,
         flags=0x0,
         OS=0x40004,
@@ -34,11 +34,11 @@ version_info = VSVersionInfo(
             StringTable('040904B0', [
                 StringStruct('CompanyName', 'OctopusBridge'),
                 StringStruct('FileDescription', 'OctopusBridge - game translation & modding tool'),
-                StringStruct('FileVersion', '0.5.0'),
+                StringStruct('FileVersion', '0.5.1'),
                 StringStruct('InternalName', 'OctopusBridge'),
-                StringStruct('OriginalFilename', 'OctopusBridge_v0.5.0.exe'),
+                StringStruct('OriginalFilename', 'OctopusBridge_v0.5.1.exe'),
                 StringStruct('ProductName', 'OctopusBridge'),
-                StringStruct('ProductVersion', '0.5.0'),
+                StringStruct('ProductVersion', '0.5.1'),
             ]),
         ]),
         VarFileInfo([VarStruct('Translation', [1033, 1200])]),
@@ -66,7 +66,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='OctopusBridge_v0.5.0.exe',
+    name='OctopusBridge_v0.5.1.exe',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

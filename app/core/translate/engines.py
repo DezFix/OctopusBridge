@@ -235,6 +235,24 @@ class HonyakuEngine(BaseEngine):
             raise EngineError("honyaku module not available")
         if source == target:
             return list(texts)
+        pair = f"{source}-{target}"
+        # Модели качаются ТОЛЬКО фоновой задачей приложения (prefetch):
+        # синхронная докачка здесь блокирует живой перевод — серверный
+        # поток Ren'Py / CDP-поток Tyrano замирает на минуты (HF без
+        # таймаута), игра в это время «висит» по 30с на строку диалога.
+        # Если модели нет — мгновенный отказ; перевод заработает сам,
+        # как только фоновая загрузка завершится.
+        try:
+            from app.translators.honyaku.download import is_downloaded
+            if not any(is_downloaded(t, pair) for t in self._tiers_for(pair)):
+                raise EngineError(
+                    f"Offline models for {source}→{target} are not "
+                    "downloaded yet (background download in progress — "
+                    "translation resumes automatically).")
+        except EngineError:
+            raise
+        except ImportError:
+            pass
         try:
             tr = self._translator(source, target)
         except Exception as e:  # noqa: BLE001
@@ -574,3 +592,21 @@ def honyaku_download(pairs: list[tuple[str, str]],
         ensure_model(tier, pair)
         done.append(f"{src}→{dst}")
     return done
+
+
+def honyaku_warm(pairs: list[tuple[str, str]]):
+    """Прогревает движки honyaku: загружает модели в память в фоне.
+
+    Первый перевод живой сессии иначе платит полную стоимость загрузки
+    модели (fast ~1-3с, NLLB best ~10-30с) прямо в серверном/CDP-потоке —
+    игра бы замерла на первые строки. Best-effort: при ошибке модель
+    дозагрузится при первом переводе (тентент с таймаут-страховкой).
+    """
+    from app.translators.honyaku import Translator
+    for src, dst in pairs:
+        pair = f"{src}-{dst}"
+        tier = "fast" if pair in _FAST_PAIRS else "best"
+        try:
+            Translator(pair=pair, tier=tier)._ensure_engine()
+        except Exception:  # noqa: BLE001
+            continue

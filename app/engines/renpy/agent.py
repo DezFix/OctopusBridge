@@ -486,8 +486,9 @@ def _ob_bootstrap():
             ev = threading.Event()
             with A["response_events_lock"]:
                 A["response_events"][mid] = ev
-            # ждём с проверкой connected (timeout=None = макс 30s)
-            _timeout = 30.0 if timeout is None else timeout
+            # ждём с проверкой connected (timeout=None = макс 10s; сервер
+            # сам отвечает не дольше ~12с — таймаут-страховка щупальца)
+            _timeout = 10.0 if timeout is None else timeout
             _start_all = time.time()
             while _timeout > 0:
                 _start = time.time()
