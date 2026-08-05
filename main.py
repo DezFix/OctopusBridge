@@ -33,6 +33,8 @@ def _excepthook(exc_type, exc_value, exc_tb):
 
 
 def main():
+    # офлайн-модели honyaku: models/ рядом с приложением (автономная работа)
+    app_paths.ensure_honyaku_env()
     app = QApplication(sys.argv)
     app.setApplicationName("OctopusBridge")
     icon_path = app_paths.icon_path()

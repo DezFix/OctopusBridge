@@ -581,10 +581,12 @@ def honyaku_missing_pairs_all() -> list[tuple[str, str]]:
 
 
 def honyaku_download(pairs: list[tuple[str, str]],
-                     progress=None) -> list[str]:
+                     progress=None, cancel=None) -> list[str]:
     from app.translators.honyaku.download import ensure_model
     done = []
     for i, (src, dst) in enumerate(pairs):
+        if cancel is not None and cancel.is_set():
+            break
         pair = f"{src}-{dst}"
         tier = "fast" if pair in _FAST_PAIRS else "best"
         if progress:
@@ -610,3 +612,31 @@ def honyaku_warm(pairs: list[tuple[str, str]]):
             Translator(pair=pair, tier=tier)._ensure_engine()
         except Exception:  # noqa: BLE001
             continue
+
+
+def honyaku_models_status() -> tuple[int, int, int]:
+    """Статус офлайн-моделей: (скачано пар, всего пар, размер МБ).
+
+    Размер считается по каталогу модели honyaku (model_root()).
+    """
+    from app.translators.honyaku.download import model_root, is_downloaded
+    total = len(HONYAKU_ALL_PAIRS)
+    done = 0
+    for src, tgt in HONYAKU_ALL_PAIRS:
+        pair = f"{src}-{tgt}"
+        tiers = ("fast", "best") if pair in _FAST_PAIRS else ("best",)
+        if any(is_downloaded(t, pair) for t in tiers):
+            done += 1
+    size_mb = 0
+    root = model_root()
+    try:
+        for dirpath, _dirnames, filenames in os.walk(str(root)):
+            for name in filenames:
+                try:
+                    size_mb += os.path.getsize(
+                        os.path.join(dirpath, name)) // (1024 * 1024)
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return done, total, size_mb

@@ -20,6 +20,10 @@ TZ.md
 crash.log
 *.log
 
+# ── Офлайн-модели honyaku (1.2 ГБ, файлы >100 МБ — GitHub не принимает) ──
+# Модели — часть сборки приложения: скачиваются в models/ рядом с exe.
+models/
+
 # ── IDE / OS ──
 .idea/
 .vscode/

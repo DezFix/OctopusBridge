@@ -263,6 +263,35 @@ def verify(version: str) -> None:
     log(f"Готово: {path} ({size_mb:.1f} МБ)")
 
 
+MODELS_SRC = os.path.join(ROOT, "models")
+
+
+def copy_models() -> None:
+    """Копирует офлайн-модели honyaku в dist/models/ (автономная работа).
+
+    Модели — часть приложения: лежат в корне проекта (models/), вне git
+    (файлы >100 МБ GitHub не принимает). Приложение ищет их рядом с exe.
+    """
+    if not os.path.isdir(MODELS_SRC):
+        log("models/ не найден — офлайн-модели в сборку не включены "
+            "(приложение будет качать их при первом переводе)")
+        return
+    dst = os.path.join(DIST_DIR, "models")
+    log("Копирование офлайн-моделей в dist/models/ (это может занять время)...")
+    if os.path.isdir(dst):
+        shutil.rmtree(dst, ignore_errors=True)
+    shutil.copytree(MODELS_SRC, dst)
+    size_gb = 0.0
+    for dirpath, _dirnames, filenames in os.walk(dst):
+        for name in filenames:
+            try:
+                size_gb += os.path.getsize(
+                    os.path.join(dirpath, name))
+            except OSError:
+                pass
+    log(f"Модели в сборке: {size_gb / (1024 ** 3):.2f} ГБ (dist/models/)")
+
+
 def build_installer(python: str, version: str) -> None:
     iscc = shutil.which("iscc")
     if iscc is None:
@@ -304,6 +333,8 @@ def main() -> None:
                     help="версия для setup.iss (по умолчанию — из app/__init__.py)")
     ap.add_argument("--no-clean", action="store_true",
                     help="не очищать dist/build перед сборкой")
+    ap.add_argument("--no-models", action="store_true",
+                    help="не копировать офлайн-модели models/ в dist")
     args = ap.parse_args()
 
     t0 = time.time()
@@ -323,6 +354,8 @@ def main() -> None:
     write_spec()
     build(python)
     verify(args.version)
+    if not args.no_models:
+        copy_models()
     if args.installer:
         build_installer(python, args.version)
     log(f"Итого: {time.time() - t0:.0f} сек")

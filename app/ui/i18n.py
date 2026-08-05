@@ -504,6 +504,72 @@ _STRINGS = {
         "en": "Language will change after restarting the app.",
     },
 
+    # ── Офлайн-модели honyaku ──
+    "models_title": {
+        "ru": "Офлайн-модели",
+        "en": "Offline models",
+    },
+    "models_prompt": {
+        "ru": "Офлайн-модели перевода не скачаны: {pairs}.\n"
+              "Без них офлайн-перевод (Honyaku) работать не будет.",
+        "en": "Offline translation models are missing: {pairs}.\n"
+              "Without them offline translation (Honyaku) won't work.",
+    },
+    "models_prompt_size": {
+        "ru": "Модели — часть приложения (~1,2 ГБ). Скачать сейчас?",
+        "en": "Models are part of the app (~1.2 GB). Download now?",
+    },
+    "models_download": {
+        "ru": "Скачать",
+        "en": "Download",
+    },
+    "models_later": {
+        "ru": "Позже",
+        "en": "Later",
+    },
+    "models_downloading": {
+        "ru": "Скачивание офлайн-моделей…",
+        "en": "Downloading offline models…",
+    },
+    "models_cancel": {
+        "ru": "Отмена",
+        "en": "Cancel",
+    },
+    "models_done": {
+        "ru": "Офлайн-модели готовы. Перевод работает автономно, "
+              "без интернета.",
+        "en": "Offline models are ready. Translation works autonomously, "
+              "no internet needed.",
+    },
+    "models_group": {
+        "ru": "Офлайн-модели Honyaku",
+        "en": "Honyaku offline models",
+    },
+    "models_ready": {
+        "ru": "Все модели на месте ({size}).",
+        "en": "All models present ({size}).",
+    },
+    "models_partial": {
+        "ru": "Скачано {done} из {total} пар ({size}). Остальное "
+              "докачается кнопкой «Скачать».",
+        "en": "{done} of {total} pairs downloaded ({size}). Download "
+              "the rest with the button below.",
+    },
+    "models_missing0": {
+        "ru": "Модели не скачаны (нужно ~{size}). Перевод включится "
+              "после скачивания.",
+        "en": "Models not downloaded yet (need ~{size}). Translation "
+              "will work after download.",
+    },
+    "models_status_hint": {
+        "ru": "Модели хранятся в папке models/ рядом с приложением — "
+              "приложение работает автономно, без интернета.",
+        "en": "Models are stored in models/ next to the app — the app "
+              "works autonomously, no internet needed.",
+    },
+    "models_unit_gb": {"ru": "ГБ", "en": "GB"},
+    "models_unit_mb": {"ru": "МБ", "en": "MB"},
+
     # ── Status bar ──
     "status_provider": {
         "ru": "Провайдер: {name}",
