@@ -10,7 +10,7 @@ import hashlib
 import json
 import os
 
-from PySide6.QtCore import QSettings, QThread, Signal
+from PySide6.QtCore import QSettings, Signal
 from PySide6.QtGui import QIcon, QCloseEvent
 from PySide6.QtWidgets import (QMainWindow, QTabWidget, QSystemTrayIcon,
                                QMenu)
@@ -58,20 +58,17 @@ def _migrate_qsettings(new: QSettings):
     new.sync()
 
 
-def _cleanup_nllb_settings(s: QSettings):
-    """Удаляет остатки удалённых движков (NLLB, Argos) из настроек."""
+def _cleanup_legacy_settings(s: QSettings):
+    """Чистит остатки удалённых движков и переводит старые настройки
+    на актуальные провайдеры:
+    - nllb / argos / honyaku (удалённый офлайн-переводчик) -> rotate;
+    - engine_corrector 'nllb' -> 'ai'."""
     for key in s.allKeys():
         if key.startswith("nllb_gpu_") or key == "engine_nllb":
             s.remove(key)
-    if s.value("engine_realtime") == "nllb":
-        s.setValue("engine_realtime", "honyaku")
-    if s.value("engine_files") == "nllb":
-        s.setValue("engine_files", "honyaku")
-    if s.value("engine_corrector") == "nllb":
-        s.setValue("engine_corrector", "ai")
     for key in ("engine_realtime", "engine_files", "engine_corrector"):
-        if s.value(key) == "argos":
-            s.setValue(key, "honyaku")
+        if s.value(key) in ("nllb", "argos", "honyaku"):
+            s.setValue(key, "ai" if key == "engine_corrector" else "rotate")
 
 
 def _migrate_project_files():
@@ -88,30 +85,6 @@ def _migrate_project_files():
                 pass
 
 
-class _HonyakuWarm(QThread):
-    """Фоновая загрузка офлайн-моделей honyaku в память (без UI).
-
-    Модели идут в комплекте с приложением (папка models/ рядом с exe),
-    поэтому ничего не скачивается — только прогрев: первый перевод
-    живой сессии не должен платить загрузку модели (NLLB best ~10-30с)
-    в серверном/CDP-потоке.
-    """
-
-    status = Signal(str)
-
-    def __init__(self, parent=None, pairs=()):
-        super().__init__(parent)
-        self._pairs = list(pairs)
-
-    def run(self):
-        try:
-            from app.core.translate.engines import honyaku_warm
-            honyaku_warm(self._pairs)
-            self.status.emit("Офлайн-модели готовы к работе.")
-        except Exception as e:  # noqa: BLE001
-            self.status.emit(f"Прогрев моделей не удался ({e}).")
-
-
 class MainWindow(QMainWindow):
     bridge_client = Signal(bool)
     bridge_translated = Signal(str, str)
@@ -124,7 +97,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.settings = QSettings("OctopusBridge", "OctopusBridge")
         _migrate_qsettings(self.settings)
-        _cleanup_nllb_settings(self.settings)
+        _cleanup_legacy_settings(self.settings)
         set_language(self.settings.value("ui_lang", "en"))
         self.setWindowTitle(f"{TR('app_title')}  v{app_paths.__version__}")
         self.resize(1100, 750)
@@ -392,12 +365,12 @@ class MainWindow(QMainWindow):
     def create_engine(self, engine_type: str = "files"):
         s = self.settings
         if engine_type == "realtime":
-            name = s.value("engine_realtime", "honyaku")
+            name = s.value("engine_realtime", "rotate")
         elif engine_type == "corrector":
             name = s.value("engine_corrector",
-                           s.value("engine_files", s.value("engine", "honyaku")))
+                           s.value("engine_files", s.value("engine", "rotate")))
         else:
-            name = s.value("engine_files", s.value("engine", "honyaku"))
+            name = s.value("engine_files", s.value("engine", "rotate"))
         model = s.value("model", s.value("ollama_model", "qwen2.5:7b"))
         pfx = engine_type
         try:
@@ -408,11 +381,7 @@ class MainWindow(QMainWindow):
                                       "https://openrouter.ai/api/v1"),
                                   api_key=s.value(f"api_key_{pfx}", ""),
                                   model=model)
-            if name in ("google_free", "bing", "rotate"):
-                return get_engine(name)
-            if name in ("honyaku", "argos"):
-                return get_engine(name)
-            raise ValueError(f"Unknown engine: {name}")
+            return get_engine(name)
         except Exception:  # noqa: BLE001
             return None
 
@@ -501,9 +470,6 @@ class MainWindow(QMainWindow):
         if not ok:
             self.status_bar.set_connected(False)
             return ok
-        # модели honyaku грузим в фоне сразу при старте сессии: пока игра
-        # загружается, NLLB уже прогрет — первые строки не ждут модель
-        self._start_honyaku_warm()
         return ok
 
     def stop_session(self, kill_game: bool = True):
@@ -525,7 +491,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "status_bar"):
             return
         name = self.settings.value(
-            "engine_realtime", self.settings.value("engine", "honyaku"))
+            "engine_realtime", self.settings.value("engine", "rotate"))
         self.status_bar.set_provider(provider_short_name(str(name)))
         self.status_bar.set_connected(self.session.is_active(),
                                       backend=self._backend_name())
@@ -541,36 +507,6 @@ class MainWindow(QMainWindow):
         self.status_bar.set_connected(connected,
                                       backend=self._backend_name())
 
-    # ---------- офлайн-модели: фоновый прогрев ----------
-    def _start_honyaku_warm(self):
-        """Прогревает модели honyaku в фоне (модели в комплекте,
-        скачивать не нужно). Запускается при старте живой сессии —
-        в пустом окне приложение процессор не грузит. Если honyaku
-        не установлен — тихо.
-
-        Греем только активную пару из настроек: NLLB один, но каждый
-        Translator грузит собственную копию модели — 5 пар = ~3 ГБ RAM.
-        """
-        if getattr(self, "_warm_thread", None) \
-                and self._warm_thread.isRunning():
-            return
-        engine = self.settings.value("engine", "honyaku")
-        realtime = self.settings.value("engine_realtime", "honyaku")
-        files = self.settings.value("engine_files", "honyaku")
-        if not any(e in ("honyaku", "argos", "")
-                   for e in (engine, realtime, files)):
-            return
-        s = self.settings
-        src = s.value("source_lang", "auto")
-        tgt = s.value("target_lang", "ru")
-        if src not in ("ja", "zh", "en"):
-            src = "ja"   # auto/прочее: греем самую ходовую пару
-        worker = _HonyakuWarm(self, pairs=[(src, tgt)])
-        worker.setObjectName("HonyakuWarm")
-        worker.status.connect(self.bridge_log)
-        self._warm_thread = worker
-        worker.start()
-
     def _stop_workers(self):
         """Мягко останавливает фоновые QThread перед выходом —
         иначе QThread.destroy во время run() роняет процесс."""
@@ -582,7 +518,6 @@ class MainWindow(QMainWindow):
                  getattr(tt.worker_correct.corrector, "cancel", None)
                  if tt.worker_correct else None),
                 (getattr(self, "_extract_worker", None), None),
-                (getattr(self, "_warm_thread", None), None),
                 (getattr(self.cheat_tab, "_names_worker", None)
                  if self.cheat_tab else None, None)):
             if not worker:

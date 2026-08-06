@@ -33,7 +33,6 @@ _ENGINE_COLORS = {
     "renpy": "#8e24aa",
     "twine": "#fb8c00",
     "tyrano": "#e53935",
-    "honyaku": "#1e88e5",
     "ai": "#e53935",
 }
 

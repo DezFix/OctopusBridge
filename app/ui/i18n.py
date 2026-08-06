@@ -511,10 +511,6 @@ _STRINGS = {
     },
 
     # ── Providers (engines) ──
-    "prov_honyaku": {
-        "ru": "Honyaku — встроенный офлайн (без ключа)",
-        "en": "Honyaku — built-in offline (no key)",
-    },
     "prov_google_free": {
         "ru": "Google Translate — бесплатный (без ключа)",
         "en": "Google Translate — free (no key)",
@@ -530,10 +526,6 @@ _STRINGS = {
     "prov_ai": {
         "ru": "AI — OpenAI/Ollama/LM Studio (требуется API или локальный сервер)",
         "en": "AI — OpenAI/Ollama/LM Studio (requires API or local server)",
-    },
-    "prov_short_honyaku": {
-        "ru": "Honyaku (офлайн)",
-        "en": "Honyaku (offline)",
     },
     "prov_short_google_free": {"ru": "Google Translate", "en": "Google Translate"},
     "prov_short_bing": {"ru": "Bing Translator", "en": "Bing Translator"},
@@ -553,14 +545,6 @@ _STRINGS = {
               "port 11434.\n"
               "For remote API: set base URL and API key in Settings.\n"
               "Check connection with the 'Check provider' button.",
-    },
-    "hint_engine_honyaku": {
-        "ru": "Офлайн-движок не готов.\n\n"
-              "Модели идут в комплекте с приложением (папка models/ "
-              "рядом с exe).",
-        "en": "Offline engine is not ready.\n\n"
-              "Models are bundled with the app (models/ folder next "
-              "to the exe).",
     },
 
     # ── Engine tab titles ──
@@ -609,18 +593,6 @@ _STRINGS = {
         "ru": "Ollama вернул некорректный ответ",
         "en": "Ollama returned invalid response",
     },
-    "err_honyaku_not_installed": {
-        "ru": "Пакет honyaku не установлен (pip install honyaku)",
-        "en": "honyaku package not installed (pip install honyaku)",
-    },
-    "err_honyaku_no_models": {
-        "ru": "Офлайн-перевод {s}→{t} невозможен: {e}\n"
-              "Модели идут в комплекте — проверьте папку models/ "
-              "рядом с приложением.",
-        "en": "Offline translation {s}→{t} failed: {e}\n"
-              "Models are bundled with the app — check the models/ "
-              "folder next to the exe.",
-    },
     "err_deepl_no_key": {
         "ru": "DeepL: укажите API-ключ в настройках",
         "en": "DeepL: provide API key in settings",
@@ -629,10 +601,6 @@ _STRINGS = {
         "ru": "Неизвестный движок: {name}",
         "en": "Unknown engine: {name}",
     },
-    "err_honyaku_model_missing": {
-        "ru": "Модель {s}→{t} не найдена в каталоге Honyaku",
-        "en": "Model {s}→{t} not found in Honyaku catalog",
-    },
     "err_api_bad_response": {
         "ru": "Некорректный ответ API: {e}",
         "en": "Invalid API response: {e}",
@@ -640,10 +608,6 @@ _STRINGS = {
     "err_api_wrong_length": {
         "ru": "API вернул ответ другой длины",
         "en": "API returned response of wrong length",
-    },
-    "err_honyaku_not_installed2": {
-        "ru": "honyaku не установлен",
-        "en": "honyaku not installed",
     },
 
     # ── Bridge plugin errors ──
@@ -1030,7 +994,6 @@ def TR(key: str, **fmt) -> str:
 
 
 _PROVIDER_KEYS = {
-    "honyaku": ("prov_honyaku", "prov_short_honyaku"),
     "google_free": ("prov_google_free", "prov_short_google_free"),
     "bing": ("prov_bing", "prov_short_bing"),
     "rotate": ("prov_rotate", "prov_short_rotate"),
@@ -1052,7 +1015,7 @@ def provider_short_name(key: str) -> str:
 
 def engine_hint(name: str) -> str:
     """Локализованная подсказка при недоступном провайдере."""
-    key = {"ai": "hint_engine_ai", "honyaku": "hint_engine_honyaku"}.get(name)
+    key = {"ai": "hint_engine_ai"}.get(name)
     if key is None:
         return TR("hint_check_provider")
     return TR(key)

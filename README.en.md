@@ -6,14 +6,14 @@ Translate and mod PC games. Supported: **RPG Maker MV/MZ**, **Ren'Py**, **Twine*
 
 Text is translated in two ways: **in real time** inside the game, and **in batch** from files.
 
-Version: **0.5.0** · [Русская версия](README.md)
+Version: **0.5.4** · [Русская версия](README.md)
 
 ## Features
 
 - **Batch translation** — extract game text, translate, write it back, CSV import/export. Old translations are restored on re-extraction.
 - **Live translation** — in-game text is translated on the fly; translation can be toggled off/on at any time without stopping the game.
 - **Cheats & tools** — per engine: variables, gold, map editor, save editor, resource browser, font patch.
-- **Translation providers** — Honyaku (offline, NLLB), Google Free, Bing, Google+Bing rotation, OpenAI-compatible API.
+- **Translation providers** — Google Free, Bing, Google+Bing rotation, OpenAI-compatible API.
 - **Glossary & translation memory** — shared database across all projects (SQLite), game-code masking (`\C[8]`, `<center>`, …).
 - **Unified translation cache** — all engines write one `octopus_cache.json` in the game folder; legacy caches are read and migrated automatically.
 - **Nice UI** — dark theme, Russian/English, system tray, drag-and-drop, About and What's New dialogs.
@@ -30,13 +30,12 @@ Version: **0.5.0** · [Русская версия](README.md)
 ## Requirements
 
 - Windows 10/11 (x64).
-- ~500 MB disk + optional Honyaku offline models (from ~60 MB per language pair).
+- ~500 MB disk.
 - Ren'Py requires Frida injection — antivirus may prompt for confirmation.
 
 ## Install
 
-1. Download the installer `OctopusBridge-0.5.0-Setup.exe` from the releases and run it.
-2. On first launch the app offers to download the offline translator (skip → Google/Bing/AI).
+1. Download the installer `OctopusBridge-0.5.4-Setup.exe` from the releases and run it.
 
 > The EXE is unsigned — Windows SmartScreen may warn («More info → Run anyway»).
 
@@ -49,7 +48,7 @@ Version: **0.5.0** · [Русская версия](README.md)
 
 ## Notes
 
-- Google/Bing are unofficial free endpoints — no keys, but may be rate-limited. For heavy workloads use offline Honyaku or an AI provider.
+- Google/Bing are unofficial free endpoints — no keys, but may be rate-limited. For heavy workloads connect an AI provider (OpenAI-compatible API).
 - Injection modifies the game process in memory; use the tool only on games you own or are allowed to mod.
 - Version history: [CHANGELOG.md](CHANGELOG.md).
 

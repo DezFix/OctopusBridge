@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Движки машинного перевода: AI (LLM), Honyaku (встроенный офлайн),
-Google Free, Bing."""
+"""Движки машинного перевода: AI (LLM), Google Free, Bing, Rotate."""
 from __future__ import annotations
 
 import json
@@ -164,109 +163,6 @@ class AIEngine(BaseEngine):
             ca = context_after[i + len(chunk):] if context_after else None
             result.extend(self._translate_batch(chunk, source, target, cb, ca))
         return result
-
-
-# ── общий кэш моделей honyaku ────────────────────────────────────────
-# Прогрев и все экземпляры HonyakuEngine (realtime/files/corrector)
-# делят одни и те же Translator'ы: модель грузится в память ровно один
-# раз за сессию, а не заново для каждой вкладки и каждого запроса.
-_WARMED: dict[str, object] = {}
-_WARM_LOCK = threading.Lock()
-
-
-def _warmed_translator(pair: str):
-    """Создаёт/возвращает общий Translator honyaku для пары.
-
-    Только NLLB (best): fast-тир (OPUS-MT) удалён из-за галлюцинаций —
-    одна мультиязычная модель покрывает все пары. Создание — вне
-    блокировки: загрузка модели занимает десятки секунд и не должна
-    держать лок для других потоков.
-    """
-    from app.translators.honyaku import Translator
-    with _WARM_LOCK:
-        tr = _WARMED.get(pair)
-        if tr is not None:
-            return tr
-    # fallback="best": подозрительный перевод пересчитывается с beam=4;
-    # если и это мусор — возвращается оригинал (качество важнее скорости)
-    tr = Translator(pair=pair, fallback="best")
-    with _WARM_LOCK:
-        existing = _WARMED.get(pair)
-        if existing is not None:
-            return existing
-        _WARMED[pair] = tr
-    return tr
-
-
-class HonyakuEngine(BaseEngine):
-    """Встроенный офлайн-перевод на собственной библиотеке honyaku
-    (CTranslate2 + SentencePiece, без PyTorch).
-
-    Одна модель на все пары — NLLB-200 distilled 600M (int8),
-    идёт в комплекте поставки, скачивать ничего не нужно.
-    Трансляторы общие: все экземпляры движка делят общий кэш
-    `_WARMED`, каждая модель грузится ровно один раз за сессию.
-    """
-
-    name = "honyaku"
-
-    def __init__(self):
-        try:
-            from app.translators.honyaku import Translator
-            self._Translator = Translator
-        except ImportError:
-            self._Translator = None
-        self._translators: dict[str, object] = {}
-        self._lock = threading.Lock()
-
-    def _translator(self, source: str, target: str):
-        pair = f"{source}-{target}"
-        with self._lock:
-            tr = self._translators.get(pair)
-            if tr is not None:
-                return tr
-        try:
-            tr = _warmed_translator(pair)
-        except (ValueError, RuntimeError) as e:
-            raise EngineError from e
-        with self._lock:
-            self._translators[pair] = tr
-        return tr
-
-    def ping(self) -> bool:
-        # Движок готов всегда: модели идут в комплекте. Проверка моделей
-        # здесь НЕ нужна — иначе реалтайм молча подменяется
-        # identity-функцией и перевод «не работает» без всякой ошибки.
-        return self._Translator is not None
-
-    def translate(self, texts: list[str], source: str, target: str,
-                  context_before: list[str] | None = None,
-                  context_after: list[str] | None = None) -> list[str]:
-        if self._Translator is None:
-            raise EngineError("honyaku module not available")
-        if source == target:
-            return list(texts)
-        pair = f"{source}-{target}"
-        # Модели идут в комплекте поставки. Если каталога модели нет —
-        # мгновенный отказ с внятной ошибкой (не должна была пропасть,
-        # но быстрая проверка ничего не стоит).
-        try:
-            from app.translators.honyaku.download import is_downloaded
-            if not is_downloaded("best", pair):
-                raise EngineError(
-                    f"Offline models for {source}→{target} are missing "
-                    "(reinstall the app or restore the models folder).")
-        except EngineError:
-            raise
-        except ImportError:
-            pass
-        try:
-            tr = self._translator(source, target)
-        except Exception as e:  # noqa: BLE001
-            raise EngineError(
-                f"No offline models for {source}→{target} "
-                "(reinstall the app or restore the models folder).") from e
-        return list(tr.translate_batch(texts))
 
 
 class GoogleFreeEngine(BaseEngine):
@@ -487,30 +383,8 @@ class RotateEngine(BaseEngine):
         raise EngineError(f"Rotate unavailable: {last_err}") from last_err
 
 
-class NllbEngine(BaseEngine):
-    """Удалённый движок — оставлен как заглушка для старых настроек.
-
-    NLLB-200 теперь работает через honyaku (tier=best). Старые настройки,
-    где провайдером выбран 'nllb', переводят на HonyakuEngine.
-    """
-
-    name = "nllb"
-
-    def __init__(self, *args, **kwargs):
-        self.use_gpu = False
-
-    def ping(self) -> bool:
-        return False
-
-    def translate(self, texts, source, target, *args, **kwargs):
-        raise EngineError(
-            "NLLB-200 перенесён в Honyaku — выберите провайдера "
-            "Honyaku в настройках.")
-
-
 # реестр провайдеров для настроек
 PROVIDERS = {
-    "honyaku": "Honyaku — встроенный офлайн (без ключа)",
     "google_free": "Google Translate — бесплатный (без ключа)",
     "bing": "Bing Translator — бесплатный (без ключа)",
     "rotate": "Google + Bing — чередование (быстрее)",
@@ -528,16 +402,15 @@ def get_engine(name: str, **kwargs) -> BaseEngine:
         "ai": AIEngine,
         "ollama": AIEngine,
         "openai_compat": AIEngine,
-        "honyaku": HonyakuEngine,
-        "argos": HonyakuEngine,      # старые настройки -> honyaku
         "google_free": GoogleFreeEngine,
         "bing": BingEngine,
         "rotate": RotateEngine,
     }
     if name not in engines:
-        if name == "nllb":
-            # старые настройки с удалённым NLLB — молча переводим на honyaku
-            return HonyakuEngine()
+        if name in ("honyaku", "argos", "nllb"):
+            # старые настройки с удалённым офлайн-переводчиком — молча
+            # переводим на rotate (при запуске они обновляются в QSettings)
+            return RotateEngine()
         raise EngineError(f"Unknown engine: {name}")
     if name in ("ollama", "openai_compat"):
         kwargs.setdefault("base_url", "http://localhost:11434")
@@ -552,38 +425,8 @@ ENGINE_HINTS = {
         "For remote API: set base URL and API key in Settings.\n"
         "Check connection with 'Test Connection' button."
     ),
-    "honyaku": (
-        "Offline engine is not ready.\n\n"
-        "The model (NLLB-200, ~600 MB) is bundled with the app — "
-        "make sure the 'models' folder sits next to the executable."
-    ),
 }
 
 
 def engine_hint(name: str) -> str:
     return ENGINE_HINTS.get(name, "Check that the engine is running.")
-
-
-# ---------- прогрев honyaku ----------
-
-def honyaku_warm(pairs: list[tuple[str, str]]):
-    """Прогревает движки honyaku: загружает модели в память в фоне.
-
-    Трансляторы складываются в общий кэш _WARMED — ими пользуются все
-    экземпляры HonyakuEngine, так что каждая модель грузится ровно один
-    раз за сессию. NLLB (best) один — все пары берут его же.
-
-    Реально грузим модель (первый перевод создаёт движок): иначе первый
-    перевод живой сессии платит полную стоимость загрузки NLLB
-    (~10-30с CPU) прямо в серверном/CDP-потоке — игра замирает на
-    первые строки. Пары для прогрева передаёт вызывающий код (обычно
-    одна активная пара из настроек — грузить все 5 пар = ~3 ГБ RAM).
-    Вызовы идут под общим _model_lock, так что гонки с живым переводом
-    нет. Best-effort: при ошибке модель дозагрузится при первом переводе.
-    """
-    for src, dst in pairs:
-        try:
-            tr = _warmed_translator(f"{src}-{dst}")
-            tr.translate("ウォームアップ。")
-        except Exception:  # noqa: BLE001
-            continue

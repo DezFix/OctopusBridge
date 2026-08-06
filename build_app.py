@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
 """Сборка OctopusBridge в приложение (.exe) через PyInstaller.
 
-NLLB-200/torch исключены из состава приложения (офлайн-перевод — honyaku).
-
 Использование:
     python build_app.py                # сборка
     python build_app.py --tests        # прогнать тесты перед сборкой
@@ -33,15 +31,10 @@ BUILD_DIR = os.path.join(ROOT, "build")
 # Обязательные пакеты (module -> имя пакета для pip).
 REQUIRED_MIN = {
     "PySide6": "PySide6", "requests": "requests", "websockets": "websockets",
-    "psutil": "psutil",
-    "frida": "frida", "sentencepiece": "sentencepiece",
-    "ctranslate2": "ctranslate2", "huggingface_hub": "huggingface_hub",
+    "psutil": "psutil", "frida": "frida",
 }
 
 # Исключаем неиспользуемые тяжёлые пакеты, чтобы exe оставался лёгким.
-# ВНИМАНИЕ: sentencepiece нельзя исключать — его требует honyaku
-# (встроенный переводчик в app/translators/honyaku, движок по умолчанию).
-# huggingface_hub тоже обязателен: через него honyaku скачивает модели.
 EXCLUDES_MIN = [
     "torch", "torchvision", "torchaudio", "torch_directml",
     "transformers", "tokenizers", "safetensors",
@@ -59,16 +52,6 @@ from PyInstaller.utils.win32.versioninfo import (
 
 datas = collect_data_files('app') + [('ico.ico', '.'), ('CHANGELOG.md', '.')]
 binaries, hiddenimports = [], []
-# honyaku — встроенный модуль app/translators/honyaku: PyInstaller
-# подхватит его из импортов app. Внешние пакеты — с бинарями и данными:
-for _pkg in ("ctranslate2", "huggingface_hub"):
-    try:
-        _d, _b, _h = collect_all(_pkg)
-    except Exception:
-        _d, _b, _h = [], [], []
-    datas += _d
-    binaries += _b
-    hiddenimports += _h
 
 version_info = VSVersionInfo(
     ffi=FixedFileInfo(
@@ -226,7 +209,7 @@ def write_spec() -> None:
             .replace("__FILEVERS__", repr(_version_tuple(version))))
     with open(SPEC_PATH, "w", encoding="utf-8") as f:
         f.write(spec)
-    log(f"Спека записана (минимальная сборка, Honyaku, без NLLB, версия {version})")
+    log(f"Спека записана (минимальная сборка, версия {version})")
 
 
 def clean() -> None:
@@ -261,35 +244,6 @@ def verify(version: str) -> None:
         sys.exit(f"ОШИБКА: {path} не найден после сборки")
     size_mb = os.path.getsize(path) / (1024 * 1024)
     log(f"Готово: {path} ({size_mb:.1f} МБ)")
-
-
-MODELS_SRC = os.path.join(ROOT, "models")
-
-
-def copy_models() -> None:
-    """Копирует офлайн-модели honyaku в dist/models/ (автономная работа).
-
-    Модели — часть приложения: лежат в корне проекта (models/), вне git
-    (файлы >100 МБ GitHub не принимает). Приложение ищет их рядом с exe.
-    """
-    if not os.path.isdir(MODELS_SRC):
-        log("models/ не найден — офлайн-модели в сборку не включены "
-            "(приложение будет качать их при первом переводе)")
-        return
-    dst = os.path.join(DIST_DIR, "models")
-    log("Копирование офлайн-моделей в dist/models/ (это может занять время)...")
-    if os.path.isdir(dst):
-        shutil.rmtree(dst, ignore_errors=True)
-    shutil.copytree(MODELS_SRC, dst)
-    size_gb = 0.0
-    for dirpath, _dirnames, filenames in os.walk(dst):
-        for name in filenames:
-            try:
-                size_gb += os.path.getsize(
-                    os.path.join(dirpath, name))
-            except OSError:
-                pass
-    log(f"Модели в сборке: {size_gb / (1024 ** 3):.2f} ГБ (dist/models/)")
 
 
 def build_installer(python: str, version: str) -> None:
@@ -333,8 +287,6 @@ def main() -> None:
                     help="версия для setup.iss (по умолчанию — из app/__init__.py)")
     ap.add_argument("--no-clean", action="store_true",
                     help="не очищать dist/build перед сборкой")
-    ap.add_argument("--no-models", action="store_true",
-                    help="не копировать офлайн-модели models/ в dist")
     args = ap.parse_args()
 
     t0 = time.time()
@@ -354,8 +306,6 @@ def main() -> None:
     write_spec()
     build(python)
     verify(args.version)
-    if not args.no_models:
-        copy_models()
     if args.installer:
         build_installer(python, args.version)
     log(f"Итого: {time.time() - t0:.0f} сек")

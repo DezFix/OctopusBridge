@@ -1,6 +1,6 @@
 ﻿; Inno Setup скрипт для OctopusBridge
 #define MyAppName "OctopusBridge"
-#define MyAppVersion "0.5.3"
+#define MyAppVersion "0.5.4"
 #define MyAppPublisher "OctopusBridge"
 #define MyAppExeName "OctopusBridge.exe"
 
@@ -27,7 +27,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
-Source: "dist\OctopusBridge_v0.5.3.exe"; DestDir: "{app}"; DestName: "{#MyAppExeName}"; Flags: ignoreversion
+Source: "dist\OctopusBridge_v0.5.4.exe"; DestDir: "{app}"; DestName: "{#MyAppExeName}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"

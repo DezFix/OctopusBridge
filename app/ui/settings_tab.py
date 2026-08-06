@@ -60,7 +60,7 @@ class SettingsDialog(QDialog):
         provs = providers or PROVIDERS
         for key in provs:
             combo.addItem(provider_name(key), key)
-        idx = combo.findData(s.value(engine_key, "honyaku"))
+        idx = combo.findData(s.value(engine_key, "rotate"))
         combo.setCurrentIndex(max(idx, 0))
         form.addRow(TR("settings_provider_lbl"), combo)
 

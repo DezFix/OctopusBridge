@@ -616,7 +616,7 @@ class TranslateTab(QWidget):
                                  TR("tr_engine_create_fail"))
             return
         s = self.main.settings
-        engine_name = s.value("engine_files", s.value("engine", "honyaku"))
+        engine_name = s.value("engine_files", s.value("engine", "rotate"))
         if not engine.ping():
             QMessageBox.warning(self, TR("err"), engine_hint(engine_name))
             return

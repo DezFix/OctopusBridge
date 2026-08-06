@@ -45,14 +45,16 @@ class FakeLLM(BaseHTTPRequestHandler):
 
 
 print("1) Реестр провайдеров...")
-assert set(PROVIDERS) == {"honyaku", "google_free", "bing", "rotate", "ai"}
+assert set(PROVIDERS) == {"google_free", "bing", "rotate", "ai"}
 assert set(AI_PROVIDERS) == {"ai"}
 for name in PROVIDERS:
     kwargs = {"base_url": "http://x", "api_key": "k", "model": "m"} \
         if name == "ai" else {}
     get_engine(name, **kwargs)
-assert get_engine("nllb").name == "honyaku"  # старый NLLB -> Honyaku
-assert get_engine("argos").name == "honyaku"  # старый Argos -> Honyaku
+# старые настройки (удалённый офлайн-переводчик) -> rotate
+assert get_engine("honyaku").name == "rotate"
+assert get_engine("nllb").name == "rotate"
+assert get_engine("argos").name == "rotate"
 print("   OK:", list(PROVIDERS))
 
 print("2) AIEngine: перевод + коррекция через фейк-сервер...")
