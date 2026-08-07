@@ -229,16 +229,13 @@ PLUGIN_JS = r"""/* Плагин перевода для обёртки Twine-и�
     });
 
     // Переводы длиннее оригинала ломают вёрстку движка: длинные слова
-    // вылезают за рамки пассажей/кнопок. Мягкие CSS-правила заставляют
-    // текст переноситься по буквам, не трогая остальные стили игры.
+    // вылезают за рамки пассажей/кнопок. Только перенос текста — без
+    // max-width/overflow, чтобы не трогать геометрию лейаута игры.
     var WRAP_CSS =
-        '#passages .passage, tw-passage, .passage, tw-hook, ' +
-        '#passages, #story, tw-story { ' +
-        'max-width:100%; overflow-wrap:anywhere; word-break:break-word; } ' +
-        '#passages .passage, tw-passage, .passage { ' +
-        'overflow-y:auto; box-sizing:border-box; } ' +
-        'tw-passage img, .passage img, #passages img { ' +
-        'max-width:100%; height:auto; }';
+        '#passages, #passages *, tw-passage, tw-passage *, ' +
+        '.passage, .passage *, tw-hook, tw-link { ' +
+        'overflow-wrap:anywhere !important; ' +
+        'word-break:break-word !important; }';
     function injectWrapCss(doc) {
         if (!doc || !doc.head) return;
         try {
