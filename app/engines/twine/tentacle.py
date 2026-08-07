@@ -420,14 +420,85 @@ class _InjectingHTTPHandler(http_server.SimpleHTTPRequestHandler):
                 self.end_headers()
                 try:
                     self.wfile.write(content)
-                except (ConnectionResetError, BrokenPipeError, TimeoutError):
+                except (ConnectionResetError, BrokenPipeError, TimeoutError,
+                        ConnectionAbortedError):
                     pass  # браузер закрыл соединение — не ошибка
                 return
-        # Остальные файлы — как есть
+        # Остальные файлы — как есть, с поддержкой Range (в этой игре
+        # медиа по 17-30 МБ: Chromium шлёт Range и рвёт соединение, если
+        # сервер отвечает полным телом — отсюда ConnectionAbortedError)
         try:
-            super().do_GET()
-        except (ConnectionResetError, BrokenPipeError, TimeoutError):
+            self._serve_file(self.path.split("?")[0])
+        except (ConnectionResetError, BrokenPipeError, TimeoutError,
+                ConnectionAbortedError):
             pass
+
+    def _serve_file(self, path: str):
+        """Отдаёт статический файл с поддержкой Range (206/416).
+
+        Полная замена super().do_GET: буфер 64 КБ с перехватом обрывов
+        клиента (WebView2/браузер закрывают соединение при навигации,
+        отмене загрузки — это не ошибка сервера)."""
+        local = self.translate_path(path)
+        if not os.path.isfile(local):
+            self.send_error(404, "File not found")
+            return
+        try:
+            size = os.path.getsize(local)
+        except OSError:
+            self.send_error(404, "File not found")
+            return
+        ctype = self.guess_type(path)
+        start, end = 0, size - 1
+        rng = self.headers.get("Range", "")
+        if rng.startswith("bytes="):
+            spec = rng[6:].split(",", 1)[0].strip()
+            ok = False
+            if "-" in spec:
+                a, b = spec.split("-", 1)
+                try:
+                    if a == "":
+                        # суффикс: последние N байт
+                        n = int(b)
+                        if n > 0:
+                            start = max(0, size - n)
+                            ok = True
+                    else:
+                        start = int(a)
+                        if b == "":
+                            ok = start < size
+                        else:
+                            end = min(int(b), size - 1)
+                            ok = start <= end and start < size
+                except ValueError:
+                    ok = False
+            if not ok:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.end_headers()
+                return
+        partial = (start > 0 or end < size - 1)
+        self.send_response(206 if partial else 200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(end - start + 1))
+        if partial:
+            self.send_header("Content-Range",
+                             f"bytes {start}-{end}/{size}")
+        self.send_header("Accept-Ranges", "bytes")
+        self.end_headers()
+        try:
+            with open(local, "rb") as f:
+                f.seek(start)
+                remaining = end - start + 1
+                while remaining > 0:
+                    chunk = f.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (ConnectionResetError, BrokenPipeError, TimeoutError,
+                ConnectionAbortedError):
+            pass  # клиент оборвал загрузку — не ошибка сервера
 
     def do_POST(self):
         """Синк слотов из окна игры (/api/saves) и подтверждение импорта."""
@@ -463,7 +534,8 @@ class _InjectingHTTPHandler(http_server.SimpleHTTPRequestHandler):
         self.end_headers()
         try:
             self.wfile.write(body)
-        except (ConnectionResetError, BrokenPipeError, TimeoutError):
+        except (ConnectionResetError, BrokenPipeError, TimeoutError,
+                ConnectionAbortedError):
             pass
 
     def handle_error(self, request, client_address):
@@ -471,7 +543,7 @@ class _InjectingHTTPHandler(http_server.SimpleHTTPRequestHandler):
         # отключение вкладки). Это не ошибка сервера — не шумим в консоль.
         exc = sys.exc_info()[1]
         if isinstance(exc, (ConnectionResetError, BrokenPipeError,
-                            TimeoutError)):
+                            TimeoutError, ConnectionAbortedError)):
             return
         super().handle_error(request, client_address)
 
