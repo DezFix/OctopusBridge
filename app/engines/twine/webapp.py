@@ -397,6 +397,9 @@ def open_game_window(title: str, url: str, profile_dir: str,
     # Плагин перевода ходит на translate.googleapis.com без CORS-заголовков.
     os.environ.setdefault(
         'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS', '--disable-web-security')
+    icon = icon_path or os.path.join(_repo_root(), 'ico.ico')
+    if not os.path.isfile(icon):
+        icon = ''
     frozen = getattr(sys, 'frozen', False)
     if frozen:
         # PyInstaller: pythonw.exe рядом с exe нет, а повторный запуск
@@ -412,9 +415,6 @@ def open_game_window(title: str, url: str, profile_dir: str,
         launcher = [pythonw, '-m', 'app.engines.twine.webapp',
                     url, title, profile_dir, icon]
     flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-    icon = icon_path or os.path.join(_repo_root(), 'ico.ico')
-    if not os.path.isfile(icon):
-        icon = ''
     try:
         return subprocess.Popen(
             launcher,
