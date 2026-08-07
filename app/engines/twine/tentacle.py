@@ -45,6 +45,29 @@ __OT._pending = new Map();
 __OT._nextId = 1;
 __OT._enabled = true;   // перевод вкл/выкл (мост шлёт статус)
 
+// Переводы длиннее оригинала ломают вёрстку движка: длинные слова
+// вылезают за рамки пассажей/кнопок. Мягкие CSS-правила заставляют
+// текст переноситься по буквам, не трогая остальные стили игры.
+(function () {
+  var css =
+    '#passages .passage, tw-passage, .passage, tw-hook, ' +
+    '#passages, #story, tw-story { ' +
+    'max-width:100%; overflow-wrap:anywhere; word-break:break-word; } ' +
+    '#passages .passage, tw-passage, .passage { ' +
+    'overflow-y:auto; box-sizing:border-box; } ' +
+    'tw-passage img, .passage img, #passages img { ' +
+    'max-width:100%; height:auto; }';
+  try {
+    var st = document.createElement('style');
+    st.id = 'octopus-wrap-css';
+    st.textContent = css;
+    if (document.head) document.head.appendChild(st);
+    else document.addEventListener('DOMContentLoaded', function () {
+      document.head.appendChild(st);
+    });
+  } catch (e) {}
+})();
+
 // ── WebSocket ──
 var _ws = null;
 function _connectWS() {

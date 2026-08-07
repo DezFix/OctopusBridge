@@ -216,6 +216,7 @@ PLUGIN_JS = r"""/* Плагин перевода для обёртки Twine-и�
     iframe.addEventListener('load', function () {
         var doc = iframe.contentDocument;
         if (!doc || !doc.body) return;
+        injectWrapCss(doc);
         try {
             var win = iframe.contentWindow;
             if (win.$ && win.$.fn) win.$(win.document).on(':passagedisplay', function () { setTimeout(translateDOM, 50); });
@@ -226,6 +227,28 @@ PLUGIN_JS = r"""/* Плагин перевода для обёртки Twine-и�
         }).observe(doc.body, { childList: true, subtree: true, characterData: true });
         setTimeout(translateDOM, 300);
     });
+
+    // Переводы длиннее оригинала ломают вёрстку движка: длинные слова
+    // вылезают за рамки пассажей/кнопок. Мягкие CSS-правила заставляют
+    // текст переноситься по буквам, не трогая остальные стили игры.
+    var WRAP_CSS =
+        '#passages .passage, tw-passage, .passage, tw-hook, ' +
+        '#passages, #story, tw-story { ' +
+        'max-width:100%; overflow-wrap:anywhere; word-break:break-word; } ' +
+        '#passages .passage, tw-passage, .passage { ' +
+        'overflow-y:auto; box-sizing:border-box; } ' +
+        'tw-passage img, .passage img, #passages img { ' +
+        'max-width:100%; height:auto; }';
+    function injectWrapCss(doc) {
+        if (!doc || !doc.head) return;
+        try {
+            if (doc.getElementById('octopus-wrap-css')) return;
+            var st = doc.createElement('style');
+            st.id = 'octopus-wrap-css';
+            st.textContent = WRAP_CSS;
+            doc.head.appendChild(st);
+        } catch (e) {}
+    }
 
     setInterval(function () {
         var has = false;
