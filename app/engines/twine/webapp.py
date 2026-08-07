@@ -397,19 +397,28 @@ def open_game_window(title: str, url: str, profile_dir: str,
     # Плагин перевода ходит на translate.googleapis.com без CORS-заголовков.
     os.environ.setdefault(
         'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS', '--disable-web-security')
-    exe = sys.executable
-    pythonw = os.path.join(os.path.dirname(exe), 'pythonw.exe')
-    if not os.path.isfile(pythonw):
-        pythonw = exe
+    frozen = getattr(sys, 'frozen', False)
+    if frozen:
+        # PyInstaller: pythonw.exe рядом с exe нет, а повторный запуск
+        # exe без флага открыл бы ещё одно окно приложения — второй
+        # экземпляр с флагом выступит только окном WebView2 (см. main.py)
+        launcher = [sys.executable, '--webapp-window',
+                    url, title, profile_dir, icon]
+    else:
+        exe = sys.executable
+        pythonw = os.path.join(os.path.dirname(exe), 'pythonw.exe')
+        if not os.path.isfile(pythonw):
+            pythonw = exe
+        launcher = [pythonw, '-m', 'app.engines.twine.webapp',
+                    url, title, profile_dir, icon]
     flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
     icon = icon_path or os.path.join(_repo_root(), 'ico.ico')
     if not os.path.isfile(icon):
         icon = ''
     try:
         return subprocess.Popen(
-            [pythonw, '-m', 'app.engines.twine.webapp',
-             url, title, profile_dir, icon],
-            cwd=_repo_root(),
+            launcher,
+            cwd=_repo_root() if not frozen else None,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=flags)
     except Exception as e:  # noqa: BLE001

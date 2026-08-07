@@ -7,6 +7,7 @@ sentencepiece==0.2.2
 huggingface_hub>=0.24
 psutil==7.2.2
 frida==17.16.4
+pywebview==6.2.1
 
 # Build (для сборки exe через build_app.py)
 pyinstaller==6.21.0
