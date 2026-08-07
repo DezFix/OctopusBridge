@@ -228,14 +228,17 @@ PLUGIN_JS = r"""/* Плагин перевода для обёртки Twine-и�
         setTimeout(translateDOM, 300);
     });
 
-    // Переводы длиннее оригинала ломают вёрстку движка: длинные слова
-    // вылезают за рамки пассажей/кнопок. Только перенос текста — без
-    // max-width/overflow, чтобы не трогать геометрию лейаута игры.
+    // Переводы длиннее оригинала ломают вёрстку движка: SugarCube-темы
+    // вешают на ссылки/кнопки white-space:nowrap, при котором перенос
+    // не работает вообще. Правила ниже: перенос слов + normal пробел.
     var WRAP_CSS =
         '#passages, #passages *, tw-passage, tw-passage *, ' +
-        '.passage, .passage *, tw-hook, tw-link { ' +
+        '.passage, .passage *, tw-hook, tw-link, ' +
+        '#ui-bar, #ui-bar *, #ui-dialog, #ui-dialog *, ' +
+        '#menu-story, #menu-story *, .ui-dialog, .ui-dialog * { ' +
         'overflow-wrap:anywhere !important; ' +
-        'word-break:break-word !important; }';
+        'word-break:break-word !important; ' +
+        'white-space:normal !important; }';
     function injectWrapCss(doc) {
         if (!doc || !doc.head) return;
         try {

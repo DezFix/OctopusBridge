@@ -45,15 +45,18 @@ __OT._pending = new Map();
 __OT._nextId = 1;
 __OT._enabled = true;   // перевод вкл/выкл (мост шлёт статус)
 
-// Переводы длиннее оригинала ломают вёрстку движка: длинные слова
-// вылезают за рамки пассажей/кнопок. Только перенос текста — без
-// max-width/overflow, чтобы не трогать геометрию лейаута игры.
+// Переводы длиннее оригинала ломают вёрстку движка: SugarCube-темы
+// вешают на ссылки/кнопки white-space:nowrap, при котором перенос
+// не работает вообще. Правила ниже: перенос слов + normal пробел.
 (function () {
   var css =
     '#passages, #passages *, tw-passage, tw-passage *, ' +
-    '.passage, .passage *, tw-hook, tw-link { ' +
+    '.passage, .passage *, tw-hook, tw-link, ' +
+    '#ui-bar, #ui-bar *, #ui-dialog, #ui-dialog *, ' +
+    '#menu-story, #menu-story *, .ui-dialog, .ui-dialog * { ' +
     'overflow-wrap:anywhere !important; ' +
-    'word-break:break-word !important; }';
+    'word-break:break-word !important; ' +
+    'white-space:normal !important; }';
   try {
     var st = document.createElement('style');
     st.id = 'octopus-wrap-css';
