@@ -40,6 +40,7 @@ const cache = new Map();
 const inflight = new Set();
 const done = new Set();          // уже переведённые строки (значения)
 const settle = new Map();        // стабилизация текста перед запросом
+let enabled = true;              // перевод вкл/выкл (мост шлёт статус)
 const SETTLE_MS = 300;
 const HAS_LETTER_RE = /[A-Za-z\u00C0-\u024F\u0370-\u03FF\u0400-\u04FF\u3040-\u30FF\u31F0-\u31FF\u3400-\u9FFF\uAC00-\uD7A3\uFF66-\uFF9F]/;
 const CYR_RE = /[А-яЁё]/;
@@ -61,6 +62,23 @@ function tr(text) {
   const t = text.trim();
   if (t.length < 2 || CYR_RE.test(t)) return false;
   return HAS_LETTER_RE.test(t);
+}
+
+// Скип (перемотка): во время скипа строки мелькают мгновенно — не
+// сканируем DOM и не ставим таймеры стабилизации впустую. Строки,
+// пропущенные при перемотке, не теряются: при следующем обычном
+// показе они пройдут через translateDOM заново.
+function isSkip() {
+  try {
+    if (typeof kag !== "undefined" && kag.config && kag.config.skip) {
+      return true;
+    }
+  } catch (e) {}
+  try {
+    return !!document.body.classList.contains("tyrano_skip");
+  } catch (e) {
+    return false;
+  }
 }
 
 function prune() {
@@ -126,7 +144,7 @@ function applyToUnit(unit, s, trText) {
 }
 
 function requestUnit(unit, s) {
-  if (inflight.has(s) || settle.has(s)) return;
+  if (!enabled || isSkip() || inflight.has(s) || settle.has(s)) return;
   // ждём, пока текст не перестанет меняться: при перематывании и наборе
   // посимвольно не дёргаем переводчик. Таймер НЕ перезапускаем — в живой
   // сцене мутации идут постоянно; если проверка не прошла, следующий
@@ -149,6 +167,7 @@ function requestUnit(unit, s) {
 }
 
 window.translateDOM = function () {
+  if (!enabled || isSkip()) return;
   const root = document.querySelector("#tyrano_base") || document.body;
   if (!root) return;
   messageUnits(root).forEach(function (unit) {
@@ -184,6 +203,14 @@ function startObs() {
     obsTimer = setTimeout(window.translateDOM, 120);
   }).observe(t, { childList: true, subtree: true, characterData: true });
 }
+
+// статус перевода от моста: при выключенном переводе не сканируем DOM
+// и не шлём запросы (выключенный перевод раньше гонял setInterval +
+// MutationObserver и CDP-канал впустую)
+window.__octopus_setEnabled = function (v) {
+  enabled = !!v;
+  if (enabled) window.translateDOM();
+};
 
 // подстраховка: если мутации прекратились, а строка не переведена —
 // периодический проход это починит (запросы повторно не идут)
@@ -432,6 +459,15 @@ class TyranoTentacle(CDPTentacle):
             return cached
         return super().translate(text)
 
+    def set_translation_enabled(self, enabled: bool):
+        super().set_translation_enabled(enabled)
+        # JS-пейлоад: при выключенном переводе не сканировать DOM и
+        # не слать запросы впустую
+        if self.is_attached():
+            self.evaluate(
+                "window.__octopus_setEnabled && "
+                f"window.__octopus_setEnabled({json.dumps(bool(enabled))})")
+
     # ── bulk-перевод файлов при подключении ──
     def _after_attach(self):
         self._bulk_active = True
@@ -470,7 +506,19 @@ class TyranoTentacle(CDPTentacle):
             text = e.original
             if not _worth_translating(text):
                 continue
-            tr = self.translate(text)
+            cached = self._cache.get(text)
+            if cached is not None:
+                tr = cached
+            elif self._translation_enabled and self._translate_fn:
+                # прямой вызов мимо _LIVE_EXECUTOR: bulk-перевод тысяч
+                # строк не должен забивать общий пул воркеров, из-за
+                # которого живой перевод ждёт до 12с (игра виснет)
+                try:
+                    tr = self._translate_fn(text)
+                except Exception:  # noqa: BLE001
+                    tr = text
+            else:
+                tr = text
             if tr and tr != text:
                 pairs[text] = tr
         if not pairs:

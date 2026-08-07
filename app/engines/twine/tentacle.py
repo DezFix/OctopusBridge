@@ -43,6 +43,7 @@ __OT.twineInjected = true;
 __OT._cache = {};
 __OT._pending = new Map();
 __OT._nextId = 1;
+__OT._enabled = true;   // перевод вкл/выкл (мост шлёт статус)
 
 // ── WebSocket ──
 var _ws = null;
@@ -57,6 +58,8 @@ function _connectWS() {
     } else if (m.type === "cache") {
       for (var k in m.pairs) { __OT._cache[k] = m.pairs[k]; }
       __OT._translateDOM();
+    } else if (m.type === "enabled") {
+      __OT.setEnabled(!!m.enabled);
     } else if (m.type === "save_restore") {
       var tries = 0;
       (function retryRestore() {
@@ -92,6 +95,7 @@ function _sendNext() {
 }
 
 function _reqTr(text) {
+  if (!__OT._enabled) return Promise.resolve(text);
   if (__OT._cache[text] !== undefined) return Promise.resolve(__OT._cache[text]);
   if (__OT._inflight[text]) return __OT._inflight[text];
   var item, resolveP;
@@ -177,6 +181,7 @@ function _walkText(root) {
 }
 
 __OT._translateDOM = function() {
+  if (!__OT._enabled) return;
   var c = document.querySelector(
     '#passages .passage, tw-passage, .passage, #passages');
   if (!c) return;
@@ -212,6 +217,14 @@ __OT._startObserver = function() {
   if (!t) return;
   __OT._observer = new MutationObserver(function() { clearTimeout(__OT._obTimer); __OT._obTimer = setTimeout(__OT._translateDOM, 150); });
   __OT._observer.observe(t, { childList: true, subtree: true, characterData: true });
+};
+
+// статус перевода от моста: при выключенном переводе не сканировать
+// DOM и не слать запросы (выключенный перевод раньше гонял observer
+// и очередь впустую)
+__OT.setEnabled = function(v) {
+  __OT._enabled = !!v;
+  if (__OT._enabled) { __OT._translateDOM(); }
 };
 
 // ── Состояние ──
@@ -662,6 +675,14 @@ class TwineTentacle(Tentacle):
             self._schedule_cache_save()
         return result
 
+    def set_translation_enabled(self, enabled: bool):
+        super().set_translation_enabled(enabled)
+        # JS-пейлоад в браузере: при выключенном переводе не сканировать
+        # DOM и не слать запросы впустую
+        if self._ws_server:
+            self._ws_server.send({"type": "enabled",
+                                  "enabled": bool(enabled)})
+
     # ── кэш в папке игры ──
     def _load_live_cache(self):
         from app.core.translate.game_cache import load_game_cache
@@ -954,6 +975,9 @@ class TwineTentacle(Tentacle):
         elif mtype == "state":
             self._last_state = msg
             self.state_received.emit(msg)
+            # страница могла перезагрузиться (JS-флаг сброшен) — ресинк
+            if self._ws_server and not self._translation_enabled:
+                self._ws_server.send({"type": "enabled", "enabled": False})
             # Первое сообщение игры после подключения — отдаём бэкап
             # сейва и кэш переводов (покрывает и переподключения)
             if not self._restore_sent:

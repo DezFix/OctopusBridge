@@ -53,6 +53,7 @@ try {
 const cache = new Map();
 const requested = new Set();
 const failed = new Set();  // строки, вернувшие identity/таймаут: не спамим
+let enabled = true;        // перевод вкл/выкл (мост шлёт статус)
 let waitingWindows = new Set();
 let _autoStateTimer = null;
 
@@ -91,6 +92,22 @@ window.__octopus_addToCache = function (pairs) {
   for (const k of Object.keys(pairs)) {
     cache.set(k, pairs[k]);
     requested.add(k);
+  }
+};
+
+// статус перевода от моста: при выключенном переводе не слать запросы
+// и не держать окно на «…»; при включении сбрасываем флаги и обновляем
+// текущее сообщение
+window.__octopus_setEnabled = function (v) {
+  enabled = !!v;
+  if (enabled) {
+    requested.clear();
+    failed.clear();
+    try {
+      const scene = SceneManager._scene;
+      const w = scene && scene._messageWindow;
+      if (w && w.isOpen() && !w._octWaiting) { w.refresh(); }
+    } catch (e) {}
   }
 };
 
@@ -151,7 +168,7 @@ function skipRequested(win) {
 }
 
 function requestBackground(text, win) {
-  if (!translatable(text) || requested.has(text)) {
+  if (!enabled || !translatable(text) || requested.has(text)) {
     if (win) waitingWindows.add(win);
     return;
   }
@@ -356,8 +373,10 @@ function installHooks() {
     const PENDING_POLL_MS = 150;
     Window_Message.prototype.startMessage = function () {
       const texts = ($gameMessage && $gameMessage._texts) || [];
-      const missing = texts.filter(
-        (t) => translatable(t) && !cache.has(t) && !failed.has(t));
+      // перевод выключен — не держим окно на «…», показываем оригиналы
+      // (иначе гейт ждал бы перевода до таймаута на каждой строке)
+      const missing = enabled ? texts.filter(
+        (t) => translatable(t) && !cache.has(t) && !failed.has(t)) : [];
       if (missing.length === 0) {
         this._octWaiting = false;
         this._octWaitToken = (this._octWaitToken || 0) + 1;
@@ -614,18 +633,52 @@ def _worth_translating(text: str) -> bool:
     return any(ch.isalpha() for ch in text)
 
 
-def clean_nwjs_profile(game_dir: str) -> bool:
-    """Чинит «Ваш профиль не может использоваться, поскольку он от более
-    новой версии NW.js».
+def _nwjs_profile_dirs(game_dir: str) -> list[str]:
+    """Возможные каталоги профиля NW.js (user-data-dir).
 
-    Причина: в папке игры остался профиль NW.js (файл Local State рядом
-    с Game.exe), созданный более новой версией NW.js, чем движок игры —
-    например, в папке запускали более новую сборку или папку скопировали
-    вместе с профилем. Старую запись не удаляем, а переименовываем в
-    Local State.bak — NW.js создаст свежий профиль. Сейвы RPG Maker
-    лежат в www/save, профиль их не содержит.
+    По умолчанию NW.js держит профиль в папке приложения, но многие
+    игры задают --user-data-dir в chromium-args, а часть движков
+    (например, runtime RPG Maker MV) кладёт профиль в
+    %LOCALAPPDATA%\\<name>\\User Data по имени из package.json.
     """
-    ls = os.path.join(game_dir, "Local State")
+    dirs = [game_dir]
+    local = os.environ.get("LOCALAPPDATA")
+    try:
+        with open(os.path.join(game_dir, "package.json"),
+                  encoding="utf-8") as f:
+            manifest = json.load(f)
+    except (OSError, ValueError):
+        manifest = None
+    args = (manifest or {}).get("chromium-args")
+    if isinstance(args, str):
+        for m in re.finditer(r"--user-data-dir=(?:\"([^\"]+)\"|(\S+))", args):
+            path = m.group(1) or m.group(2)
+            if path:
+                resolved = path if os.path.isabs(path) else os.path.join(
+                    game_dir, path)
+                if resolved not in dirs:
+                    dirs.append(os.path.abspath(resolved))
+    if not local:
+        return dirs
+    name = (manifest or {}).get("name")
+    if isinstance(name, str) and name.strip():
+        base = local
+        for part in re.split(r"[\\/]+", name.strip()):
+            if part:
+                base = os.path.join(base, part)
+    else:
+        base = os.path.join(local, "nwjs")
+    for d in (base, os.path.join(base, "User Data"),
+              os.path.join(local, "KADOKAWA", "RPGMV"),
+              os.path.join(local, "KADOKAWA", "RPGMV", "User Data")):
+        if d not in dirs:
+            dirs.append(d)
+    return dirs
+
+
+def _has_stale_profile(profile_dir: str) -> bool:
+    """True, если в профиле есть Local State от более новой версии NW.js."""
+    ls = os.path.join(profile_dir, "Local State")
     if not os.path.isfile(ls):
         return False
     try:
@@ -633,17 +686,37 @@ def clean_nwjs_profile(game_dir: str) -> bool:
             data = json.load(f)
     except (OSError, ValueError):
         return False
-    # профиль без маркера версии — старой записи, не мешает
-    if not isinstance(data.get("user_data_version"), int):
-        return False
-    bak = ls + ".bak"
-    try:
-        if os.path.exists(bak):
-            os.remove(bak)
-        os.rename(ls, bak)
-        return True
-    except OSError:
-        return False
+    return isinstance(data.get("user_data_version"), int)
+
+
+def clean_nwjs_profile(game_dir: str) -> list[str]:
+    """Чинит «Ваш профиль не может использоваться, поскольку он от более
+    новой версии NW.js».
+
+    Причина: где-то в каталогах профиля NW.js остался файл Local State,
+    созданный более новой версией NW.js, чем движок игры — например,
+    в папке запускали более новую сборку, папку скопировали вместе с
+    профилем или профиль лежит в %LOCALAPPDATA% от другой игры/редактора.
+    Старую запись не удаляем, а переименовываем в Local State.bak —
+    NW.js создаст свежий профиль. Сейвы RPG Maker лежат в www/save,
+    профиль их не содержит.
+
+    Возвращает список каталогов профилей, где Local State переименован.
+    """
+    renamed = []
+    for d in _nwjs_profile_dirs(game_dir):
+        if not _has_stale_profile(d):
+            continue
+        ls = os.path.join(d, "Local State")
+        bak = ls + ".bak"
+        try:
+            if os.path.exists(bak):
+                os.remove(bak)
+            os.rename(ls, bak)
+            renamed.append(d)
+        except OSError:
+            pass
+    return renamed
 
 
 class RpgMakerTentacle(CDPTentacle):
@@ -776,6 +849,15 @@ class RpgMakerTentacle(CDPTentacle):
             return cached
         return super().translate(text)
 
+    def set_translation_enabled(self, enabled: bool):
+        super().set_translation_enabled(enabled)
+        # JS-пейлоад: при выключенном переводе не слать запросы и не
+        # держать окно диалога на плейсхолдерах «…»
+        if self.is_attached():
+            self.evaluate(
+                "window.__octopus_setEnabled && "
+                f"window.__octopus_setEnabled({json.dumps(bool(enabled))})")
+
     # ── bulk-перевод $data ──
     def _after_attach(self):
         import threading
@@ -817,7 +899,19 @@ class RpgMakerTentacle(CDPTentacle):
         for _obj, _idx, _field, text in locations:
             if not self.is_attached():
                 return
-            tr = self.translate(text)
+            cached = self._cache.get(text)
+            if cached is not None:
+                tr = cached
+            elif self._translation_enabled and self._translate_fn:
+                # прямой вызов мимо _LIVE_EXECUTOR: bulk-перевод не
+                # должен забивать общий пул воркеров, иначе живой
+                # перевод стоит в очереди и игра виснет на строке
+                try:
+                    tr = self._translate_fn(text)
+                except Exception:  # noqa: BLE001
+                    tr = text
+            else:
+                tr = text
             if tr and tr != text:
                 pairs[text] = tr
         if not pairs:

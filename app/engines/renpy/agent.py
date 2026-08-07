@@ -48,6 +48,10 @@ _OB_ASSET_RE = re.compile(r"/[^/]{1,120}\.[A-Za-z0-9]{1,4}$")
 # добавляет кириллицу ("г."), и time.strftime падает (locale codec)
 _OB_FMT_RE = re.compile(r"%[-+#0-9]*\.?[0-9]*[A-Za-z%]")
 _OB_MAX_LEN = 500
+# Лимит кэша: десятки тысяч пар при json.load/json.dump в главном
+# потоке игры (старт + periodic callback) вызывают фризы — держим
+# последние 20k пар, старые вытесняем.
+_OB_CACHE_MAX = 20000
 
 
 # Глобальная подмена шрифта: font_replacement_map с "wildcard"-get().
@@ -82,6 +86,7 @@ def _ob_bootstrap():
         "next_id": 1, "fontcache": {},
         "cache_dirty": False, "cache_path": None,
         "skip": set(), "skip_path": None, "skip_dirty": False,
+        "paused": False,
         "response_events": {}, "response_events_lock": threading.Lock(),
     }
     renpy._ob_agent = A
@@ -124,6 +129,11 @@ def _ob_bootstrap():
                 A["translated"] = set(A["cache"].values())
         except Exception:
             pass
+    # Лимит кэша после загрузки: обрезаем до последних 20k пар, чтобы
+    # старт и периодическая запись не тормозили игру на большом кэше
+    if len(A["cache"]) > _OB_CACHE_MAX:
+        A["cache"] = dict(list(A["cache"].items())[-_OB_CACHE_MAX:])
+        A["translated"] = set(A["cache"].values())
     # старый отдельный файл identity-строк
     try:
         _sp_old = renpy.config.gamedir + "/.octopus_skip.json"
@@ -312,12 +322,18 @@ def _ob_bootstrap():
         except Exception:
             pass
 
+    # Запись кэша — не чаще раза в 5 секунд: json.dump большого кэша
+    # выполняется в главном потоке игры (periodic callback), и каждая
+    # запись на кадре — источник фризов.
+    _save_lock = [0.0]
+
     def _save_cache():
         if not (A["cache_dirty"] or A["skip_dirty"]) \
                 or not A["cache_path"]:
             return
-        A["cache_dirty"] = False
-        A["skip_dirty"] = False
+        if time.time() - _save_lock[0] < 5.0:
+            return
+        _save_lock[0] = time.time()
         try:
             # не сохраняем identity-записи; единый формат + skip
             _clean = {k: v for k, v in A["cache"].items() if k != v}
@@ -333,7 +349,9 @@ def _ob_bootstrap():
                 pass
             os.rename(_tmp, A["cache_path"])
         except Exception:
-            pass
+            return
+        A["cache_dirty"] = False
+        A["skip_dirty"] = False
         # старые файлы кэша больше не пишем — убираем (best effort)
         try:
             os.remove(renpy.config.gamedir + "/.octopus_cache.json")
@@ -413,8 +431,15 @@ def _ob_bootstrap():
                                     _ok = False
                                     break
                         if _ok and trans != orig:
+                            # кэш ограничен: вытесняем самую старую пару,
+                            # чтобы json-файл и память не росли бесконечно
+                            if len(A["cache"]) >= _OB_CACHE_MAX:
+                                A["cache"].pop(
+                                    next(iter(A["cache"]), None), None)
                             A["cache"][orig] = trans
                             A["translated"].add(trans)
+                            if len(A["translated"]) > _OB_CACHE_MAX * 2:
+                                A["translated"] = set(A["cache"].values())
                             A["cache_dirty"] = True
                             _do_replace = True
                     elif not msg.get("paused"):
@@ -439,11 +464,18 @@ def _ob_bootstrap():
             A["shutdown"] = True
             A["connected"] = False
             _font_restore()  # вернуть оригинальные шрифты игры
+        elif mtype == "set_paused":
+            A["paused"] = bool(msg.get("paused", False))
 
     def _translate(what, blocking=False, timeout=5):
         if not isinstance(what, _OB_STRS) or not what.strip():
             return what
         key = what.strip().replace("%%", "%")  # unescape для поиска/отправки
+        # перевод приостановлен (переключатель в мосте выключен):
+        # показываем оригинал, ничего не шлём и не блокируем игру —
+        # раньше агент не знал о паузе и висел на round-trip к серверу
+        if A["paused"]:
+            return what
         # без латиницы и без японских символов — строка уже переведена
         # (кириллица, коды, имена): не тратим сервер и не создаём
         # identity-записи. Японский текст (кана/кандзи) переводим.

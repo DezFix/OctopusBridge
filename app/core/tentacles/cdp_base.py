@@ -113,6 +113,12 @@ class CDPTentacle(Tentacle):
         except CDPError:
             self.log.emit("addBinding недоступен — канал через console.")
         self._inject_payload()
+        # если перевод был выключен ДО подключения — JS-пейлоад по
+        # умолчанию включён; синхронизируем реальный статус
+        if not self._translation_enabled:
+            self.evaluate(
+                "window.__octopus_setEnabled && "
+                "window.__octopus_setEnabled(false)")
         self.attached.emit()
         try:
             self._after_attach()

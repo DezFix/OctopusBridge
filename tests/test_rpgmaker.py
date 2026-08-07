@@ -142,30 +142,77 @@ print("   OK")
 
 print("8) Профиль NW.js: чистим Local State от более новой версии...")
 from app.engines.rpgmaker.tentacle import clean_nwjs_profile
-with tempfile.TemporaryDirectory() as td:
-    # нет файла — нечего чинить
-    assert clean_nwjs_profile(td) is False
-    # свежий профиль без маркера версии не трогаем
-    with open(os.path.join(td, "Local State"), "w",
-              encoding="utf-8") as f:
-        json.dump({"profile": "ok"}, f)
-    assert clean_nwjs_profile(td) is False
-    assert os.path.exists(os.path.join(td, "Local State"))
-    # профиль от более новой версии — переименовываем, игра стартует
-    with open(os.path.join(td, "Local State"), "w",
-              encoding="utf-8") as f:
-        json.dump({"user_data_version": 9999}, f)
-    assert clean_nwjs_profile(td) is True
-    assert not os.path.exists(os.path.join(td, "Local State"))
-    assert os.path.exists(os.path.join(td, "Local State.bak"))
-    # повторный запуск: новой записи нет — чинить нечего
-    assert clean_nwjs_profile(td) is False
-    # битый JSON — не трогаем
-    with open(os.path.join(td, "Local State"), "w",
-              encoding="utf-8") as f:
-        f.write("{not-json")
-    assert clean_nwjs_profile(td) is False
-    assert os.path.exists(os.path.join(td, "Local State"))
+with tempfile.TemporaryDirectory() as fake_local:
+    old_env = os.environ.get("LOCALAPPDATA")
+    os.environ["LOCALAPPDATA"] = fake_local
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            # нет файла — нечего чинить
+            assert clean_nwjs_profile(td) == []
+            # свежий профиль без маркера версии не трогаем
+            with open(os.path.join(td, "Local State"), "w",
+                      encoding="utf-8") as f:
+                json.dump({"profile": "ok"}, f)
+            assert clean_nwjs_profile(td) == []
+            assert os.path.exists(os.path.join(td, "Local State"))
+            # профиль от более новой версии — переименовываем
+            with open(os.path.join(td, "Local State"), "w",
+                      encoding="utf-8") as f:
+                json.dump({"user_data_version": 9999}, f)
+            assert clean_nwjs_profile(td) == [td]
+            assert not os.path.exists(os.path.join(td, "Local State"))
+            assert os.path.exists(os.path.join(td, "Local State.bak"))
+            # повторный запуск: новой записи нет — чинить нечего
+            assert clean_nwjs_profile(td) == []
+            # битый JSON — не трогаем
+            with open(os.path.join(td, "Local State"), "w",
+                      encoding="utf-8") as f:
+                f.write("{not-json")
+            assert clean_nwjs_profile(td) == []
+            assert os.path.exists(os.path.join(td, "Local State"))
+    finally:
+        if old_env is None:
+            os.environ.pop("LOCALAPPDATA", None)
+        else:
+            os.environ["LOCALAPPDATA"] = old_env
+print("   OK")
+
+print("9) Профиль NW.js: user-data-dir из chromium-args и LOCALAPPDATA...")
+with tempfile.TemporaryDirectory() as fake_local:
+    old_env = os.environ.get("LOCALAPPDATA")
+    os.environ["LOCALAPPDATA"] = fake_local
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            # --user-data-dir в chromium-args манифеста
+            data_dir = os.path.join(td, "nwdata")
+            os.makedirs(data_dir)
+            with open(os.path.join(td, "package.json"), "w",
+                      encoding="utf-8") as f:
+                json.dump({"chromium-args": "--user-data-dir=./nwdata"}, f)
+            with open(os.path.join(data_dir, "Local State"), "w",
+                      encoding="utf-8") as f:
+                json.dump({"user_data_version": 123}, f)
+            assert clean_nwjs_profile(td) == [data_dir]
+            assert os.path.exists(
+                os.path.join(data_dir, "Local State.bak"))
+            # name из манифеста ищет профиль в %LOCALAPPDATA%\<name>\User Data
+            os.makedirs(os.path.join(fake_local, "My Game", "User Data"))
+            with open(os.path.join(td, "package.json"), "w",
+                      encoding="utf-8") as f:
+                json.dump({"name": "My Game"}, f)
+            stale = os.path.join(
+                fake_local, "My Game", "User Data", "Local State")
+            with open(stale, "w", encoding="utf-8") as f:
+                json.dump({"user_data_version": 456}, f)
+            assert clean_nwjs_profile(td) == [os.path.join(
+                fake_local, "My Game", "User Data")]
+            assert not os.path.exists(stale)
+            assert os.path.exists(stale + ".bak")
+    finally:
+        if old_env is None:
+            os.environ.pop("LOCALAPPDATA", None)
+        else:
+            os.environ["LOCALAPPDATA"] = old_env
 print("   OK")
 
 print()

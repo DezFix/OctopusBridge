@@ -483,6 +483,14 @@ class RenPyTentacle(Tentacle):
 
         return self._inject_agent(wait=30.0)
 
+    def set_translation_enabled(self, enabled: bool):
+        super().set_translation_enabled(enabled)
+        # агент внутри игры должен знать о паузе: выключенный перевод
+        # не должен слать запросы и блокировать главный поток игры
+        if self._server:
+            self._server.send({"type": "set_paused",
+                               "paused": not self._translation_enabled})
+
     def _inject_agent(self, wait: float = 60.0) -> bool:
         deadline = time.monotonic() + wait
         while time.monotonic() < deadline:
@@ -542,6 +550,11 @@ class RenPyTentacle(Tentacle):
     # ── сообщения агента ──
     def _on_agent_connect(self):
         self.log.emit("Агент игры подключился.")
+        # сообщаем текущий статус перевода: при выключенном переводе
+        # агент не шлёт запросы и не блокирует игровой поток
+        if self._server:
+            self._server.send({"type": "set_paused",
+                               "paused": not self._translation_enabled})
         self.attached.emit()
 
     def _on_agent_disconnect(self):
