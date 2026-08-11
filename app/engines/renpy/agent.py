@@ -328,8 +328,8 @@ def _ob_bootstrap():
     _save_lock = [0.0]
 
     def _save_cache():
-        if not (A["cache_dirty"] or A["skip_dirty"]) \
-                or not A["cache_path"]:
+        if not (A["cache_dirty"] or A["skip_dirty"]
+                or not A["cache_path"]):
             return
         if time.time() - _save_lock[0] < 5.0:
             return
