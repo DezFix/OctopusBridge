@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from app.ui.i18n import TR
 from app.ui.icons import icon
+from app.ui.theme import C_BG, C_BORDER, C_TEXT_DIM
 
 
 def _save_urls(mime):
@@ -69,15 +70,15 @@ class SaveEditorTab(QWidget):
         drop_lay = QVBoxLayout(drop)
         drop_lay.setContentsMargins(24, 24, 24, 24)
         lbl_icon = QLabel()
-        lbl_icon.setPixmap(icon("file-text", 56, "#445").pixmap(56, 56))
+        lbl_icon.setPixmap(icon("file-text", 56, C_TEXT_DIM).pixmap(56, 56))
         lbl_icon.setAlignment(Qt.AlignCenter)
         drop_lay.addWidget(lbl_icon)
         self.lbl_drop = QLabel(TR("save_drop_ph"))
         self.lbl_drop.setAlignment(Qt.AlignCenter)
         self.lbl_drop.setWordWrap(True)
         self.lbl_drop.setStyleSheet(
-            "color:#667; border:2px dashed #445; border-radius:10px;"
-            "background:#14161a; font-size:16px;")
+            f"color:{C_TEXT_DIM}; border:2px dashed {C_BORDER};"
+            f"border-radius:10px; background:{C_BG}; font-size:16px;")
         drop_lay.addWidget(self.lbl_drop, 1)
         self.stack.addWidget(drop)
 

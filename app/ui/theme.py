@@ -1,13 +1,17 @@
 # -*- coding: utf-8 -*-
-"""Design system: palette, spacing, radius, typography, QSS."""
+"""Design system: palette, spacing, radius, typography, QSS.
+
+Тёмная палитра из актуального дизайн-концепта (deep-blue night):
+глубокий фон, сине-стальные панели, акцент 5b7fff, статусные пилюли.
+"""
 from __future__ import annotations
 
 from PySide6.QtCore import QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtWidgets import (QAbstractScrollArea, QApplication,
-                                QComboBox, QHeaderView, QLineEdit,
-                                QPushButton, QSpinBox, QTabBar,
-                                QTableWidget, QTextEdit, QToolTip,
+                                QComboBox, QFrame, QHBoxLayout, QHeaderView,
+                                QLabel, QLineEdit, QPushButton, QSpinBox,
+                                QTabBar, QTableWidget, QTextEdit, QToolTip,
                                 QWidget)
 
 # ======================================================================
@@ -23,6 +27,7 @@ FONT_SIZE_XXL = "28px"
 
 RADIUS_SM = 4
 RADIUS_MD = 6
+RADIUS_BTN = 8
 RADIUS_LG = 10
 RADIUS_XL = 14
 
@@ -33,29 +38,40 @@ SPACING_LG = 12
 SPACING_XL = 16
 SPACING_XXL = 24
 
-# Colors
-C_BG = "#1a1a22"
-C_SURFACE = "#22222c"
-C_CARD = "#2a2a36"
-C_CARD_HOVER = "#303040"
-C_BORDER = "#3a3a48"
-C_BORDER_LIGHT = "#2e2e3c"
-C_PRIMARY = "#5b8def"
-C_PRIMARY_HOVER = "#4a7de0"
-C_PRIMARY_PRESSED = "#3a6dd0"
-C_ACCENT = "#a78bfa"
-C_SUCCESS = "#34d399"
-C_WARNING = "#fbbf24"
-C_ERROR = "#f87171"
-C_TEXT = "#e4e4ec"
-C_TEXT_SECONDARY = "#8b8ba0"
-C_TEXT_DIM = "#606070"
-C_SIDEBAR_BG = "#16161e"
-C_SIDEBAR_ACTIVE = "rgba(91, 141, 239, 0.15)"
-C_SIDEBAR_HOVER = "rgba(91, 141, 239, 0.08)"
-C_INPUT_BG = "#2a2a36"
-C_INPUT_BORDER = "#3a3a48"
-C_INPUT_FOCUS = "#5b8def"
+# Colors (dark, deep-blue night)
+C_BG = "#17181f"
+C_SURFACE = "#1f212b"
+C_CARD = "#262834"
+C_CARD_HOVER = "#2e3140"
+C_BORDER = "#3a3d4f"
+C_BORDER_LIGHT = "#2a2d3a"
+C_PRIMARY = "#5b7fff"
+C_PRIMARY_HOVER = "#6f8dff"
+C_PRIMARY_PRESSED = "#4a6df2"
+C_ACCENT = "#9d7bff"
+C_SUCCESS = "#3fcf96"
+C_WARNING = "#f0a93e"
+C_ERROR = "#f0707d"
+C_TEXT = "#e8eaf1"
+C_TEXT_SECONDARY = "#aab1c4"
+C_TEXT_DIM = "#757c94"
+C_SIDEBAR_BG = "#14151c"
+C_SIDEBAR_ACTIVE = "rgba(91, 127, 255, 0.18)"
+C_SIDEBAR_HOVER = "rgba(91, 127, 255, 0.10)"
+C_INPUT_BG = "#262834"
+C_INPUT_BORDER = "#3a3d4f"
+C_INPUT_FOCUS = "#5b7fff"
+
+# Pill / status colors
+C_TRACK = "#2a2d3a"
+C_PILL_EMPTY_FG = "#757c94"
+C_PILL_DRAFT = "#f0a93e"
+C_PILL_DONE = "#39c98f"
+C_PILL_BG_SOFT = "rgba(255,255,255,0.05)"
+
+# Stepper / toolbar groups
+C_GROUP_BG = "#262834"
+C_GROUP_BORDER = "#2e3243"
 
 # ======================================================================
 #  QSS
@@ -72,11 +88,13 @@ QWidget {{
     background-color: {C_BG};
 }}
 
+QWidget#page {{ background-color: {C_BG}; }}
+
 /* ── Buttons ── */
 QPushButton {{
     background-color: {C_CARD};
     border: 1px solid {C_BORDER};
-    border-radius: {RADIUS_MD}px;
+    border-radius: {RADIUS_BTN}px;
     padding: 6px 14px;
     min-height: 20px;
     color: {C_TEXT};
@@ -88,6 +106,14 @@ QPushButton:hover {{
 QPushButton:pressed {{
     background-color: {C_PRIMARY_PRESSED};
     border-color: {C_PRIMARY};
+}}
+QPushButton:checked {{
+    background: rgba(91, 127, 255, 0.16);
+    border-color: {C_PRIMARY};
+    color: {C_TEXT};
+}}
+QPushButton:checked:hover {{
+    background: rgba(91, 127, 255, 0.24);
 }}
 QPushButton:disabled {{
     color: {C_TEXT_DIM};
@@ -112,6 +138,151 @@ QPushButton#danger {{
     color: #ffffff;
 }}
 
+/* ── Menu ── */
+QMenu {{
+    background-color: {C_CARD};
+    border: 1px solid {C_BORDER};
+    border-radius: {RADIUS_MD}px;
+    padding: 5px;
+}}
+QMenu::item {{
+    padding: 6px 26px 6px 14px;
+    border-radius: {RADIUS_MD}px;
+    color: {C_TEXT};
+}}
+QMenu::item:selected {{
+    background-color: {C_SIDEBAR_ACTIVE};
+}}
+QMenu::item:disabled {{
+    color: {C_TEXT_DIM};
+}}
+QMenu::separator {{
+    height: 1px;
+    background: {C_BORDER_LIGHT};
+    margin: 5px 8px;
+}}
+QMenu::indicator {{
+    width: 14px;
+    height: 14px;
+}}
+
+/* ── Toolbar buttons ── */
+QPushButton#tool_btn {{
+    background: {C_CARD};
+    border: 1px solid {C_BORDER};
+    border-radius: {RADIUS_BTN}px;
+    padding: 7px 14px;
+    color: {C_TEXT_SECONDARY};
+    font-weight: 500;
+}}
+QPushButton#tool_btn:hover {{
+    color: {C_TEXT};
+    border-color: {C_PRIMARY};
+    background: {C_CARD_HOVER};
+}}
+QPushButton#tool_btn:pressed {{
+    background: {C_PRIMARY_PRESSED};
+}}
+QPushButton[step="true"] {{
+    background: {C_CARD};
+    border: 1px solid {C_BORDER};
+    border-radius: {RADIUS_BTN}px;
+    padding: 7px 14px;
+    color: {C_TEXT_SECONDARY};
+    font-weight: 600;
+    text-align: left;
+}}
+QPushButton[step="true"]:hover {{
+    background: {C_CARD_HOVER};
+    border-color: {C_PRIMARY};
+    color: {C_TEXT};
+}}
+QPushButton[step="true"][active="true"] {{
+    background: {C_PRIMARY};
+    border-color: {C_PRIMARY};
+    color: #ffffff;
+}}
+QPushButton[step="true"]:disabled {{
+    color: {C_TEXT_DIM};
+}}
+QPushButton[step="true"]:disabled:hover {{
+    background: {C_CARD};
+    color: {C_TEXT_DIM};
+}}
+QPushButton#view_btn {{
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 5px 9px;
+    color: {C_TEXT_DIM};
+    font-weight: 600;
+    font-size: {FONT_SIZE_SM};
+}}
+QPushButton#view_btn:hover {{
+    color: {C_TEXT};
+}}
+QPushButton#view_btn[on="true"] {{
+    background: {C_SURFACE};
+    color: {C_TEXT};
+}}
+QToolButton#step {{
+    background: {C_CARD};
+    border: 1px solid {C_BORDER};
+    border-radius: {RADIUS_BTN}px;
+    padding: 7px 6px 7px 12px;
+    color: {C_TEXT_SECONDARY};
+    font-weight: 600;
+    text-align: left;
+}}
+QToolButton#step:hover {{
+    background: {C_CARD_HOVER};
+    border-color: {C_PRIMARY};
+    color: {C_TEXT};
+}}
+QToolButton#step[active="true"] {{
+    background: {C_PRIMARY};
+    border-color: {C_PRIMARY};
+    color: #ffffff;
+}}
+QToolButton#step:disabled {{
+    color: {C_TEXT_DIM};
+}}
+QToolButton#step::menu-button {{
+    width: 16px;
+    border-left: none;
+    border-top-right-radius: {RADIUS_BTN}px;
+    border-bottom-right-radius: {RADIUS_BTN}px;
+}}
+QToolButton#step::menu-arrow {{
+    image: none;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 4px solid {C_TEXT_SECONDARY};
+}}
+QToolButton#step[active="true"]::menu-arrow {{
+    border-top-color: #ffffff;
+}}
+QComboBox#chip_filter {{
+    background: transparent;
+    border: 1px solid {C_BORDER_LIGHT};
+    border-radius: {RADIUS_MD}px;
+    padding: 5px 10px;
+    color: {C_TEXT_SECONDARY};
+    font-size: 12px;
+}}
+QComboBox#chip_filter:hover {{
+    border-color: {C_PRIMARY};
+    color: {C_TEXT};
+}}
+QLineEdit#file_search {{
+    background: transparent;
+    border: 1px solid {C_BORDER_LIGHT};
+    border-radius: {RADIUS_MD}px;
+    padding: 7px 10px;
+    color: {C_TEXT};
+    font-size: {FONT_SIZE_MD};
+}}
+
 /* ── Inputs ── */
 QLineEdit, QSpinBox, QComboBox {{
     background-color: {C_INPUT_BG};
@@ -124,9 +295,12 @@ QLineEdit, QSpinBox, QComboBox {{
 QLineEdit:focus, QSpinBox:focus {{
     border-color: {C_INPUT_FOCUS};
 }}
+QComboBox:hover {{
+    border-color: {C_PRIMARY};
+}}
 QComboBox::drop-down {{
     border: none;
-    padding-right: 8px;
+    width: 24px;
 }}
 QComboBox::down-arrow {{
     image: none;
@@ -140,7 +314,54 @@ QComboBox QAbstractItemView {{
     border: 1px solid {C_BORDER};
     border-radius: {RADIUS_MD}px;
     padding: 4px;
+    outline: none;
     selection-background-color: {C_SIDEBAR_ACTIVE};
+    selection-color: {C_TEXT};
+    color: {C_TEXT};
+}}
+QComboBox QAbstractItemView::item {{
+    padding: 5px 8px;
+    border-radius: {RADIUS_SM}px;
+    min-height: 18px;
+}}
+QComboBox QAbstractItemView::item:hover {{
+    background: {C_SIDEBAR_HOVER};
+}}
+QSpinBox::up-button, QSpinBox::down-button {{
+    border: none;
+    background: transparent;
+    width: 18px;
+}}
+QSpinBox::up-arrow {{
+    image: none;
+    border-left: 3px solid transparent;
+    border-right: 3px solid transparent;
+    border-bottom: 4px solid {C_TEXT_SECONDARY};
+}}
+QSpinBox::down-arrow {{
+    image: none;
+    border-left: 3px solid transparent;
+    border-right: 3px solid transparent;
+    border-top: 4px solid {C_TEXT_SECONDARY};
+}}
+
+/* ── Lists / trees ── */
+QListView, QTreeView {{
+    background: transparent;
+    border: none;
+    outline: none;
+}}
+QListView::item, QTreeView::item {{
+    border-radius: {RADIUS_MD}px;
+    padding: 5px 10px;
+    color: {C_TEXT_SECONDARY};
+}}
+QListView::item:hover, QTreeView::item:hover {{
+    background: {C_SIDEBAR_HOVER};
+    color: {C_TEXT};
+}}
+QListView::item:selected, QTreeView::item:selected {{
+    background: {C_SIDEBAR_ACTIVE};
     color: {C_TEXT};
 }}
 
@@ -148,7 +369,7 @@ QComboBox QAbstractItemView {{
 QTableWidget {{
     background-color: {C_SURFACE};
     border: 1px solid {C_BORDER_LIGHT};
-    border-radius: {RADIUS_MD}px;
+    border-radius: {RADIUS_LG}px;
     gridline-color: {C_BORDER_LIGHT};
     selection-background-color: {C_SIDEBAR_ACTIVE};
     selection-color: {C_TEXT};
@@ -211,12 +432,13 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
 
 /* ── Group boxes ── */
 QGroupBox {{
-    border: 1px solid {C_BORDER};
-    border-radius: {RADIUS_MD}px;
+    border: 1px solid {C_BORDER_LIGHT};
+    border-radius: {RADIUS_LG}px;
     margin-top: 14px;
-    padding: 14px 10px 10px 10px;
+    padding: 16px 12px 12px 12px;
     font-weight: bold;
     color: {C_TEXT_SECONDARY};
+    background: transparent;
 }}
 QGroupBox::title {{
     subcontrol-origin: margin;
@@ -224,6 +446,7 @@ QGroupBox::title {{
     left: 12px;
     padding: 0 6px;
     color: {C_TEXT_SECONDARY};
+    background: transparent;
 }}
 
 /* ── Progress bars ── */
@@ -267,30 +490,35 @@ QCheckBox::indicator {{
     width: 16px;
     height: 16px;
     border: 1px solid {C_BORDER};
-    border-radius: 3px;
+    border-radius: 4px;
     background: {C_INPUT_BG};
+}}
+QCheckBox::indicator:hover {{
+    border-color: {C_PRIMARY};
 }}
 QCheckBox::indicator:checked {{
     background: {C_PRIMARY};
     border-color: {C_PRIMARY};
 }}
-QCheckBox::indicator:hover {{
-    border-color: {C_PRIMARY};
-}}
-
-/* ── Tab widgets (used inside tabs) ── */
-QTabWidget::pane {{
-    border: 1px solid {C_BORDER_LIGHT};
-    border-radius: {RADIUS_MD}px;
+QCheckBox::indicator:disabled {{
+    border-color: {C_BORDER_LIGHT};
     background: {C_SURFACE};
 }}
+
+/* ── Tab widgets: underline, VS Code style ── */
+QTabWidget::pane {{
+    border: none;
+    background: {C_SURFACE};
+}}
+QTabBar {{ background: transparent; }}
 QTabBar::tab {{
     background: {C_CARD};
     color: {C_TEXT_SECONDARY};
-    padding: 6px 16px;
+    padding: 7px 16px;
     border: none;
     border-bottom: 2px solid transparent;
-    margin-right: 1px;
+    margin: 8px 2px 0 2px;
+    font-weight: 600;
 }}
 QTabBar::tab:selected {{
     color: {C_PRIMARY};
@@ -311,6 +539,9 @@ QSplitter::handle:horizontal {{
 }}
 QSplitter::handle:vertical {{
     height: 2px;
+}}
+QSplitter::handle:hover {{
+    background: {C_PRIMARY};
 }}
 
 /* ── Plain text edit (log views) ── */
@@ -379,6 +610,21 @@ def make_font(size_px: int = 13, bold: bool = False) -> QFont:
     f.setPixelSize(size_px)
     f.setBold(bold)
     return f
+
+
+# ======================================================================
+#  Shared widgets / helpers
+# ======================================================================
+
+def section_label(text: str, color: str | None = None,
+                  font_size: int = 11) -> QLabel:
+    """Заголовок секции в стиле концепта (капс, приглушённый, полужирный)."""
+    lbl = QLabel(text.upper())
+    c = color or C_TEXT_DIM
+    lbl.setStyleSheet(
+        f"color: {c}; background: transparent; font-size: {font_size}px;"
+        "font-weight: 700;")
+    return lbl
 
 
 def fade_in(widget: QWidget, duration: int = 200):

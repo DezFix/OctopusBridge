@@ -142,7 +142,7 @@ with tempfile.TemporaryDirectory() as td:
     w.project.entries = w.engine_module.extract(td)
     w.refresh_all()
     assert w.translate_tab.table.rowCount() > 0
-    item = w.translate_tab.table.item(0, 2)
+    item = w.translate_tab.table.item(0, 3)
     item.setText("Ручной перевод")
     entry_id = item.data(0x0100)
     e = next(x for x in w.project.entries if x.id == entry_id)

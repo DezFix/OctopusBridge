@@ -26,6 +26,7 @@ from app.core.rpgmaker import crypto, maprender
 from app.core.rpgmaker.varnames import extract_maps
 from app.ui.i18n import TR
 from app.ui.icons import icon
+from app.ui.theme import C_BG
 
 ZOOM_LEVELS = [25, 50, 75, 100, 150, 200]
 
@@ -212,7 +213,7 @@ class MapCanvas(QLabel):
         super().__init__()
         self._tab = tab
         self.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-        self.setStyleSheet("background: #1a1a1a;")
+        self.setStyleSheet(f"background: {C_BG};")
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_menu)
 
@@ -485,11 +486,6 @@ class MapTab(QWidget):
             return
         ev = self._event_at(x, y)
         menu = QMenu(self)
-        menu.setStyleSheet(
-            f"QMenu {{ background: #2a2a2a; border: 1px solid #555; "
-            f"border-radius: 4px; padding: 2px; }}"
-            f"QMenu::item {{ padding: 5px 16px; color: #ddd; }}"
-            f"QMenu::item:selected {{ background: #0078d4; color: #fff; }}")
 
         if ev:
             s = maprender.event_summary(ev)

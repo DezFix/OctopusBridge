@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from app.ui.i18n import TR
 from app.ui.icons import icon
+from app.ui.theme import C_BG, C_TEXT_SECONDARY
 
 IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 RPGM_ENC_IMG = (".png_", ".rpgmvp")
@@ -282,13 +283,13 @@ class ResourceTab(QWidget):
         rl.setContentsMargins(6, 6, 6, 6)
 
         self.lbl_info = QLabel(TR("res_select"))
-        self.lbl_info.setStyleSheet("color: #999; padding: 2px;")
+        self.lbl_info.setStyleSheet(f"color: {C_TEXT_SECONDARY}; padding: 2px;")
         rl.addWidget(self.lbl_info)
 
         # image area
         self.image_label = ImageZoomLabel()
         self.image_label._save_callback = self._save_current_image
-        self.image_label.setStyleSheet("background: #1a1a1a;")
+        self.image_label.setStyleSheet(f"background: {C_BG};")
         self.image_scroll = QScrollArea()
         self.image_scroll.setWidget(self.image_label)
         self.image_scroll.setWidgetResizable(True)
@@ -299,7 +300,8 @@ class ResourceTab(QWidget):
         aw = QVBoxLayout(self._audio_widget)
         aw.setContentsMargins(0, 0, 0, 0)
         self.audio_title = QLabel()
-        self.audio_title.setStyleSheet("color: #ccc; padding: 2px; font-weight: bold;")
+        self.audio_title.setStyleSheet(
+            f"color: {C_TEXT_SECONDARY}; padding: 2px; font-weight: bold;")
         aw.addWidget(self.audio_title)
         row = QHBoxLayout()
         self.btn_play = QPushButton("")

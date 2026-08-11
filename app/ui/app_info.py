@@ -20,8 +20,8 @@ from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QMessageBox,
 import app
 from app.ui.icons import icon
 from app.ui.i18n import TR
-from app.ui.theme import (C_CARD, C_PRIMARY, C_TEXT, C_TEXT_SECONDARY,
-                           RADIUS_MD, RADIUS_LG)
+from app.ui.theme import (C_BORDER, C_CARD, C_PRIMARY, C_TEXT,
+                           C_TEXT_SECONDARY, RADIUS_MD, RADIUS_LG)
 
 # GitHub-репозиторий вида "owner/repo". Пусто — проверка обновлений отключена.
 GITHUB_REPO = "DezFix/OctopusBridge"
@@ -76,7 +76,7 @@ class ChangelogDialog(QDialog):
         self.text.setPlainText(last_changelog_text())
         self.text.setStyleSheet(
             f"QPlainTextEdit {{ background: {C_CARD}; color: {C_TEXT}; "
-            f"border: 1px solid #3a3a48; border-radius: {RADIUS_MD}px; "
+            f"border: 1px solid {C_BORDER}; border-radius: {RADIUS_MD}px; "
             f"font-size: 12px; padding: 8px; }}")
 
         buttons = QHBoxLayout()

@@ -33,6 +33,11 @@ _PHOSPHOR: dict[str, str] = {
     "check": ('<polyline points="40 144 96 200 224 72" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/>'),
     "x": ('<line x1="200" y1="56" x2="56" y2="200" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/><line x1="200" y1="200" x2="56" y2="56" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/>'),
     "pencil": ('<path d="M92.69,216H48a8,8,0,0,1-8-8V163.31a8,8,0,0,1,2.34-5.65L165.66,34.34a8,8,0,0,1,11.31,0L221.66,79a8,8,0,0,1,0,11.31L98.34,213.66A8,8,0,0,1,92.69,216Z" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/><line x1="136" y1="64" x2="192" y2="120" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/><line x1="164" y1="92" x2="68" y2="188" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/><line x1="95.49" y1="215.49" x2="40.51" y2="160.51" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/>'),
+    "magnifying-glass": ('<circle cx="116" cy="116" r="84" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/><line x1="175.4" y1="175.4" x2="224" y2="224" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/>'),
+    "sparkles": ('<path d="M143.84,85.2,126.19,50.2a8.27,8.27,0,0,0-14.38,0L94.16,85.2A35.42,35.42,0,0,1,71.5,106.16L36.2,123.81a8.27,8.27,0,0,0,0,14.38l35.3,17.65a35.43,35.43,0,0,1,22.66,23l17.65,35.3a8.27,8.27,0,0,0,14.38,0l17.65-35.3a35.43,35.43,0,0,1,22.66-23l35.3-17.65a8.27,8.27,0,0,0,0-14.38l-35.3-17.65A35.42,35.42,0,0,1,143.84,85.2Z" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/>'),
+    "upload": ('<path d="M184,128h40a8,8,0,0,1,8,8v64a8,8,0,0,1-8,8H32a8,8,0,0,1-8-8V136a8,8,0,0,1,8-8H72" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/><line x1="128" y1="232" x2="128" y2="128" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/><polyline points="80 176 128 128 176 176" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/><circle cx="68" cy="168" r="12" fill="currentColor" stroke="none"/>'),
+    "table": ('<path d="M32,80H224a8,8,0,0,0,8-8V48a8,8,0,0,0-8-8H32a8,8,0,0,0-8,8V72A8,8,0,0,0,32,80Z" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/><path d="M32,160H224a8,8,0,0,0,8-8V104a8,8,0,0,0-8-8H32a8,8,0,0,0-8,8v48A8,8,0,0,0,32,160Z" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/><path d="M32,240H224a8,8,0,0,0,8-8V192a8,8,0,0,0-8-8H32a8,8,0,0,0-8,8v40A8,8,0,0,0,32,240Z" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/>'),
+    "squares-four": ('<rect x="40" y="40" width="80" height="80" rx="8" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/><rect x="136" y="40" width="80" height="80" rx="8" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/><rect x="40" y="136" width="80" height="80" rx="8" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/><rect x="136" y="136" width="80" height="80" rx="8" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/>'),
     "star": ('<path d="M128,189.09l54.72,33.65a8.4,8.4,0,0,0,12.52-9.17l-14.88-62.79,48.7-42A8.46,8.46,0,0,0,224.27,94L160.36,88.8,135.74,29.2a8.36,8.36,0,0,0-15.48,0L95.64,88.8,31.73,94a8.46,8.46,0,0,0-4.79,14.83l48.7,42L60.76,213.57a8.4,8.4,0,0,0,12.52,9.17Z" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/>'),
     "circle": ('<circle cx="128" cy="128" r="96" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/>'),
     "info": ('<circle cx="128" cy="128" r="96" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/><line x1="128" y1="120" x2="128" y2="176" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/><line x1="126" y1="88" x2="130" y2="88" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="16"/>'),
@@ -70,6 +75,10 @@ _ALIASES: dict[str, str] = {
     "gamepad": "game-controller",
     "cog": "gear",
     "dot": "circle",
+    "search": "magnifying-glass",
+    "ai": "sparkles",
+    "cards": "squares-four",
+    "grid": "squares-four",
 }
 
 _SVG_CACHE: dict[tuple[str, int, str], QIcon] = {}
@@ -96,8 +105,9 @@ def _pixmap(name: str, size: int, color: str) -> QPixmap:
     return pm
 
 
-def icon(name: str, size: int = 18, color: str = "#8899aa") -> QIcon:
-    """QIcon из Phosphor-SVG. Цвет по умолчанию — приглушённый серо-голубой."""
+def icon(name: str, size: int = 18, color: str = "#b0b8cf") -> QIcon:
+    """QIcon из Phosphor-SVG. Цвет по умолчанию — светлый серо-голубой,
+    читаемый на тёмном фоне интерфейса."""
     key = (name, size, color)
     ic = _SVG_CACHE.get(key)
     if ic is None:

@@ -82,14 +82,12 @@ class ProjectsTab(QWidget):
         top.addStretch(1)
         self.btn_clear = QPushButton(TR("projects_clear"))
         self.btn_clear.setIcon(icon("trash", 16))
-        self.btn_clear.setMinimumHeight(34)
         self.btn_clear.setToolTip(TR("projects_clear"))
         self.btn_clear.clicked.connect(self._clear_all)
         top.addWidget(self.btn_clear)
         btn_add = QPushButton(TR("projects_add"))
         btn_add.setObjectName("accent")
         btn_add.setIcon(icon("plus", 16))
-        btn_add.setMinimumHeight(34)
         btn_add.clicked.connect(self._browse)
         top.addWidget(btn_add)
         lay.addLayout(top)
@@ -181,7 +179,7 @@ class ProjectsTab(QWidget):
         if logo is not None:
             ic.setPixmap(logo)
         else:
-            ic.setPixmap(icon("gamepad", 24, "#5b8def").pixmap(24, 24))
+            ic.setPixmap(icon("gamepad", 24, C_PRIMARY).pixmap(24, 24))
         lay.addWidget(ic)
 
         # имя + путь
@@ -256,11 +254,6 @@ class ProjectsTab(QWidget):
     def _show_project_menu(self, path: str, pos, card: QFrame):
         from PySide6.QtWidgets import QMenu
         menu = QMenu(self)
-        menu.setStyleSheet(
-            f"QMenu {{ background: {C_CARD}; border: 1px solid {C_PRIMARY}; "
-            f"border-radius: 6px; padding: 4px; }}"
-            f"QMenu::item {{ padding: 6px 20px; color: {C_TEXT}; }}"
-            f"QMenu::item:selected {{ background: {C_PRIMARY}; color: #fff; }}")
         act_open = menu.addAction(TR("welcome_open"))
         act_folder = menu.addAction(TR("projects_open_folder"))
         act_rename = menu.addAction(TR("welcome_edit_name"))

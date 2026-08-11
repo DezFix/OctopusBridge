@@ -138,5 +138,119 @@ assert n == 2 and entries[0].translation == "ホ" \
 assert ce.calls == 1, "движок вызван только для настоящей строки"
 print("   OK")
 
+print("6) Google пакетами: один запрос на 32 строки, счётчик сохраняется...")
+import app.core.translate.engines as engmod
+
+
+class FakeResp:
+    def __init__(self, data, status_code=200, url=""):
+        self._data = data
+        self.status_code = status_code
+        self.url = url
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._data
+
+
+def google_fake_resp(q, sl, tl):
+    lines = q.split("\n")
+    segs = [["RU:" + line + ("\n" if i < len(lines) - 1 else ""),
+             line, None, None, None] for i, line in enumerate(lines)]
+    return FakeResp([segs, None, sl, None, None, None, None])
+
+
+eng = engmod.GoogleFreeEngine()
+calls = []
+
+
+def fake_get(url, params, timeout):
+    calls.append(params["q"])
+    return google_fake_resp(params["q"], params["sl"], params["tl"])
+
+
+orig_get = engmod.requests.get
+engmod.requests.get = fake_get
+texts = [f"строка{i}" for i in range(70)]
+out = eng.translate(texts, "ja", "ru")
+assert len(out) == 70 and out == [f"RU:строка{i}" for i in range(70)], \
+    (len(out), out[:3])
+assert len(calls) == 3, f"ожидалось 3 пакетных запроса (32+32+6), было {len(calls)}"
+assert all(len(q.split("\n")) in (32, 6) for q in calls)
+print("   OK: 70 строк ->", len(calls), "запроса по", end=" ")
+print(",".join(str(len(q.split("\n"))) for q in calls))
+
+print("7) Google: склейка строк -> построчный фолбэк, порядок цел...")
+calls.clear()
+
+
+def fake_get_merge(url, params, timeout):
+    q = params["q"]
+    if len(q.split("\n")) > 1 and len(calls) == 0:
+        # Google «склеил» две строки: в ответе на один \\n меньше
+        segs = [["RU:" + line + ("\n" if i < len(q.split("\n")) - 1 else ""),
+                 line, None, None, None]
+                for i, line in enumerate(q.split("\n")[:3] + q.split("\n")[6:])]
+        return FakeResp([segs, None, params["sl"], None, None, None, None])
+    return google_fake_resp(q, params["sl"], params["tl"])
+
+
+engmod.requests.get = fake_get_merge
+out = eng.translate([f"l{i}" for i in range(40)], "ja", "ru")
+assert len(out) == 40, (len(out), calls)
+assert out[:6] == [f"RU:l{i}" for i in range(6)], out[:6]
+print("   OK: порядок строк сохранён, фолбэк посегментно")
+
+print("8) Rotate: пакет уходит в Google, при сбое Google — построчный обход...")
+calls.clear()
+
+
+def fake_get_rotate(url, params, timeout):
+    if len(params["q"].split("\n")) > 1:
+        raise engmod.EngineError("Google offline")
+    return google_fake_resp(params["q"], params["sl"], params["tl"])
+
+
+engmod.requests.get = fake_get_rotate
+orig_bing = engmod.BingEngine.translate
+engmod.BingEngine.translate = lambda self, texts, source, target, **kw: \
+    ["RU:" + t for t in texts]
+rot = engmod.RotateEngine()
+out = rot.translate([f"s{i}" for i in range(12)], "ja", "ru")
+assert len(out) == 12 and out == [f"RU:s{i}" for i in range(12)], out[:3]
+engmod.BingEngine.translate = orig_bing
+engmod.requests.get = orig_get
+print("   OK: фолбэк работает, 12 строк возвращены")
+
+print("9) Google: 429/капча -> кулдаун, запросы не шлются...")
+calls.clear()
+
+
+def fake_get_rl(url, params, timeout):
+    calls.append("x")
+    return FakeResp(None, status_code=429,
+                    url="https://www.google.com/sorry/index?continue=...")
+
+
+engmod.requests.get = fake_get_rl
+eng2 = engmod.GoogleFreeEngine()
+try:
+    eng2._translate_one("hi", "en", "ru")
+    raise AssertionError("ожидался EngineError после 429")
+except engmod.EngineError:
+    pass
+assert eng2._rate_limited(), "после 429 должен быть кулдаун"
+assert len(calls) == 1, "первый запрос ушёл, второй должен отсечься кулдауном"
+try:
+    eng2._translate_one("hi", "en", "ru")
+    raise AssertionError("ожидался мгновенный отказ в кулдауне")
+except engmod.EngineError:
+    pass
+assert len(calls) == 1, "во время кулдауна запросов быть не должно"
+engmod.requests.get = orig_get
+print("   OK: 429 -> кулдаун 60с, в кулдауне запросы не шлются")
+
 print()
 print("ВСЕ ТЕСТЫ ДВИЖКОВ ПРОШЛИ")

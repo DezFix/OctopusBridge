@@ -32,7 +32,7 @@ PROJECTS_DIR = app_paths.projects_dir()
 
 _MAX_RECENT = 8
 
-_TAB_ICON_COLOR = "#0000ff"
+_TAB_ICON_COLOR = "#cdd6ff"
 
 _TAB_ROLE_ICONS = {
     "MapTab": "map-trifold",
@@ -160,6 +160,7 @@ class MainWindow(QMainWindow):
 
         self.bridge_client.connect(self._on_sb_client)
         self.refresh_status_bar()
+        self.refresh_project_stats()
 
         from PySide6.QtCore import QTimer
         from app.ui.app_info import maybe_show_changelog
@@ -307,10 +308,28 @@ class MainWindow(QMainWindow):
         self.translate_tab._selected_file = ""
         self.translate_tab._rebuild_file_list()
         self.translate_tab.fill_table()
+        self.refresh_project_stats()
         for widget, _role in self._engine_tabs:
             hook = getattr(widget, "on_project_opened", None)
             if hook:
                 hook()
+
+    def refresh_project_stats(self):
+        """Сводка проекта для нижнего статус-бара: done / draft / empty."""
+        if not hasattr(self, "status_bar"):
+            return
+        done = draft = empty = total = 0
+        if self.project:
+            total = len(self.project.entries)
+            for e in self.project.entries:
+                if e.translation.strip():
+                    if e.status == "skip":
+                        draft += 1
+                    else:
+                        done += 1
+                else:
+                    empty += 1
+        self.status_bar.update_project_stats(done, draft, empty, total)
 
     # ---------- recent projects ----------
     def _dedup_recent(self):

@@ -12,16 +12,15 @@ import time
 
 from PySide6.QtCore import (QEasingCurve, QPropertyAnimation, Qt, QTimer,
                              QTimeLine, QThread, Signal)
-from PySide6.QtWidgets import (QFileDialog, QFormLayout, QFrame,
-                                QGroupBox, QHBoxLayout,
-                                QLabel, QMessageBox, QPushButton, QVBoxLayout,
-                                QWidget)
+from PySide6.QtWidgets import (QFileDialog, QFormLayout, QGroupBox,
+                                QHBoxLayout, QLabel, QMessageBox, QPushButton,
+                                QVBoxLayout, QWidget)
 
 from app.ui.i18n import TR
 from app.ui.icons import icon
 from app.ui.theme import (C_CARD, C_CARD_HOVER, C_PRIMARY, C_SUCCESS,
-                            C_TEXT, C_TEXT_SECONDARY, RADIUS_LG, RADIUS_MD,
-                            fade_in)
+                            C_SURFACE, C_TEXT, C_TEXT_SECONDARY, RADIUS_LG,
+                            RADIUS_MD, fade_in)
 
 
 class _LaunchWorker(QThread):
@@ -174,33 +173,25 @@ class WelcomeTab(QWidget):
             f"background: transparent;")
         top.addWidget(self.lbl_title, 1)
 
-        btn_settings = QPushButton("")
+        # action icons — плоские кнопки без рамок-блоков
+        self.btn_settings = btn_settings = QPushButton("")
         btn_settings.setIcon(icon("cog", 20))
-        btn_settings.setMinimumSize(40, 34)
-        btn_settings.setStyleSheet(
-            "QPushButton { padding: 2px 8px; }")
         btn_settings.setToolTip(TR("welcome_settings_tooltip"))
         btn_settings.clicked.connect(self._open_settings)
-        top.addWidget(btn_settings)
 
         btn_folder = QPushButton("")
         btn_folder.setIcon(icon("folder-open", 18))
-        btn_folder.setMinimumSize(40, 34)
-        btn_folder.setStyleSheet(
-            "QPushButton { padding: 2px 8px; }")
         btn_folder.setToolTip(TR("welcome_open_folder"))
         btn_folder.clicked.connect(self._open_game_folder)
-        top.addWidget(btn_folder)
 
         btn_change = QPushButton("")
         btn_change.setIcon(icon("arrow-left", 18))
-        btn_change.setMinimumSize(40, 34)
-        btn_change.setStyleSheet(
-            "QPushButton { padding: 2px 8px; }")
         btn_change.setToolTip(TR("dash_change_game"))
         btn_change.clicked.connect(self._go_welcome)
-        top.addWidget(btn_change)
 
+        top.addWidget(btn_settings)
+        top.addWidget(btn_folder)
+        top.addWidget(btn_change)
         lay.addLayout(top)
 
         # game info
@@ -517,11 +508,11 @@ class WelcomeTab(QWidget):
         if self._stack.currentIndex() != 0:
             return
         self._pulse = (self._pulse + 1) % 20
-        shade = 70 + int(60 * abs(10 - self._pulse) / 10)
+        shade = 91 + int(60 * abs(10 - self._pulse) / 10)
         self.drop.setStyleSheet(
-            f"QLabel {{ border: 3px dashed rgb({shade},{shade},{shade + 40});"
-            f" border-radius: {RADIUS_LG}px; color: #bbb; font-size: 18px; "
-            f" padding: 20px; background: transparent; }}")
+            f"QLabel {{ border: 2px dashed rgb({shade},{shade + 24},{shade + 90});"
+            f" border-radius: {RADIUS_LG}px; color: {C_TEXT_SECONDARY};"
+            f" font-size: 18px; padding: 20px; background: {C_SURFACE}; }}")
         if self._loading:
             self._dots = (self._dots + 1) % 4
             self.lbl_status.setText(

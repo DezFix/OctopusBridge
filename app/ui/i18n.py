@@ -158,7 +158,7 @@ _STRINGS = {
     "tab_cheats": {"ru": "Читы", "en": "Cheats"},
 
     # ── Translate tab ──
-    "tr_extract": {"ru": "1. Извлечь текст", "en": "1. Extract text"},
+    "tr_extract": {"ru": "Извлечь текст", "en": "Extract text"},
     "tr_extracting": {
         "ru": "Извлекаю текст из игры…",
         "en": "Extracting text from the game…",
@@ -167,9 +167,9 @@ _STRINGS = {
     "tr_correcting": {"ru": "ИИ-коррекция…", "en": "Correcting…"},
     "tr_mode_new": {"ru": "Только новые и сбойные", "en": "New & failed only"},
     "tr_mode_all": {"ru": "Перевести всё заново", "en": "Re-translate all"},
-    "tr_translate": {"ru": "2. Перевести", "en": "2. Translate"},
+    "tr_translate": {"ru": "Перевести", "en": "Translate"},
     "tr_cancel": {"ru": "Отмена", "en": "Cancel"},
-    "tr_apply": {"ru": "3. Внедрить в игру", "en": "3. Apply to game"},
+    "tr_apply": {"ru": "Внедрить в игру", "en": "Apply to game"},
     "tr_correct": {"ru": "ИИ-коррекция", "en": "AI Correction"},
     "tr_glossary": {"ru": "Глоссарий…", "en": "Glossary…"},
     "tr_export": {"ru": "Экспорт CSV", "en": "Export CSV"},
@@ -269,6 +269,40 @@ _STRINGS = {
         "ru": " (первые 10000, уточните фильтр)",
         "en": " (first 10000, refine your filter)",
     },
+    # ── Translate tab: redesigned UI ──
+    "tr_files_search_ph": {"ru": "Поиск: файлы и текст…", "en": "Search files and text…"},
+    "tr_files_summary": {
+        "ru": "{files} · завершено: {done}",
+        "en": "{files} · done: {done}",
+    },
+    "tr_donut_caption": {
+        "ru": "переведено · {pct}%",
+        "en": "translated · {pct}%",
+    },
+    "tr_status_empty": {"ru": "Пусто", "en": "Empty"},
+    "tr_status_draft": {"ru": "Черновик", "en": "Draft"},
+    "tr_status_done": {"ru": "Готово", "en": "Done"},
+    "tr_status_skip": {"ru": "Пропуск", "en": "Skipped"},
+    "tr_trans_placeholder": {
+        "ru": "Нажмите, чтобы перевести…",
+        "en": "Click to translate…",
+    },
+    "tr_edit_hint": {
+        "ru": "Enter — сохранить · Esc — отмена",
+        "en": "Enter — save · Esc — cancel",
+    },
+    "tr_saved": {"ru": "Сохранено", "en": "Saved"},
+    "tr_filter_all_lines": {"ru": "Все строки", "en": "All lines"},
+    "tr_filter_drafts": {"ru": "Черновики", "en": "Drafts"},
+    "tr_filter_finished": {"ru": "Готовые", "en": "Finished"},
+    "tr_col_idx": {"ru": "#", "en": "#"},
+    "tr_col_context": {"ru": "Контекст", "en": "Context"},
+    "tr_col_original": {"ru": "Оригинал", "en": "Original"},
+    "tr_col_translation": {"ru": "Перевод", "en": "Translation"},
+    "tr_col_status": {"ru": "Статус", "en": "Status"},
+    "sb_done": {"ru": "переведено", "en": "translated"},
+    "sb_draft": {"ru": "черновиков", "en": "drafts"},
+    "sb_empty": {"ru": "пусто", "en": "empty"},
 
     # ── Cheat tab ──
     "cheat_hint": {
