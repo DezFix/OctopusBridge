@@ -633,6 +633,8 @@ class TranslateTab(QWidget):
         self.progress.setValue(0)
         self.btn_cancel.setEnabled(True)
         self.btn_translate.setEnabled(False)
+        self.main.loading.show_loading(TR("tr_translating"), TR("tr_cancel"),
+                                       self.cancel_translate)
         self.worker.start()
 
     def cancel_translate(self):
@@ -655,7 +657,9 @@ class TranslateTab(QWidget):
     def _on_progress(self, done, total):
         self.progress.setMaximum(total)
         self.progress.setValue(done)
-        self.lbl_status.setText(TR("tr_progress", done=done, total=total))
+        text = TR("tr_progress", done=done, total=total)
+        self.lbl_status.setText(text)
+        self.main.loading.set_text(text)
 
     def _on_translated(self, n):
         self._finish_translate()
@@ -671,6 +675,7 @@ class TranslateTab(QWidget):
         QMessageBox.critical(self, TR("err"), msg)
 
     def _finish_translate(self):
+        self.main.loading.hide_loading()
         self.progress.setVisible(False)
         self.btn_cancel.setEnabled(False)
         self.btn_translate.setEnabled(True)
@@ -709,6 +714,8 @@ class TranslateTab(QWidget):
         self.progress.setValue(0)
         self.btn_cancel.setEnabled(True)
         self.btn_correct.setEnabled(False)
+        self.main.loading.show_loading(TR("tr_correcting"), TR("tr_cancel"),
+                                       self.cancel_translate)
         self.worker_correct.start()
 
     def _on_corrections(self, diffs):

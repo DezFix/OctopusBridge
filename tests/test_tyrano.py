@@ -2,7 +2,6 @@
 """TyranoScript: детект, извлечение .ks (сегменты + атрибуты тегов),
 внедрение с бэкапами и защитой переменных, кодировки, реестр, щупальце."""
 import io
-import json
 import os
 import sys
 import tempfile
@@ -179,43 +178,47 @@ with tempfile.TemporaryDirectory() as td:
     assert os.path.isdir(os.path.join(td, "backup"))
 print("   OK")
 
-print("8) Щупальце: выражения читов (без подключения)...")
-from app.engines.tyrano.tentacle import TyranoTentacle, _worth_translating
+print("8) Щупальце: выражения читов и пейлоад (без подключения)...")
+from app.engines.tyrano.tentacle import TyranoTentacle
 expr = TyranoTentacle._cheat_expr("get_vars")
 assert "collectState" in expr
 expr = TyranoTentacle._cheat_expr("var_set", name="%hp", value=100)
 assert 'kag.variables["%hp"]' in expr and "100" in expr
 expr = TyranoTentacle._cheat_expr("var_set", name="tf.flag", value=True)
 assert "kag.tmp" in expr
+expr = TyranoTentacle._cheat_expr("exec", code="1 + 1")
+assert "1 + 1" in expr
 assert TyranoTentacle._cheat_expr("nope") is None
-# пейлоад — валидный JS без меток форматирования
-assert "%d" not in TyranoTentacle.PAYLOAD
-# защита от галлюцинаций: одиночные каны не переводятся
-assert not _worth_translating("は")
-assert not _worth_translating("ボ")
-assert _worth_translating("こんにちは")
-assert _worth_translating("Домой") is False  # кириллица — уже переведено
-# защита от перематывания: сверка текста перед заменой, стабилизация
-assert "textContent.trim() === s" in TyranoTentacle.PAYLOAD
-assert "SETTLE_MS" in TyranoTentacle.PAYLOAD
-assert "done" in TyranoTentacle.PAYLOAD
-# перевод по строкам .message_inner p (посимвольная печать в
-# span.current_span), а не по текстовым узлам с одиночными канами
-assert "messageUnits" in TyranoTentacle.PAYLOAD
-assert "applyToUnit" in TyranoTentacle.PAYLOAD
-assert "current_span" in TyranoTentacle.PAYLOAD
-assert "applyToNode" not in TyranoTentacle.PAYLOAD
+# пейлоад — валидный JS: состояние/переменные для чит-вкладок,
+# переводов в нём нет
+payload = TyranoTentacle.PAYLOAD
+assert "%d" not in payload
+assert "collectState" in payload and "variablesFlat" in payload
+assert "translate" not in payload
+assert "MutationObserver" not in payload
 print("   OK")
 
-print("9) Кэш перевода: повторная заливка после перезагрузки страницы...")
+print("9) Щупальце: состояние/переменные через evaluate (без игры)...")
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+from PySide6.QtWidgets import QApplication
+_qapp = QApplication([])
 t = TyranoTentacle()
-t._cache = {"こんにちは": "Привет", "さようなら": "Пока"}
-t._cache_path = None
-# фрейм-перезагрузка запускает фоновую заливку кэша
-assert hasattr(t, "_on_event") and hasattr(t, "_push_cache")
-# без подключения заливка не падает и возвращает False
-assert t._push_cache() is False
+results = {}
+t.vars_received.connect(lambda v: results.update(vars=v))
+t.state_received.connect(lambda s: results.update(state=s))
+t.cheat_ack.connect(lambda *a: results.update(ack=a))
+t.evaluate = lambda expr, **kw: (True, '{"variablesFlat": {"gold": 5}}')
+assert t.request_vars()
+assert results["vars"] == [{"name": "gold", "value": 5}], results
+t.evaluate = lambda expr, **kw: (True, '{"type": "state", "gold": 7}')
+assert t.request_state()
+assert results["state"]["gold"] == 7, results
+t.evaluate = lambda expr, **kw: (False, "boom")
+assert not t.request_state()
+assert not t.send_cheat("var_set", name="x", value=1)
+assert results["ack"][0] == "var_set" and results["ack"][1] is False
 t.deleteLater()
+print("   OK")
 
 print("10) Вложенные ] в атрибутах: text=\"a[b]\" переводится, тег цел...")
 with tempfile.TemporaryDirectory() as td:
@@ -267,53 +270,6 @@ with tempfile.TemporaryDirectory() as td:
     parser.apply(td, entries)
     out = open(ks, "rb").read()
     assert out == "Здравствуйте.\r\n[wait time=\"500\"]\r\n".encode("utf-8"), out
-print("   OK")
-
-print("12) Кэш: мусор старых сессий отфильтрован, bulk-перевод сохранён...")
-with tempfile.TemporaryDirectory() as td:
-    scenario = os.path.join(td, "data", "scenario")
-    os.makedirs(scenario)
-    os.makedirs(os.path.join(td, "tyrano"))
-    ks = os.path.join(scenario, "main.ks")
-    with open(ks, "w", encoding="utf-8", newline="") as f:
-        f.write("こんにちは、世界。\nはい\nさようなら。\n")
-    # мусорный кэш из старой сессии (одиночные каны)
-    cache_path = os.path.join(td, "tyrano_cache.json")
-    with open(cache_path, "w", encoding="utf-8") as f:
-        json.dump({"ぐ": "- Пошли", "う": "Домой",
-                   "こんにちは、世界。": "Здравствуй, мир."},
-                  f, ensure_ascii=False)
-    t = TyranoTentacle()
-    t._game_dir = td
-    t._load_cache(td)
-    # одиночные каны выброшены при загрузке
-    assert t._cache == {"こんにちは、世界。": "Здравствуй, мир."}, t._cache
-    # bulk-перевод кладётся в кэш даже без живой страницы:
-    # закэшированное не пере-запрашивается, новое переводится функцией
-    t.set_translate_fn(lambda s: "ТЕСТ: " + s)
-    t._bulk_active = True
-    t.is_attached = lambda: True
-    t.evaluate = lambda expr, **kw: (True, "ok")
-    t._pretranslate()
-    assert t._cache.get("こんにちは、世界。") == "Здравствуй, мир.", t._cache
-    assert t._cache.get("さようなら。") == "ТЕСТ: さようなら。", t._cache
-    # одиночные каны в кэш не попадают
-    assert "はい" not in t._cache
-    # и пишется в файл (единый формат октопуса: octopus_cache.json)
-    t._flush_cache()
-    unified = json.load(
-        open(os.path.join(td, "octopus_cache.json"), encoding="utf-8"))
-    assert unified.get("format") == 1
-    assert unified.get("engine") == "tyrano"
-    on_disk = unified["pairs"]
-    assert on_disk.get("こんにちは、世界。") == "Здравствуй, мир.", on_disk
-    assert on_disk.get("さようなら。") == "ТЕСТ: さようなら。", on_disk
-    assert "ぐ" not in on_disk and "う" not in on_disk
-    # legacy-файл не трогается, но и не мешает: при следующей загрузке
-    # единый файл имеет приоритет
-    legacy = json.load(open(cache_path, encoding="utf-8"))
-    assert legacy.get("ぐ") == "- Пошли"
-    t.deleteLater()
 print("   OK")
 
 print()

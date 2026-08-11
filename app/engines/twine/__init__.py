@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Модуль Twine (HTML5) — извлечение, внедрение, живое подключение, сейвы.
+"""Модуль Twine (HTML5) — извлечение, внедрение, подключение, сейвы.
 
 Функционал Twine:
 - parser: извлечение/внедрение текста из/в .html
 - savefile: чтение/запись SugarCube .save (LZ-String)
-- tentacle: CDP-подключение к живой игре (Chromium-браузеры)
+- tentacle: подключение к живой игре (Chromium-браузеры)
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from app.ui.i18n import TR
 class TwineModule(EngineModule):
     key = "twine"
     title = "Twine"
-    features = {"files", "live", "cheats"}
+    features = {"files", "cheats"}
 
     @classmethod
     def detect(cls, game_dir: str) -> int:

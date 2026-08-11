@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""TwineTentacle — живой мост для Twine (HTML5) игр.
+"""TwineTentacle — мост для Twine (HTML5) игр.
 
 Запускает игру в браузере ПО УМОЛЧАНИЮ (Firefox, Chrome, Edge — любой).
 
@@ -11,12 +11,16 @@
   - SugarCube  (State.variables, :passagedisplay)
   - Harlowe    (story.state, tw-passage)
   - Любой      (MutationObserver + DOM-обход)
+
+Что даёт мост: состояние игры и переменные (State.variables /
+story.state) в панели приложения, читы (set_variable / exec),
+бэкап и восстановление сейвов. Перевод — НЕ здесь: отдельная
+вкладка перевода работает с файлами игры.
 """
 from __future__ import annotations
 
 import base64
 import concurrent.futures
-import io
 import json
 import mimetypes
 import os
@@ -27,7 +31,6 @@ import time
 import webbrowser
 import zlib
 from http import server as http_server
-from queue import Queue
 from urllib.parse import quote
 
 from app.core.tentacles.base import Tentacle
@@ -40,33 +43,6 @@ if (!window.__octopus || !window.__octopus.twineInjected) {
 (function(){
 var __OT = window.__octopus = window.__octopus || {};
 __OT.twineInjected = true;
-__OT._cache = {};
-__OT._pending = new Map();
-__OT._nextId = 1;
-__OT._enabled = true;   // перевод вкл/выкл (мост шлёт статус)
-
-// Переводы длиннее оригинала ломают вёрстку движка: SugarCube-темы
-// вешают на ссылки/кнопки white-space:nowrap, при котором перенос
-// не работает вообще. Правила ниже: перенос слов + normal пробел.
-(function () {
-  var css =
-    '#passages, #passages *, tw-passage, tw-passage *, ' +
-    '.passage, .passage *, tw-hook, tw-link, ' +
-    '#ui-bar, #ui-bar *, #ui-dialog, #ui-dialog *, ' +
-    '#menu-story, #menu-story *, .ui-dialog, .ui-dialog * { ' +
-    'overflow-wrap:anywhere !important; ' +
-    'word-break:break-word !important; ' +
-    'white-space:normal !important; }';
-  try {
-    var st = document.createElement('style');
-    st.id = 'octopus-wrap-css';
-    st.textContent = css;
-    if (document.head) document.head.appendChild(st);
-    else document.addEventListener('DOMContentLoaded', function () {
-      document.head.appendChild(st);
-    });
-  } catch (e) {}
-})();
 
 // ── WebSocket ──
 var _ws = null;
@@ -75,14 +51,29 @@ function _connectWS() {
   _ws.onopen = function() { __OT._sendState(); };
   _ws.onmessage = function(e) {
     try { var m = JSON.parse(e.data); } catch(x) { return; }
-    if (m.type === "translation") {
-      var r = __OT._pending.get(m.id);
-      if (r) { __OT._pending.delete(m.id); r(m.text || m.value); }
-    } else if (m.type === "cache") {
-      for (var k in m.pairs) { __OT._cache[k] = m.pairs[k]; }
-      __OT._translateDOM();
-    } else if (m.type === "enabled") {
-      __OT.setEnabled(!!m.enabled);
+    if (m.type === "get_vars") {
+      var s = __OT.collectState();
+      var a = [];
+      for (var n in s.variablesFlat) a.push({ name: n, value: s.variablesFlat[n] });
+      __OT.send({ type: "vars", variables: a });
+    } else if (m.type === "get_state") {
+      __OT.send(__OT.collectState());
+    } else if (m.type === "cheat") {
+      var res = { type: "cheat_ack", cmd: m.cmd, ok: false, error: "", value: "" };
+      if (m.cmd === "var_set") {
+        try { res.ok = __OT.setVar(m.name, m.value); }
+        catch (e) { res.error = e.message || String(e); }
+      } else if (m.cmd === "exec") {
+        try {
+          var r = __OT.exec(m.code);
+          res.ok = r.ok;
+          res.error = r.error || "";
+          res.value = JSON.stringify(r.value);
+        } catch (e) { res.error = e.message || String(e); }
+      } else {
+        res.error = "unknown cmd";
+      }
+      __OT.send(res);
     } else if (m.type === "save_restore") {
       var tries = 0;
       (function retryRestore() {
@@ -101,55 +92,6 @@ __OT.send = function(obj) {
   }
 };
 
-// ── Очередь переводов ──
-// Одновременно в полёте не больше _maxInFlight; один и тот же текст
-// не запрашивается дважды (_inflight); таймаут НЕ кэширует оригинал,
-// поэтому позже текст перезапросится сам (см. retry-интервал).
-__OT._maxInFlight = 6;
-__OT._inflight = {};
-__OT._queue = [];
-
-function _sendNext() {
-  while (__OT._pending.size < __OT._maxInFlight && __OT._queue.length) {
-    var it = __OT._queue.shift();
-    __OT._pending.set(it.id, it.resolve);
-    __OT.send({ type: "translate", id: it.id, text: it.text });
-  }
-}
-
-function _reqTr(text) {
-  if (!__OT._enabled) return Promise.resolve(text);
-  if (__OT._cache[text] !== undefined) return Promise.resolve(__OT._cache[text]);
-  if (__OT._inflight[text]) return __OT._inflight[text];
-  var item, resolveP;
-  var p = new Promise(function(res) { resolveP = res; });
-  __OT._inflight[text] = p;
-  item = {
-    id: __OT._nextId++,
-    text: text,
-    resolve: function(tr) {
-      delete __OT._inflight[text];
-      if (tr !== text) __OT._cache[text] = tr;
-      resolveP(tr);
-    },
-    drop: function() {
-      var i = __OT._queue.indexOf(item);
-      if (i !== -1) __OT._queue.splice(i, 1);
-      else __OT._pending.delete(item.id);
-    }
-  };
-  __OT._queue.push(item);
-  setTimeout(function() {
-    if (__OT._inflight[text] === p) {
-      item.drop();
-      delete __OT._inflight[text];
-      resolveP(text);
-    }
-  }, 120000);
-  _sendNext();
-  return p;
-}
-
 // ── Формат ──
 __OT._fmt = (function(){
   if (typeof State !== 'undefined' && State.variables) return 'sugarcube';
@@ -158,97 +100,6 @@ __OT._fmt = (function(){
   if (document.querySelector('tw-storydata')) return 'twine-raw';
   return 'unknown';
 })();
-
-__OT.addToCache = function(pairs) {
-  for (var k in pairs) { __OT._cache[k] = pairs[k]; }
-};
-
-function _tr(text) {
-  if (typeof text !== 'string') return false;
-  var s = text.trim();
-  return s.length >= 2 && /[a-zA-Zа-яА-Я\u4e00-\u9fff]/.test(s);
-}
-
-// Разбивка длинного текста на предложения, чтобы перевод не
-// уходил одним гигантским куском и заполнялся прогрессивно.
-function _splitSentences(t) {
-  return t.split(/(?<=[.!?…])\s+(?=[«"'A-ZА-Я0-9$\[])/)
-    .filter(function(s) { return _tr(s); });
-}
-
-function _applyCache(n, s, tr) {
-  if (tr !== undefined && tr !== s && n.isConnected) {
-    n.textContent = n.textContent.replace(s, tr);
-  }
-}
-
-function _walkText(root) {
-  var nodes = [];
-  var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-    acceptNode: function(n) {
-      var pe = n.parentElement;
-      if (!pe) return NodeFilter.FILTER_REJECT;
-      var tag = pe.tagName;
-      if (tag === 'STYLE' || tag === 'SCRIPT' ||
-          tag === 'TW-PASSAGEDATA' || tag === 'TW-STORYDATA') {
-        return NodeFilter.FILTER_REJECT;
-      }
-      if (n.textContent.trim() && _tr(n.textContent)) {
-        return NodeFilter.FILTER_ACCEPT;
-      }
-      return NodeFilter.FILTER_REJECT;
-    }
-  }, false);
-  while (w.nextNode()) { nodes.push(w.currentNode); }
-  return nodes;
-}
-
-__OT._translateDOM = function() {
-  if (!__OT._enabled) return;
-  var c = document.querySelector(
-    '#passages .passage, tw-passage, .passage, #passages');
-  if (!c) return;
-  _walkText(c).forEach(function(n) {
-    var t = n.textContent, s = t.trim();
-    if (!_tr(s)) return;
-    // Быстрый путь: весь узел целиком уже в кэше (в т.ч. bulk-кэш)
-    if (__OT._cache[s] !== undefined) {
-      _applyCache(n, s, __OT._cache[s]);
-      return;
-    }
-    var segs = _splitSentences(t);
-    if (segs.length === 1) {
-      if (!__OT._inflight[s]) {
-        _reqTr(s).then(function(tr) { _applyCache(n, s, tr); });
-      }
-      return;
-    }
-    segs.forEach(function(seg) {
-      if (__OT._cache[seg] !== undefined) {
-        _applyCache(n, seg, __OT._cache[seg]);
-        return;
-      }
-      if (__OT._inflight[seg]) return;
-      _reqTr(seg).then(function(tr) { _applyCache(n, seg, tr); });
-    });
-  });
-};
-
-__OT._observer = null;
-__OT._startObserver = function() {
-  var t = document.querySelector('#passages, #story, tw-story, body') || document.body;
-  if (!t) return;
-  __OT._observer = new MutationObserver(function() { clearTimeout(__OT._obTimer); __OT._obTimer = setTimeout(__OT._translateDOM, 150); });
-  __OT._observer.observe(t, { childList: true, subtree: true, characterData: true });
-};
-
-// статус перевода от моста: при выключенном переводе не сканировать
-// DOM и не слать запросы (выключенный перевод раньше гонял observer
-// и очередь впустую)
-__OT.setEnabled = function(v) {
-  __OT._enabled = !!v;
-  if (__OT._enabled) { __OT._translateDOM(); }
-};
 
 // ── Состояние ──
 __OT.collectState = function() {
@@ -302,9 +153,9 @@ function _restoreSaves(data) {
 // ── Инициализация ──
 function _init() {
   if (__OT._fmt === 'sugarcube' && typeof $ !== 'undefined') {
-    try { $(document).on(':passagedisplay', function() { setTimeout(__OT._translateDOM, 50); setTimeout(__OT._sendState, 100); }); } catch(e) {}
-  } else { __OT._startObserver(); }
-  setTimeout(__OT._translateDOM, 300); setTimeout(__OT._sendState, 500);
+    try { $(document).on(':passagedisplay', function() { setTimeout(__OT._sendState, 100); }); } catch(e) {}
+  }
+  setTimeout(__OT._sendState, 500);
   // Сейвы: на каждый сейв в игре + периодически + при закрытии
   try {
     if (typeof $ !== 'undefined' && typeof $.fn !== 'undefined') {
@@ -315,11 +166,6 @@ function _init() {
     window.addEventListener('beforeunload', _backupSaves);
   }
   setInterval(_backupSaves, 30000);
-  // retry: пока есть необработанные запросы — периодически проходимся
-  // по DOM, чтобы подставить поздние ответы и перезапросить таймауты
-  setInterval(function() {
-    if (__OT._pending.size || __OT._queue.length) { __OT._translateDOM(); }
-  }, 3000);
 }
 if (document.readyState === 'complete' || document.readyState === 'interactive') { _init(); }
 else { document.addEventListener('DOMContentLoaded', _init); }
@@ -666,7 +512,7 @@ class _WSServer:
         return self.port > 0
 
     def _dispatch(self, msg: dict):
-        # Перевод может быть медленным — не блокируем цикл событий WS.
+        # Чит-команды могут быть медленными — не блокируем цикл событий WS.
         try:
             self._pool.submit(self._on_message, msg)
         except Exception:  # noqa: BLE001 — пул уже закрыт
@@ -738,70 +584,11 @@ class TwineTentacle(Tentacle):
         self._http_thread: threading.Thread | None = None
         self._ws_server: _WSServer | None = None
         self._http_port = 0
-        self._pending_translations: dict[int, dict] = {}
         self._last_state: dict | None = None
-        self._translating: set = set()      # тексты, уже в работе
-        self._translate_waiters: dict[str, list] = {}
-        self._tr_lock = threading.Lock()
-        self._live_cache: dict[str, str] = {}  # кэш переводов (сессия + файл)
-        self._cache_path: str = ""             # octopus_cache.json в папке игры
-        self._cache_lock = threading.Lock()
-        self._cache_timer_alive = False
         self._port_hint = 0               # фиксированный порт (опционально)
         self._restore_sent = False
         self._last_save_backup = ""
         self._webapp_proc = None          # процесс окна WebView2 (webapp-режим)
-
-    # ── перевод с кэшем ──
-    def translate(self, text: str) -> str:
-        """Переводит текст; реальные переводы кэшируются в папке игры."""
-        if not self._translation_enabled or not text:
-            return text
-        cached = self._live_cache.get(text)
-        if cached is not None:
-            return cached
-        result = super().translate(text)
-        if result and result != text:
-            with self._cache_lock:
-                if len(self._live_cache) > 20000:
-                    self._live_cache = dict(
-                        list(self._live_cache.items())[-15000:])
-                self._live_cache[text] = result
-            self._schedule_cache_save()
-        return result
-
-    def set_translation_enabled(self, enabled: bool):
-        super().set_translation_enabled(enabled)
-        # JS-пейлоад в браузере: при выключенном переводе не сканировать
-        # DOM и не слать запросы впустую
-        if self._ws_server:
-            self._ws_server.send({"type": "enabled",
-                                  "enabled": bool(enabled)})
-
-    # ── кэш в папке игры ──
-    def _load_live_cache(self):
-        from app.core.translate.game_cache import load_game_cache
-        self._live_cache = load_game_cache(self._game_dir, "twine")
-
-    def _save_live_cache(self):
-        if not self._cache_path:
-            return
-        from app.core.translate.game_cache import save_game_cache
-        save_game_cache(self._game_dir, "twine", self._live_cache)
-
-    def _schedule_cache_save(self):
-        with self._cache_lock:
-            if self._cache_timer_alive:
-                return
-            self._cache_timer_alive = True
-
-        def _timer():
-            time.sleep(3)
-            with self._cache_lock:
-                self._cache_timer_alive = False
-            self._save_live_cache()
-
-        threading.Thread(target=_timer, daemon=True).start()
 
     def set_port_hint(self, port: int):
         """Зафиксировать порт HTTP-сервера (стабильный origin браузера)."""
@@ -842,13 +629,6 @@ class TwineTentacle(Tentacle):
         rel = os.path.relpath(self._game_path, self._game_dir)
         rel = rel.replace("\\", "/")
 
-        # Кэш переводов из папки игры (переживает перезапуски)
-        self._cache_path = os.path.join(self._game_dir, "octopus_cache.json")
-        self._load_live_cache()
-        if self._live_cache:
-            self.log.emit(
-                f"Кэш переводов: {len(self._live_cache)} строк из папки игры.")
-
         if not self._start_http(rel):
             return False
 
@@ -883,9 +663,6 @@ class TwineTentacle(Tentacle):
             if self._ws_server and self._ws_server.has_client():
                 self.log.emit("Игра подключена по WebSocket.")
                 self.attached.emit()
-                import threading as _t
-                _t.Thread(target=self._pretranslate_worker,
-                          daemon=True).start()
                 return True
             time.sleep(0.3)
 
@@ -896,8 +673,8 @@ class TwineTentacle(Tentacle):
     def _launch_webapp(self, rel: str) -> bool:
         """WebView2-режим запуска: обёртка ставится в папку игры
         (octopus_webapp/) и раздаётся этим же HTTP-сервером, игра
-        открывается в окне приложения. Перевод — встроенный в страницу
-        (Google/MyMemory), мост и инжекция пэйлоада не нужны."""
+        открывается в окне приложения. Мост и инжекция пэйлоада не
+        нужны — работает только синк сейвов."""
         from app.engines.twine import webapp as _webapp
 
         _InjectingHTTPHandler._inject_html = False
@@ -974,9 +751,7 @@ class TwineTentacle(Tentacle):
         with _InjectingHTTPHandler._import_lock:
             _InjectingHTTPHandler._import_payload = {}
         self._close_webapp_window()
-        self._save_live_cache()
         self._restore_sent = False
-        self._live_cache.clear()
         self._stop_ws()
         self._stop_http()
         self._pid = None
@@ -1031,8 +806,8 @@ class TwineTentacle(Tentacle):
     def _ws_port_hint(self) -> int:
         """Детерминированный порт моста: 7000 + crc(путь игры) % 1000.
 
-        Стабильный адрес ws://127.0.0.1:... — по нему веб-приложение игры
-        (LABS/webapp_window.py) находит мост перевода без ручной настройки.
+        Стабильный адрес ws://127.0.0.1:... — по нему страница игры
+        находит мост (состояние/читы) без ручной настройки.
         Диапазон 7000-7999 не пересекается с HTTP-портами (6000-6999).
         """
         if self._game_path:
@@ -1065,20 +840,16 @@ class TwineTentacle(Tentacle):
     # ── Обработка сообщений из игры ──
     def _on_ws_message(self, msg: dict):
         mtype = msg.get("type")
-        if mtype == "translate":
-            self._on_translate_request(msg)
-        elif mtype == "state":
+        if mtype == "state":
             self._last_state = msg
             self.state_received.emit(msg)
-            # страница могла перезагрузиться (JS-флаг сброшен) — ресинк
-            if self._ws_server and not self._translation_enabled:
-                self._ws_server.send({"type": "enabled", "enabled": False})
             # Первое сообщение игры после подключения — отдаём бэкап
-            # сейва и кэш переводов (покрывает и переподключения)
+            # сейва (покрывает и переподключения)
             if not self._restore_sent:
                 self._restore_sent = True
                 self._send_save_restore()
-                self._send_live_cache()
+        elif mtype == "vars":
+            self.vars_received.emit(msg.get("variables") or [])
         elif mtype == "save_backup":
             self._on_save_backup(msg)
         elif mtype == "cheat_ack":
@@ -1086,36 +857,6 @@ class TwineTentacle(Tentacle):
                                 str(msg.get("error", "")),
                                 json.dumps(msg.get("value", ""),
                                            ensure_ascii=False))
-
-    def _on_translate_request(self, msg: dict):
-        original = msg.get("text", "")
-        mid = msg.get("id")
-        with self._tr_lock:
-            if original in self._translating:
-                # Уже переводится — отдадим результат по второму id
-                self._translate_waiters.setdefault(original, []).append(mid)
-                return
-            self._translating.add(original)
-        try:
-            translation = self.translate(original)
-        finally:
-            with self._tr_lock:
-                self._translating.discard(original)
-                waiters = self._translate_waiters.pop(original, [])
-        self._reply_translation(mid, translation)
-        for wid in waiters:
-            self._reply_translation(wid, translation)
-        self.text_seen.emit(original, translation)
-
-    def _reply_translation(self, mid, text):
-        if mid is None:
-            return
-        if self._ws_server:
-            self._ws_server.send({
-                "type": "translation",
-                "id": mid,
-                "text": text,
-            })
 
     # ── Сейвы: бэкап/восстановление ──
     def _send_save_restore(self):
@@ -1130,11 +871,6 @@ class TwineTentacle(Tentacle):
         if data:
             self._ws_server.send({"type": "save_restore", "data": data})
             self.log.emit("Сейв игры восстановлен из saves/save.json.")
-
-    def _send_live_cache(self):
-        if self._live_cache and self._ws_server:
-            self._ws_server.send({
-                "type": "cache", "pairs": dict(self._live_cache)})
 
     def _on_save_backup(self, msg: dict):
         data = msg.get("data", "")
@@ -1154,7 +890,7 @@ class TwineTentacle(Tentacle):
         except Exception:  # noqa: BLE001
             pass
 
-    # ── Состояние ──
+    # ── Состояние и читы ──
     def request_state(self) -> bool:
         if not self._ws_server:
             return False
@@ -1183,33 +919,3 @@ class TwineTentacle(Tentacle):
         else:
             self.cheat_ack.emit(cmd, False, "send failed", "")
         return ok
-
-    # ── Bulk-перевод ──
-    def _pretranslate_worker(self):
-        try:
-            self._pretranslate()
-        except Exception as e:  # noqa: BLE001
-            self.log.emit(f"Bulk-перевод: {e}")
-
-    def _pretranslate(self):
-        from app.core.twine import parser
-        try:
-            entries = parser.extract(self._game_dir)
-        except Exception:  # noqa: BLE001
-            return
-        import re as _re
-        cyr = _re.compile("[А-яЁё]")
-        pairs = {}
-        for e in entries:
-            t = e.original.strip()
-            if len(t) <= 2 or cyr.search(t) or not any(
-                    c.isalpha() for c in t):
-                continue
-            tr = self.translate(e.original)
-            if tr and tr != e.original:
-                pairs[e.original] = tr
-        if pairs and self._ws_server:
-            self._ws_server.send({
-                "type": "cache", "pairs": pairs})
-            self.log.emit(
-                f"Bulk-перевод: {len(pairs)} строк в кэше.")

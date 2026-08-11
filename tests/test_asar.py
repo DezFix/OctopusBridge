@@ -162,7 +162,7 @@ with tempfile.TemporaryDirectory() as td:
     mod = detect_engine(game)
     assert isinstance(mod, RpgMakerModule), mod
     assert mod.variant == "mz"
-    assert "files" in mod.features and "live" in mod.features
+    assert "files" in mod.features and "cheats" in mod.features
     assert "maps" in mod.features and "resources" in mod.features
     assert "font" not in mod.features  # шрифт у Electron-версии скрыт
     assert mod.display == "RPG Maker MZ (Electron)", mod.display

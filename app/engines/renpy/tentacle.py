@@ -14,7 +14,6 @@ import shutil
 import socket
 import threading
 import time
-from typing import Callable
 
 from app.transport.frida_rpc.injector import PythonInjector
 from app.core.tentacles.base import Tentacle
@@ -24,88 +23,6 @@ from app.engines.renpy.offsets import RenpyOffsetDB, detect_version
 FONT_NAME = "NotoSans-Regular.ttf"
 FONT_REL = "ob_fonts/" + FONT_NAME
 AGENT_RPY = "ob_agent.rpy"
-
-# ── Защита Ren'Py-интерполяции от переводчика ────────────────────────
-# Плейсхолдер "OB{i}": чистый ASCII. Проверено на honyaku (OPUS-MT/NLLB):
-# PUA-символы (\uE000) и скобки (⟦⟧, {{}}, «») токенизатор выбрасывает,
-# а цифро-буквенные токены (OB0) сохраняет слово-в-слово.
-_PLACEHOLDER = "OB{i}"
-
-
-def _protect_interp(text: str) -> tuple[str, list[str]]:
-    """Заменяет Ren'Py-коды ([...], {...}) и переводы строк на плейсхолдеры.
-
-    Коды — это интерполяция и текстовые теги игры; они не переводимы и
-    должны вернуться в перевод слово-в-слово. Переводы строк защищаем,
-    чтобы движок не склеивал многострочные строки интерфейса.
-    Возвращает (текст без кодов, список кодов в порядке появления).
-    """
-    codes: list[str] = []
-    result: list[str] = []
-    i, n = 0, len(text)
-    while i < n:
-        c = text[i]
-        if c == "[" and i + 1 < n and text[i + 1] == "[":
-            # Ren'Py-escape [[ — литеральная скобка, не интерполяция
-            codes.append("[[")
-            result.append(_PLACEHOLDER.format(i=len(codes) - 1))
-            i += 2
-        elif c in "[{":
-            start = i
-            depth = 1
-            i += 1
-            while i < n and depth > 0:
-                if text[i] in "[{":
-                    depth += 1
-                elif text[i] in "]}":
-                    depth -= 1
-                i += 1
-            codes.append(text[start:i])
-            result.append(_PLACEHOLDER.format(i=len(codes) - 1))
-        elif c == "\n":
-            codes.append(c)
-            result.append(_PLACEHOLDER.format(i=len(codes) - 1))
-            i += 1
-        else:
-            result.append(c)
-            i += 1
-    return "".join(result), codes
-
-
-def _restore_interp(text: str, codes: list[str]) -> str | None:
-    for i, code in enumerate(codes):
-        marker = _PLACEHOLDER.format(i=i)
-        if marker not in text:
-            return None
-        text = text.replace(marker, code, 1)
-    return text
-
-
-def _translate_segments(translate: Callable[[str], str],
-                        text: str, codes: list[str]) -> str | None:
-    """Аварийный перевод: переводим только текстовые куски, коды вставляем
-    обратно как есть. Гарантирует сохранность [..]/{..}/\n даже если
-    движок перевода выбросил плейсхолдеры из перевода."""
-    pieces: list[str] = []
-    rest = text
-    for code in codes:
-        idx = rest.find(code)
-        if idx < 0:
-            return None
-        pieces.append(rest[:idx])
-        rest = rest[idx + len(code):]
-    pieces.append(rest)
-    targets = [p for p in pieces if p.strip()]
-    if targets:
-        translated = [translate(t) for t in targets]
-        it = iter(translated)
-        for i, p in enumerate(pieces):
-            if p.strip():
-                pieces[i] = next(it)
-    result = pieces[0]
-    for i, code in enumerate(codes):
-        result += code + pieces[i + 1]
-    return result
 
 
 def find_launcher(game_dir: str) -> str | None:
@@ -483,14 +400,6 @@ class RenPyTentacle(Tentacle):
 
         return self._inject_agent(wait=30.0)
 
-    def set_translation_enabled(self, enabled: bool):
-        super().set_translation_enabled(enabled)
-        # агент внутри игры должен знать о паузе: выключенный перевод
-        # не должен слать запросы и блокировать главный поток игры
-        if self._server:
-            self._server.send({"type": "set_paused",
-                               "paused": not self._translation_enabled})
-
     def _inject_agent(self, wait: float = 60.0) -> bool:
         deadline = time.monotonic() + wait
         while time.monotonic() < deadline:
@@ -550,11 +459,6 @@ class RenPyTentacle(Tentacle):
     # ── сообщения агента ──
     def _on_agent_connect(self):
         self.log.emit("Агент игры подключился.")
-        # сообщаем текущий статус перевода: при выключенном переводе
-        # агент не шлёт запросы и не блокирует игровой поток
-        if self._server:
-            self._server.send({"type": "set_paused",
-                               "paused": not self._translation_enabled})
         self.attached.emit()
 
     def _on_agent_disconnect(self):
@@ -562,9 +466,7 @@ class RenPyTentacle(Tentacle):
 
     def _on_message(self, msg: dict):
         mtype = msg.get("type")
-        if mtype == "translate":
-            self._on_translate(msg)
-        elif mtype == "state":
+        if mtype == "state":
             self.state_received.emit(msg)
         elif mtype == "vars":
             self.vars_received.emit(msg.get("variables") or [])
@@ -573,36 +475,6 @@ class RenPyTentacle(Tentacle):
                                 str(msg.get("error", "")),
                                 json.dumps(msg.get("value"),
                                            ensure_ascii=False))
-
-    def _on_translate(self, msg: dict):
-        original = msg.get("text", "")
-        if not self._translation_enabled:
-            # перевод приостановлен пользователем: отвечаем оригиналом
-            # с флагом paused — агент не кэширует и не skip-ит строку,
-            # после включения перевода она переведётся заново
-            if self._server:
-                self._server.send({"type": "translation",
-                                   "id": msg.get("id"), "text": original,
-                                   "paused": True})
-            self.text_seen.emit(original, original)
-            return
-        try:
-            masked, codes = _protect_interp(original)
-            translation = self.translate(masked)
-            if codes:
-                restored = _restore_interp(translation, codes)
-                if restored is None:
-                    # движок выбросил плейсхолдеры — переводим по кускам,
-                    # коды вставляем как есть
-                    restored = _translate_segments(self.translate,
-                                                   original, codes)
-                translation = restored if restored is not None else original
-        except Exception:  # noqa: BLE001
-            translation = original
-        if self._server:
-            self._server.send({"type": "translation", "id": msg.get("id"),
-                               "text": translation})
-        self.text_seen.emit(original, translation)
 
     # ── команды в игру ──
     def request_state(self) -> bool:

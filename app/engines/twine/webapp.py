@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """WebView2-режим запуска Twine-игры: обёртка ставится в папку игры
 и раздаётся тем же HTTP-сервером тентакля, игра открывается в окне
-приложения (WebView2/pywebview). Перевод — встроенный в страницу
-(Google gtx / MyMemory), мост и инжекция пэйлоада не нужны."""
+приложения (WebView2/pywebview). Сейвы игры синхронизируются с
+приложением (плагин окна -> .save файлы в папку игры)."""
 import html
 import logging
 import os
@@ -36,9 +36,6 @@ WRAPPER_HTML = r"""<!DOCTYPE html>
 <style>
   body {{ margin:0; font-family: system-ui, sans-serif; background:#111; color:#ddd; }}
   #bar {{ display:flex; align-items:center; gap:10px; padding:6px 12px; background:#1d1d1d; border-bottom:1px solid #333; flex-wrap:wrap; }}
-  #bar button {{ background:#333; color:#eee; border:1px solid #555; border-radius:4px; padding:4px 10px; cursor:pointer; }}
-  #bar button:hover {{ background:#444; }}
-  #bar select {{ background:#333; color:#eee; border:1px solid #555; border-radius:4px; padding:3px 6px; }}
   #status {{ font-size:12px; color:#8a8; }}
   #frame-wrap {{ position:fixed; inset:42px 0 0 0; }}
   iframe {{ width:100%; height:100%; border:0; background:#fff; }}
@@ -46,13 +43,6 @@ WRAPPER_HTML = r"""<!DOCTYPE html>
 </head>
 <body>
   <div id="bar">
-    <button id="btnTr">Перевод: ВКЛ</button>
-    <button id="btnClr">Сброс кэша перевода</button>
-    <label>→ <select id="langSel" title="Язык перевода">
-      <option value="ru">RU</option><option value="en">EN</option>
-      <option value="de">DE</option><option value="fr">FR</option>
-      <option value="es">ES</option><option value="uk">UK</option>
-    </select></label>
     <span id="status">…</span>
   </div>
   <div id="frame-wrap"><iframe id="game" src="{IFRAME_URL}"></iframe></div>
@@ -61,227 +51,20 @@ WRAPPER_HTML = r"""<!DOCTYPE html>
 </html>
 """
 
-PLUGIN_JS = r"""/* Плагин перевода для обёртки Twine-игры.
-   Перевод прямо в странице, без моста:
-     * Google Translate (gtx-эндпоинт, им же пользуется Chrome) — основной;
-     * MyMemory — запасной.
-   Кэш переводов — localStorage (по языку), сейвы игры — родные (один origin). */
+PLUGIN_JS = r"""/* Плагин окна Twine-игры: синк сейвов с приложением.
+   SugarCube держит слоты в localStorage профиля окна — файлов на
+   диске нет, поэтому редактор сейвов их не видит. Плагин читает
+   слоты (Save API в окне игры — тот же origin, доступ напрямую)
+   и присылает их серверу приложения; тот пишет .save файлы. */
 (function () {
     var iframe = document.getElementById('game');
-    var enabled = true;
-    var cache = {};
-    var inflight = {};       // text -> Promise
-    var PREF = 'octopus_tr_target';
-    var TARGET = localStorage.getItem(PREF) || 'ru';
-    var KEY = 'octopus_tr_cache_' + TARGET;
-
-    var ENGINES = [
-        {
-            name: 'Google',
-            build: function (text) {
-                return 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl='
-                    + TARGET + '&dt=t&q=' + encodeURIComponent(text);
-            },
-            parse: function (data) {
-                if (!data || !Array.isArray(data[0])) return null;
-                var out = '';
-                for (var i = 0; i < data[0].length; i++) {
-                    var seg = data[0][i];
-                    if (seg && seg[0]) out += seg[0];
-                }
-                return out || null;
-            }
-        },
-        {
-            name: 'MyMemory',
-            build: function (text) {
-                var src = TARGET === 'en' ? 'ru' : 'en';
-                return 'https://api.mymemory.translated.net/get?q=' + encodeURIComponent(text)
-                    + '&langpair=' + src + '|' + TARGET;
-            },
-            parse: function (data) {
-                var s = data && data.responseData && data.responseData.translatedText;
-                return s || null;
-            }
-        }
-    ];
 
     function setStatus(s) {
         var el = document.getElementById('status');
         if (el) el.textContent = s;
     }
 
-    try { cache = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) { cache = {}; }
-    function saveCache() {
-        try { localStorage.setItem(KEY, JSON.stringify(cache)); } catch (e) {}
-    }
-
-    function _isTargetLang(s) {
-        if (TARGET === 'ru') return /[а-яА-ЯЁё]/.test(s);
-        if (TARGET === 'en') return /[a-zA-Z]/.test(s) && !/[а-яА-ЯЁё]/.test(s);
-        return false;
-    }
-
-    function _tr(s) {
-        return s.length >= 2 && /[a-zA-Zа-яА-Я\u4e00-\u9fff]/.test(s) && !_isTargetLang(s);
-    }
-
-    function translate(text) {
-        var s = text.trim();
-        if (cache[s] !== undefined) return Promise.resolve(cache[s]);
-        if (inflight[s]) return inflight[s];
-        var resolveP;
-        var p = new Promise(function (res) { resolveP = res; });
-        inflight[s] = p;
-
-        (function tryEngine(i) {
-            if (i >= ENGINES.length) {
-                delete inflight[s];
-                resolveP(s);
-                return;
-            }
-            var e = ENGINES[i];
-            var ctrl = new AbortController();
-            var timer = setTimeout(function () { ctrl.abort(); }, 15000);
-            fetch(e.build(s), { signal: ctrl.signal })
-                .then(function (r) { return r.json(); })
-                .then(function (data) {
-                    clearTimeout(timer);
-                    var tr = e.parse(data);
-                    if (tr && tr !== s) {
-                        delete inflight[s];
-                        cache[s] = tr;
-                        saveCache();
-                        resolveP(tr);
-                    } else {
-                        tryEngine(i + 1);
-                    }
-                })
-                .catch(function () { clearTimeout(timer); tryEngine(i + 1); });
-        })(0);
-        return p;
-    }
-
-    function splitSentences(t) {
-        return t.split(/(?<=[.!?\u2026])\s+(?=[\u00ab\u201c"'A-Z\u0410-\u042f0-9$\[])/)
-            .filter(function (s) { return _tr(s); });
-    }
-
-    function walkText(root) {
-        var nodes = [];
-        var w = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-            acceptNode: function (n) {
-                var pe = n.parentElement;
-                if (!pe) return NodeFilter.FILTER_REJECT;
-                var tag = pe.tagName.toUpperCase();
-                if (tag === 'STYLE' || tag === 'SCRIPT' || tag === 'TW-PASSAGEDATA' || tag === 'TW-STORYDATA')
-                    return NodeFilter.FILTER_REJECT;
-                if (n.textContent.trim() && _tr(n.textContent)) return NodeFilter.FILTER_ACCEPT;
-                return NodeFilter.FILTER_REJECT;
-            }
-        }, false);
-        while (w.nextNode()) nodes.push(w.currentNode);
-        return nodes;
-    }
-
-    function applyCache(n, s, tr) {
-        if (tr !== undefined && tr !== s && n.isConnected)
-            n.textContent = n.textContent.replace(s, tr);
-    }
-
-    function translateDOM() {
-        if (!enabled) return;
-        var doc = iframe.contentDocument;
-        if (!doc) return;
-        var c = doc.querySelector('#passages .passage, tw-passage, .passage, #passages');
-        if (!c) return;
-        walkText(c).forEach(function (n) {
-            var t = n.textContent, s = t.trim();
-            if (!_tr(s)) return;
-            if (cache[s] !== undefined) { applyCache(n, s, cache[s]); return; }
-            var segs = splitSentences(t);
-            if (segs.length === 1) {
-                if (!inflight[s]) translate(s).then(function (tr) { applyCache(n, s, tr); });
-                return;
-            }
-            segs.forEach(function (seg) {
-                if (cache[seg] !== undefined) { applyCache(n, seg, cache[seg]); return; }
-                if (inflight[seg]) return;
-                translate(seg).then(function (tr) { applyCache(n, seg, tr); });
-            });
-        });
-    }
-
-    var timer;
-    iframe.addEventListener('load', function () {
-        var doc = iframe.contentDocument;
-        if (!doc || !doc.body) return;
-        injectWrapCss(doc);
-        try {
-            var win = iframe.contentWindow;
-            if (win.$ && win.$.fn) win.$(win.document).on(':passagedisplay', function () { setTimeout(translateDOM, 50); });
-        } catch (e) {}
-        new MutationObserver(function () {
-            clearTimeout(timer);
-            timer = setTimeout(translateDOM, 150);
-        }).observe(doc.body, { childList: true, subtree: true, characterData: true });
-        setTimeout(translateDOM, 300);
-    });
-
-    // Переводы длиннее оригинала ломают вёрстку движка: SugarCube-темы
-    // вешают на ссылки/кнопки white-space:nowrap, при котором перенос
-    // не работает вообще. Правила ниже: перенос слов + normal пробел.
-    var WRAP_CSS =
-        '#passages, #passages *, tw-passage, tw-passage *, ' +
-        '.passage, .passage *, tw-hook, tw-link, ' +
-        '#ui-bar, #ui-bar *, #ui-dialog, #ui-dialog *, ' +
-        '#menu-story, #menu-story *, .ui-dialog, .ui-dialog * { ' +
-        'overflow-wrap:anywhere !important; ' +
-        'word-break:break-word !important; ' +
-        'white-space:normal !important; }';
-    function injectWrapCss(doc) {
-        if (!doc || !doc.head) return;
-        try {
-            if (doc.getElementById('octopus-wrap-css')) return;
-            var st = doc.createElement('style');
-            st.id = 'octopus-wrap-css';
-            st.textContent = WRAP_CSS;
-            doc.head.appendChild(st);
-        } catch (e) {}
-    }
-
-    setInterval(function () {
-        var has = false;
-        for (var k in inflight) { has = true; break; }
-        if (has) translateDOM();
-    }, 3000);
-
-    document.getElementById('btnTr').onclick = function () {
-        enabled = !enabled;
-        this.textContent = 'Перевод: ' + (enabled ? 'ВКЛ' : 'ВЫКЛ');
-        if (enabled) translateDOM();
-    };
-    document.getElementById('btnClr').onclick = function () {
-        cache = {};
-        try { localStorage.removeItem(KEY); } catch (e) {}
-        iframe.contentWindow.location.reload();
-    };
-    var sel = document.getElementById('langSel');
-    if (sel) {
-        sel.value = TARGET;
-        sel.onchange = function () {
-            TARGET = sel.value;
-            KEY = 'octopus_tr_cache_' + TARGET;
-            try { localStorage.setItem(PREF, TARGET); } catch (e) {}
-            try { cache = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) { cache = {}; }
-            iframe.contentWindow.location.reload();
-        };
-    }
     // ── Синк сейвов с приложением ──
-    // SugarCube держит слоты в localStorage профиля окна — файлов на
-    // диске нет, поэтому редактор сейвов их не видит. Плагин читает
-    // слоты (Save API в окне игры — тот же origin, доступ напрямую)
-    // и присылает их серверу приложения; тот пишет .save файлы.
     function scSave() {
         var w = iframe.contentWindow;
         if (!w) return null;
@@ -362,8 +145,6 @@ PLUGIN_JS = r"""/* Плагин перевода для обёртки Twine-и�
     setInterval(pollImport, 5000);
     setTimeout(pushSaves, 5000);
     setTimeout(pollImport, 3000);
-
-    setStatus('перевод встроенный: Google / MyMemory');
 })();
 """
 
@@ -399,8 +180,8 @@ def install_webapp(game_dir: str, game_rel: str, title: str) -> str:
 
 
 def profile_dir_for(game_path: str) -> str:
-    """Постоянный профиль WebView2 на игру: сейвы и кэш переживают
-    перезапуск (localStorage привязан к профилю, не к порту)."""
+    """Постоянный профиль WebView2 на игру: сейвы переживают перезапуск
+    (localStorage привязан к профилю, не к порту)."""
     base = os.path.splitext(os.path.basename(game_path))[0]
     root = os.environ.get('LOCALAPPDATA') or tempfile.gettempdir()
     return os.path.join(root, 'OctopusBridgeWebApp', base + '_profile')
@@ -417,9 +198,6 @@ def open_game_window(title: str, url: str, profile_dir: str,
     except ImportError:
         webbrowser.open(url)
         return None
-    # Плагин перевода ходит на translate.googleapis.com без CORS-заголовков.
-    os.environ.setdefault(
-        'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS', '--disable-web-security')
     icon = icon_path or os.path.join(_repo_root(), 'ico.ico')
     if not os.path.isfile(icon):
         icon = ''

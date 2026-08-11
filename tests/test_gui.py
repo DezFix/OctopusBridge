@@ -72,7 +72,7 @@ with tempfile.TemporaryDirectory() as td:
     make_rpgm(td, "mv")
     mod = detect_engine(td)
     assert isinstance(mod, RpgMakerModule) and mod.variant == "mv"
-    assert {"files", "live", "cheats", "resources", "font"} <= mod.features
+    assert {"files", "cheats", "resources", "font"} <= mod.features
 with tempfile.TemporaryDirectory() as td:
     make_renpy(td)
     assert isinstance(detect_engine(td), RenPyModule)
@@ -121,10 +121,11 @@ with tempfile.TemporaryDirectory() as td:
     assert "cheats" not in w.engine_module.features
 print("   OK")
 
-print("4) Настройки: 4 вкладки, «ИИ корректор» на месте...")
+print("4) Настройки: 3 вкладки (Основные/Файлы/ИИ корректор)...")
 from app.ui.settings_tab import SettingsDialog
 d = SettingsDialog(w)
 tabs = [d.tabs.tabText(i) for i in range(d.tabs.count())]
+assert len(tabs) == 3, tabs
 assert "ИИ корректор" in tabs or "AI Corrector" in tabs
 assert hasattr(d, "glossary_use_ai")
 assert d.glossary_use_ai.isChecked()

@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Модуль TyranoScript / TyranoBuilder — извлечение, внедрение, живой перевод.
+"""Модуль TyranoScript / TyranoBuilder — извлечение, внедрение, подключение.
 
 Весь функционал Tyrano хранится в этой папке:
 - core/tyrano/parser: извлечение/внедрение текста в data/scenario/*.ks
-- tentacle: CDP-подключение к живой игре (NW.js/Chromium) — перевод
-  текста в DOM, переменные, консоль
+- tentacle: CDP-подключение к живой игре (NW.js/Chromium) — переменные,
+  консоль, состояние
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ class TyranoModule(EngineModule):
     variant = ""                # 'tyranoscript' | 'tyranobuilder' — не различаем
     # в переменных движка (kag.variables/kag.tmp) только внутренний
     # конфиг (громкость, галерея CG) — вкладка читов не нужна
-    features = {"files", "live"}
+    features = {"files"}
 
     @classmethod
     def detect(cls, game_dir: str) -> int:

@@ -371,7 +371,7 @@ class CheatTab(QWidget):
         if self._names_worker and self._names_worker.isRunning():
             self._names_worker.terminate()
             self._names_worker.wait(2000)
-        engine = self.main.create_engine("realtime")
+        engine = self.main.create_engine("files")
         if engine is None:
             return
         translator = Translator(engine, tm=self.main.tm,

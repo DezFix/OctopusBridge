@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Диалог настроек: три вкладки — Основные, Реалтайм, Файлы."""
+"""Диалог настроек: три вкладки — Основные, Файлы, AI-корректор."""
 from __future__ import annotations
 
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFormLayout,
@@ -32,7 +32,6 @@ class SettingsDialog(QDialog):
         tabs = QTabWidget()
         self.tabs = tabs
         tabs.addTab(self._build_general_tab(s), TR("settings_general"))
-        tabs.addTab(self._build_live_tab(s), TR("settings_live"))
         tabs.addTab(self._build_files_tab(s), TR("settings_files"))
         tabs.addTab(self._build_ai_tab(s), TR("settings_corr_tab"))
         lay.addWidget(tabs, 1)
@@ -45,7 +44,6 @@ class SettingsDialog(QDialog):
         bottom.addWidget(btn_save)
         lay.addLayout(bottom)
 
-        self._on_live_provider_changed()
         self._on_files_provider_changed()
         self._on_corrector_provider_changed()
 
@@ -149,33 +147,17 @@ class SettingsDialog(QDialog):
         close_form.addRow(TR("settings_close_behavior"), self.close_behavior)
         lay.addWidget(close_box)
 
-        lay.addStretch(1)
-        return w
-
-    # ── Tab 2: Realtime (engine + port + auto_launch) ──
-    def _build_live_tab(self, s) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
-
-        self.live_engine_box = self._build_engine_group(
-            s, "engine_realtime", "realtime", TR("settings_live_provider"))
-        self.live_eng = self.live_engine_box._eng
-        self.live_eng["engine"].currentIndexChanged.connect(
-            self._on_live_provider_changed)
-        self.live_eng["btn_ping"].clicked.connect(
-            lambda: self._ping("realtime"))
-        lay.addWidget(self.live_engine_box)
-
-        live_box = QGroupBox(TR("live_title"))
-        live_form = QFormLayout(live_box)
+        launch_box = QGroupBox(TR("settings_game"))
+        launch_form = QFormLayout(launch_box)
         self.auto_launch = QCheckBox(TR("settings_auto_launch"))
         self.auto_launch.setChecked(s.value("auto_launch", False, type=bool))
-        live_form.addRow(self.auto_launch)
-        lay.addWidget(live_box)
+        launch_form.addRow(self.auto_launch)
+        lay.addWidget(launch_box)
+
         lay.addStretch(1)
         return w
 
-    # ── Tab 3: Files (engines + overwrite + backup) ──
+    # ── Tab 2: Files (engines + overwrite + backup) ──
     def _build_files_tab(self, s) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
@@ -262,9 +244,7 @@ class SettingsDialog(QDialog):
         if self.isVisible():
             self.adjustSize()
 
-    def _on_live_provider_changed(self):
-        self._update_provider_visibility(self.live_eng)
-        self._select_preset_for(self.live_eng, "realtime")
+    # ── Tab 3: AI Corrector (corrector + AI glossary) ──
 
     def _on_files_provider_changed(self):
         self._update_provider_visibility(self.files_eng)
@@ -299,7 +279,7 @@ class SettingsDialog(QDialog):
 
     # ── Ping ──
     def _ping(self, prefix: str):
-        eng = {"realtime": self.live_eng, "files": self.files_eng,
+        eng = {"files": self.files_eng,
                "corrector": self.corr_eng}.get(prefix, self.files_eng)
         engine = self.main.create_engine(prefix)
         if engine is None:
@@ -320,7 +300,6 @@ class SettingsDialog(QDialog):
 
     def _save_and_close(self):
         s = self.main.settings
-        self._save_engine(self.live_eng, "engine_realtime", "realtime")
         self._save_engine(self.files_eng, "engine_files", "files")
         self._save_engine(self.corr_eng, "engine_corrector", "corrector")
         s.setValue("source_lang", self.source_lang.currentText())

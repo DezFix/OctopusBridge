@@ -10,7 +10,7 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from app.core import process as proc
-from app.core.tentacles.base import Tentacle, TranslateFn
+from app.core.tentacles.base import Tentacle
 
 
 class GameSession(QObject):
@@ -18,7 +18,6 @@ class GameSession(QObject):
     attached = Signal()
     detached = Signal(str)
     log = Signal(str)
-    text_seen = Signal(str, str)
     vars_received = Signal(object)
     state_received = Signal(object)
     cheat_ack = Signal(str, bool, str, str)
@@ -48,16 +47,6 @@ class GameSession(QObject):
 
     def owns_game(self) -> bool:
         return self._owns_game
-
-    def set_translate_fn(self, fn: TranslateFn | None):
-        if self._tentacle:
-            self._tentacle.set_translate_fn(fn)
-
-    def set_translation_enabled(self, enabled: bool):
-        """Вкл/выкл перевод на лету (текст остаётся без перевода,
-        соединение и читы продолжают работать)."""
-        if self._tentacle:
-            self._tentacle.set_translation_enabled(enabled)
 
     def send_key(self, key: str, code: str = "", keyCode: int = 0,
                  windowsKeyCode: int = 0) -> bool:
@@ -104,7 +93,6 @@ class GameSession(QObject):
         tentacle.attached.connect(self.attached)
         tentacle.detached.connect(self.detached)
         tentacle.log.connect(self.log)
-        tentacle.text_seen.connect(self.text_seen)
         tentacle.vars_received.connect(self.vars_received)
         tentacle.state_received.connect(self.state_received)
         tentacle.cheat_ack.connect(self.cheat_ack)

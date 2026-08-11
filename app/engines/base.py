@@ -15,7 +15,7 @@ class EngineModule(ABC):
     key: str = "base"                 # 'rpgmaker', 'renpy', ...
     title: str = "Базовый движок"
     variant: str = ""                 # уточнение версии: 'mz', 'mv', ...
-    # возможности: 'live', 'cheats', 'resources', 'font', 'files'
+    # возможности: 'cheats', 'resources', 'font', 'files'
     features: set[str] = {"files"}
 
     @classmethod
@@ -33,7 +33,7 @@ class EngineModule(ABC):
 
     def ui_tabs(self, main_window) -> list[tuple]:
         """Движковые вкладки: [(widget, заголовок, роль)].
-        Роль: 'live' | 'cheats' | 'module' — для профилей видимости."""
+        Роль: 'cheats' | 'module' — для профилей видимости."""
         return []
 
     def file_view(self, game_dir: str):

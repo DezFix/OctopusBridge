@@ -22,7 +22,6 @@ from app.core.models import Project
 from app.core.translate.engines import get_engine
 from app.core.translate.glossary import Glossary
 from app.core.translate.memory import TranslationMemory
-from app.core.translate.service import Translator
 from app.engines.registry import detect_engine
 from app.ui.i18n import TR, provider_short_name, set_language
 from app.ui.welcome_tab import WelcomeTab
@@ -66,7 +65,7 @@ def _cleanup_legacy_settings(s: QSettings):
     for key in s.allKeys():
         if key.startswith("nllb_gpu_") or key == "engine_nllb":
             s.remove(key)
-    for key in ("engine_realtime", "engine_files", "engine_corrector"):
+    for key in ("engine_files", "engine_corrector"):
         if s.value(key) in ("nllb", "argos", "honyaku"):
             s.setValue(key, "ai" if key == "engine_corrector" else "rotate")
 
@@ -87,8 +86,6 @@ def _migrate_project_files():
 
 class MainWindow(QMainWindow):
     bridge_client = Signal(bool)
-    bridge_translated = Signal(str, str)
-    bridge_log = Signal(str)
     bridge_state = Signal(str)
     bridge_vars = Signal(str)
     bridge_cheat_ack = Signal(str, bool, str, str)
@@ -120,8 +117,6 @@ class MainWindow(QMainWindow):
             lambda: self.bridge_client.emit(True))
         self.session.detached.connect(
             lambda _reason="": self.bridge_client.emit(False))
-        self.session.text_seen.connect(self.bridge_translated)
-        self.session.log.connect(self.bridge_log)
         self.session.state_received.connect(
             lambda d: self.bridge_state.emit(
                 json.dumps(d, ensure_ascii=False)))
@@ -129,7 +124,6 @@ class MainWindow(QMainWindow):
             lambda v: self.bridge_vars.emit(
                 json.dumps(v, ensure_ascii=False)))
         self.session.cheat_ack.connect(self.bridge_cheat_ack)
-        self.session.error.connect(self.bridge_log)   # ошибки — в лог
 
         self.engine_module = None
         self.cheat_tab = None
@@ -161,12 +155,20 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self.translate_tab_visible = False
 
+        from app.ui.loading_overlay import LoadingOverlay
+        self.loading = LoadingOverlay(central)
+
         self.bridge_client.connect(self._on_sb_client)
         self.refresh_status_bar()
 
         from PySide6.QtCore import QTimer
         from app.ui.app_info import maybe_show_changelog
         QTimer.singleShot(900, lambda: maybe_show_changelog(self))
+
+    def resizeEvent(self, event):
+        if getattr(self, "loading", None):
+            self.loading.setGeometry(self.rect())
+        super().resizeEvent(event)
 
     # ---------- трей ----------
     def _setup_tray(self):
@@ -253,6 +255,15 @@ class MainWindow(QMainWindow):
         # Если это .html файл — для проекта берём родительскую папку
         if os.path.isfile(game_dir) and game_dir.lower().endswith(".html"):
             game_dir = os.path.dirname(game_dir)
+        # Оверлей появляется, только если открытие затянулось
+        # (de-bounce 250 мс) — на быстрых проектах не мигает.
+        from PySide6.QtCore import QTimer
+        if getattr(self, "_open_proj_timer", None) is None:
+            self._open_proj_timer = QTimer(self)
+            self._open_proj_timer.setSingleShot(True)
+            self._open_proj_timer.timeout.connect(
+                lambda: self.loading.show_loading(TR("project_opening")))
+        self._open_proj_timer.start(250)
         module = detect_engine(game_dir)
         self._set_engine_module(module)
         engine = (module.variant or module.key) if module else "unknown"
@@ -274,10 +285,13 @@ class MainWindow(QMainWindow):
         self._set_projects_tab_visible(False)
         self.tabs.setCurrentWidget(self.welcome_tab)
 
+        self._open_proj_timer.stop()
+        self.loading.hide_loading()
+
         if self.settings.value("auto_launch", False, type=bool) \
-                and module and "live" in module.features:
+                and module and "cheats" in module.features:
             from PySide6.QtCore import QTimer
-            QTimer.singleShot(300, self.welcome_tab._action_live_toggle)
+            QTimer.singleShot(300, self.welcome_tab._action_launch_toggle)
 
         return engine
 
@@ -364,9 +378,7 @@ class MainWindow(QMainWindow):
     # ---------- движок перевода ----------
     def create_engine(self, engine_type: str = "files"):
         s = self.settings
-        if engine_type == "realtime":
-            name = s.value("engine_realtime", "rotate")
-        elif engine_type == "corrector":
+        if engine_type == "corrector":
             name = s.value("engine_corrector",
                            s.value("engine_files", s.value("engine", "rotate")))
         else:
@@ -385,26 +397,6 @@ class MainWindow(QMainWindow):
         except Exception:  # noqa: BLE001
             return None
 
-    def build_translate_fn(self, engine):
-        s = self.settings
-        src = s.value("source_lang", "auto")
-        tgt = s.value("target_lang", "ru")
-        state = {"error_reported": False}
-        translator = Translator(engine, tm=self.tm, glossary=self.glossary)
-
-        def translate(text: str) -> str:
-            try:
-                return translator.translate_text(text, src, tgt)
-            except Exception as e:  # noqa: BLE001
-                if not state["error_reported"]:
-                    state["error_reported"] = True
-                    self.bridge_log.emit(
-                        f"Translation engine unavailable ({e}). "
-                        f"Returning original text.")
-                return text
-
-        return translate
-
     # ---------- фоновое извлечение текста ----------
     def start_extraction(self, on_done) -> bool:
         """Извлечение в фоне (GUI не морозит).
@@ -418,9 +410,15 @@ class MainWindow(QMainWindow):
         if old and old.isRunning():
             return False
         self._extract_worker = ExtractWorker(module, p.game_dir)
+        self.loading.show_loading(TR("tr_extracting"))
+
+        def _finish(restored, error):
+            self.loading.hide_loading()
+            on_done(restored, error)
+
         self._extract_worker.done.connect(
-            lambda entries: on_done(self._merge_extracted(entries), ""))
-        self._extract_worker.failed.connect(lambda e: on_done(0, e))
+            lambda entries: _finish(self._merge_extracted(entries), ""))
+        self._extract_worker.failed.connect(lambda e: _finish(0, e))
         self._extract_worker.start()
         return True
 
@@ -449,17 +447,15 @@ class MainWindow(QMainWindow):
         t = self.session.tentacle
         return t if (t and t.is_attached()) else None
 
-    def start_session(self, target: str, translate_fn,
+    def start_session(self, target: str,
                       attach_pid: int | None = None,
                       port_hint: int = 0) -> bool:
         """Создаёт щупальце для текущего движка и подключает его к игре."""
         key = self.engine_module.key if self.engine_module else ""
         tentacle = create_tentacle(key)
         if tentacle is None:
-            self.bridge_log.emit(TR("live_unsupported"))
+            self.session.error.emit(TR("dash_session_unsupported"))
             return False
-        tentacle.set_translate_fn(translate_fn)
-        self._live_translate_fn = translate_fn
         tentacle.setParent(self)
         if port_hint and hasattr(tentacle, "set_port_hint"):
             tentacle.set_port_hint(port_hint)
@@ -477,21 +473,13 @@ class MainWindow(QMainWindow):
         if hasattr(self, "status_bar"):
             self.status_bar.set_connected(False)
 
-    def set_live_translation(self, enabled: bool):
-        """Вкл/выкл перевод в живой сессии на лету.
-
-        Щупальце остаётся подключённым — читы, переменные и состояние
-        продолжают работать, текст показывается без перевода.
-        """
-        self.session.set_translation_enabled(enabled)
-
     # ---------- статус-бар ----------
     def refresh_status_bar(self):
         """Обновляет провайдера и соединение в нижнем статус-баре."""
         if not hasattr(self, "status_bar"):
             return
         name = self.settings.value(
-            "engine_realtime", self.settings.value("engine", "rotate"))
+            "engine_files", self.settings.value("engine", "rotate"))
         self.status_bar.set_provider(provider_short_name(str(name)))
         self.status_bar.set_connected(self.session.is_active(),
                                       backend=self._backend_name())

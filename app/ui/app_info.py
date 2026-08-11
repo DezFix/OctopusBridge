@@ -117,8 +117,12 @@ class AboutDialog(QDialog):
         version = QLabel(TR("about_version", v=app.__version__))
         version.setStyleSheet(
             f"font-size: 12px; color: {C_TEXT_SECONDARY};")
+        tagline = QLabel(TR("about_tagline"))
+        tagline.setStyleSheet(
+            f"font-size: 11px; color: {C_PRIMARY}; font-weight: bold;")
         texts.addWidget(name)
         texts.addWidget(version)
+        texts.addWidget(tagline)
         head.addLayout(texts)
         head.addStretch(1)
         body.addLayout(head)

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Модуль Ren'Py — извлечение текста, агент для живого перевода."""
+"""Модуль Ren'Py — извлечение текста, агент для подключения."""
 from __future__ import annotations
 
 from app.engines.base import EngineModule
@@ -9,7 +9,7 @@ from app.ui.i18n import TR
 class RenPyModule(EngineModule):
     key = "renpy"
     title = "Ren'Py"
-    features = {"files", "live", "cheats", "resources", "font"}
+    features = {"files", "cheats", "resources", "font"}
 
     @classmethod
     def detect(cls, game_dir: str) -> int:

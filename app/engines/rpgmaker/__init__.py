@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Модуль RPG Maker MV/MZ — извлечение, внедрение, живое подключение.
+"""Модуль RPG Maker MV/MZ — извлечение, внедрение, подключение.
 
 Один модуль на обе формы игры:
 - обычная: data/*.json, img/, js/ лежат прямо в папке игры;
@@ -27,8 +27,8 @@ from app.core.rpgmaker.fileview import AsarFileView, DiskFileView, FileView
 from app.engines.base import EngineModule
 from app.ui.i18n import TR
 
-_FEATURES = {"files", "live", "cheats", "resources", "maps"}
-_FEATURES_FONT = {"files", "live", "cheats", "resources", "font", "maps"}
+_FEATURES = {"files", "cheats", "resources", "maps"}
+_FEATURES_FONT = {"files", "cheats", "resources", "font", "maps"}
 
 
 class RpgMakerModule(EngineModule):

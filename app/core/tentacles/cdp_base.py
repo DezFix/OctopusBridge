@@ -7,8 +7,8 @@
   префиксом -> Runtime.consoleAPICalled.
 Транспорт «приложение -> игра»: всегда Runtime.evaluate.
 
-JS-пейлоад наследника обязан определить window.__octopus_onTranslation(id,
-text) и может слать произвольные JSON-сообщения (type: translate/state).
+JS-пейлоад наследника может слать произвольные JSON-сообщения
+(например, type: state / vars / cheat).
 """
 from __future__ import annotations
 
@@ -27,28 +27,11 @@ TRANSPORT_SHIM = r"""
 // ── OctopusBridge transport shim ──
 if (window.__octopus) { /* уже внедрено — повторную инъекцию игнорируем */ }
 else {
-window.__octopus = { pending: new Map(), nextId: 1 };
+window.__octopus = {};
 const __ob_send = (window[""" + json.dumps(BINDING_NAME) + r"""])
   ? (o) => window[""" + json.dumps(BINDING_NAME) + r"""](JSON.stringify(o))
   : (o) => console.log(""" + json.dumps(CONSOLE_PREFIX) + r""" + JSON.stringify(o));
 window.__octopus.send = __ob_send;
-window.__octopus_onTranslation = function (id, text) {
-  const resolve = window.__octopus.pending.get(id);
-  if (resolve) { window.__octopus.pending.delete(id); resolve(text); }
-};
-window.__octopus_translate = function (text, timeoutMs) {
-  return new Promise((resolve) => {
-    const id = window.__octopus.nextId++;
-    window.__octopus.pending.set(id, resolve);
-    window.__octopus.send({ type: "translate", id: id, text: text });
-    setTimeout(() => {
-      if (window.__octopus.pending.has(id)) {
-        window.__octopus.pending.delete(id);
-        resolve(text);
-      }
-    }, timeoutMs || 4000);
-  });
-};
 }
 """
 
@@ -113,12 +96,6 @@ class CDPTentacle(Tentacle):
         except CDPError:
             self.log.emit("addBinding недоступен — канал через console.")
         self._inject_payload()
-        # если перевод был выключен ДО подключения — JS-пейлоад по
-        # умолчанию включён; синхронизируем реальный статус
-        if not self._translation_enabled:
-            self.evaluate(
-                "window.__octopus_setEnabled && "
-                "window.__octopus_setEnabled(false)")
         self.attached.emit()
         try:
             self._after_attach()
@@ -165,25 +142,10 @@ class CDPTentacle(Tentacle):
         except ValueError:
             return
         mtype = msg.get("type")
-        if mtype == "translate":
-            self._on_translate_request(msg)
-        elif mtype == "state":
+        if mtype == "state":
             self.state_received.emit(msg)
         else:
             self._on_game_message(msg)
-
-    def _on_translate_request(self, msg: dict):
-        original = msg.get("text", "")
-        translation = self.translate(original)
-        mid = msg.get("id")
-        expr = ("window.__octopus_onTranslation(" +
-                json.dumps(mid) + ", " + json.dumps(translation,
-                                                    ensure_ascii=False) + ")")
-        try:
-            self._client.evaluate(expr)
-        except CDPError:
-            pass
-        self.text_seen.emit(original, translation)
 
     def _on_game_message(self, msg: dict):
         """Точка расширения для наследников (свои типы сообщений)."""

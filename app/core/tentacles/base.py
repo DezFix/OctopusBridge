@@ -4,11 +4,10 @@
 OctopusBridge не модифицирует файлы игры ради реалтайма: каждое
 щупальце подключается к запущенному процессу снаружи
 (CDP для Chromium-based движков, Frida для Ren'Py) и предоставляет
-ядру единый API: перехват текста для перевода, переменные, читы.
+ядру единый API: переменные, читы, состояние игры.
 
 Жизненный цикл:
     tentacle = SomeTentacle()
-    tentacle.set_translate_fn(fn)      # fn(text) -> str, None — выкл
     tentacle.launch(target)            # запустить игру и подключиться
     # ...или...
     tentacle.attach(pid)               # подключиться к уже запущенной
@@ -16,20 +15,7 @@ OctopusBridge не модифицирует файлы игры ради реа�
 """
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
-from typing import Callable
-
 from PySide6.QtCore import QObject, Signal
-
-TranslateFn = Callable[[str], str]
-
-# Лимит времени на один перевод живой сессии. Живой перевод идёт в
-# серверном потоке (Ren'Py) или CDP-потоке (Tyrano/RPG Maker): если
-# движок завис (сетевая недоступность, долгая загрузка модели,
-# бесконечный ретрай), игра не должна замирать на строку дольше лимита.
-_LIVE_TRANSLATE_TIMEOUT = 12.0
-_LIVE_EXECUTOR = ThreadPoolExecutor(
-    max_workers=4, thread_name_prefix="ob-live-translate")
 
 
 class Tentacle(QObject):
@@ -40,7 +26,6 @@ class Tentacle(QObject):
     attached = Signal()
     detached = Signal(str)             # причина ('' = штатно)
     log = Signal(str)
-    text_seen = Signal(str, str)       # оригинал, перевод (для лога GUI)
     # object вместо dict/list: при межпоточной доставке Qt иначе пытается
     # копировать контейнер в C++ и ругается в консоль (Shiboken warning)
     vars_received = Signal(object)     # [{"name": str, "value": ..., "type": str}]
@@ -50,32 +35,6 @@ class Tentacle(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._translate_fn: TranslateFn | None = None
-        self._translation_enabled = True
-
-    # ── перевод ──
-    def set_translate_fn(self, fn: TranslateFn | None):
-        """Устанавливает функцию перевода. None — возвращать оригинал."""
-        self._translate_fn = fn
-
-    def set_translation_enabled(self, enabled: bool):
-        """Вкл/выкл перевод на лету, не отключая щупальце: читы и
-        переменные продолжают работать, текст возвращается как есть."""
-        self._translation_enabled = bool(enabled)
-
-    def translate(self, text: str) -> str:
-        """Переводит текст текущей функцией; при любой ошибке или
-        таймауте — оригинал. Таймаут защищает игру: зависший движок
-        больше не «морозит» диалог на 30с (агент Ren'Py ждёт ответа
-        блокирующе), а CDP-поток Tyrano/RPG Maker не встаёт колом."""
-        if (not self._translation_enabled or not self._translate_fn
-                or not text):
-            return text
-        try:
-            fut = _LIVE_EXECUTOR.submit(self._translate_fn, text)
-            return fut.result(timeout=_LIVE_TRANSLATE_TIMEOUT)
-        except Exception:  # noqa: BLE001
-            return text
 
     # ── жизненный цикл (реализуют наследники) ──
     def launch(self, target: str) -> bool:

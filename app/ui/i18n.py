@@ -114,7 +114,23 @@ _STRINGS = {
     "dash_actions": {"ru": "Быстрые действия", "en": "Quick Actions"},
     "dash_extract": {"ru": "1. Извлечь текст", "en": "1. Extract text"},
     "dash_translate": {"ru": "2. Перевести файлы", "en": "2. Translate files"},
-    "dash_live": {"ru": "Реалтайм перевод", "en": "Live translation"},
+    "dash_launch": {
+        "ru": "Запустить игру (для читов)",
+        "en": "Launch game (for cheats)",
+    },
+    "dash_stop": {"ru": "Остановить игру", "en": "Stop game"},
+    "dash_launching": {"ru": "Запускаю игру…", "en": "Launching game…"},
+    "project_opening": {"ru": "Открываю проект…", "en": "Opening project…"},
+    "dash_session_idle": {"ru": "Игра не запущена", "en": "Game not running"},
+    "dash_session_connected": {
+        "ru": "Игра запущена и подключена",
+        "en": "Game running and attached",
+    },
+    "dash_session_closed": {"ru": "Игра завершена", "en": "Game closed"},
+    "dash_session_unsupported": {
+        "ru": "Этот движок не поддерживает подключение к игре",
+        "en": "This engine does not support attach yet",
+    },
     "dash_cheats": {"ru": "Читы", "en": "Cheats"},
     "dash_provider": {"ru": "Провайдер перевода", "en": "Translation Provider"},
     "dash_provider_engine": {"ru": "Движок:", "en": "Engine:"},
@@ -147,6 +163,8 @@ _STRINGS = {
         "ru": "Извлекаю текст из игры…",
         "en": "Extracting text from the game…",
     },
+    "tr_translating": {"ru": "Перевожу…", "en": "Translating…"},
+    "tr_correcting": {"ru": "ИИ-коррекция…", "en": "Correcting…"},
     "tr_mode_new": {"ru": "Только новые и сбойные", "en": "New & failed only"},
     "tr_mode_all": {"ru": "Перевести всё заново", "en": "Re-translate all"},
     "tr_translate": {"ru": "2. Перевести", "en": "2. Translate"},
@@ -252,96 +270,10 @@ _STRINGS = {
         "en": " (first 10000, refine your filter)",
     },
 
-    # ── Live tab ──
-    "live_title": {
-        "ru": "OctopusBridge — перевод и читы в живой игре",
-        "en": "OctopusBridge — live game translation & cheats",
-    },
-    "live_start": {
-        "ru": "Запустить игру и подключиться",
-        "en": "Launch game & attach",
-    },
-    "live_stop": {"ru": "Отключиться", "en": "Detach"},
-    "live_status": {"ru": "Статус:", "en": "Status:"},
-    "live_stopped": {"ru": "Остановлено", "en": "Stopped"},
-    "live_no_game_dir": {
-        "ru": "Папка игры не задана. Откройте проект.",
-        "en": "Game folder not set. Open a project first.",
-    },
-    "live_starting": {
-        "ru": "Запускаю игру…",
-        "en": "Launching game…",
-    },
-    "live_log": {
-        "ru": "Журнал перевода в реальном времени:",
-        "en": "Real-time translation log:",
-    },
-    "live_connected": {
-        "ru": "Щупальце в игре — перевод активен",
-        "en": "Tentacle attached — translation active",
-    },
-    "live_waiting": {
-        "ru": "Подключаюсь к игре…",
-        "en": "Attaching to the game…",
-    },
-    "live_game_started": {"ru": "Игра запущена", "en": "Game launched"},
-    "live_no_exe": {
-        "ru": "Исполняемый файл не найден — запустите игру вручную",
-        "en": "Executable not found — launch the game manually",
-    },
-    "live_stopped_hint": {
-        "ru": "Отключено (игра продолжает работу)",
-        "en": "Detached (game keeps running)",
-    },
-    "live_engine_missing": {
-        "ru": "Неизвестный движок в настройках",
-        "en": "Unknown engine in settings",
-    },
-    "live_engine_offline_msg": {
-        "ru": "Движок недоступен. Запустить БЕЗ перевода?",
-        "en": "Engine unavailable. Launch WITHOUT translation?",
-    },
-    "live_attach_group": {
-        "ru": "…или подключиться к уже запущенной игре",
-        "en": "…or attach to an already running game",
-    },
-    "live_refresh_procs": {
-        "ru": "Обновить список",
-        "en": "Refresh list",
-    },
-    "live_attach": {
-        "ru": "Подключиться к выбранному",
-        "en": "Attach to selected",
-    },
-    "live_no_procs": {
-        "ru": "Запущенные процессы игры не найдены",
-        "en": "No running game processes found",
-    },
-    "live_unsupported": {
-        "ru": "Этот движок пока не поддерживает живое подключение",
-        "en": "This engine does not support live attach yet",
-    },
-    "live_autofound": {
-        "ru": "Найден процесс игры (pid {pid}) — подключаюсь…",
-        "en": "Game process found (pid {pid}) — attaching…",
-    },
-    "live_engine_offline_silent": {
-        "ru": "Движок перевода недоступен — показываю оригинал",
-        "en": "Translation engine unavailable — showing original",
-    },
-    "live_translate_toggle": {
-        "ru": "Перевод в реальном времени",
-        "en": "Real-time translation",
-    },
-    "live_translate_off": {
-        "ru": "Перевод выключен (текст без перевода)",
-        "en": "Translation off (original text)",
-    },
-
     # ── Cheat tab ──
     "cheat_hint": {
-        "ru": "Читы работают через запущенный LiveBridge («Реалтайм» → «Запустить»).",
-        "en": "Cheats require LiveBridge (\"Live\" → \"Launch\").",
+        "ru": "Читы работают через запущенную игру («Домой» → «Запустить игру»).",
+        "en": "Cheats require the running game (\"Home\" → \"Launch game\").",
     },
     "cheat_main": {"ru": "Главная", "en": "Main"},
     "cheat_party": {"ru": "Пати", "en": "Party"},
@@ -416,14 +348,9 @@ _STRINGS = {
     "settings_save": {"ru": "Сохранить", "en": "Save"},
     "settings_general": {"ru": "Основные", "en": "General"},
     "settings_languages": {"ru": "Языки перевода", "en": "Translation Languages"},
-    "settings_live": {"ru": "Реалтайм", "en": "Real-time"},
     "settings_files": {"ru": "Файлы", "en": "Files"},
     "settings_corr_tab": {"ru": "ИИ корректор", "en": "AI Corrector"},
     "settings_provider": {"ru": "Провайдер перевода", "en": "Translation Provider"},
-    "settings_live_provider": {
-        "ru": "Провайдер для реалтайма (в игре)",
-        "en": "Real-time provider (in game)",
-    },
     "settings_files_provider": {
         "ru": "Провайдер для перевода файлов",
         "en": "File translation provider",
@@ -461,9 +388,10 @@ _STRINGS = {
         "ru": "НЕ доступен (ключ? сервер? пакеты?)",
         "en": "Unavailable (key? server? packages?)",
     },
+    "settings_game": {"ru": "Игра", "en": "Game"},
     "settings_auto_launch": {
-        "ru": "Автозапуск реалтайма при открытии проекта",
-        "en": "Auto-start realtime on project open",
+        "ru": "Автозапуск игры (для читов) при открытии проекта",
+        "en": "Auto-launch game (for cheats) on project open",
     },
     "settings_overwrite": {"ru": "Режим перевода:", "en": "Translation mode:"},
     "settings_overwrite_new": {
@@ -548,7 +476,6 @@ _STRINGS = {
     },
 
     # ── Engine tab titles ──
-    "tab_live_realtime": {"ru": "Реал-тайм", "en": "Real-time"},
     "tab_vars": {"ru": "Переменные", "en": "Variables"},
     "tab_triggers": {"ru": "Триггеры", "en": "Triggers"},
     "tab_resources": {"ru": "Ресурсы", "en": "Resources"},
@@ -798,10 +725,6 @@ _STRINGS = {
         "ru": "Включить переключатель #{id}",
         "en": "Turn on switch #{id}",
     },
-    "live_game_closed": {
-        "ru": "Игра закрылась — мост остановлен",
-        "en": "Game closed — bridge stopped",
-    },
     "vars_from_save": {"ru": "Из .save файла…", "en": "From .save file…"},
     "vars_save_loaded": {
         "ru": "Сейв {path}: {n} переменных (правки пишутся в файл)",
@@ -947,6 +870,7 @@ _STRINGS = {
     "done": {"ru": "Готово", "en": "Done"},
     "about_title": {"ru": "О программе", "en": "About"},
     "about_version": {"ru": "Версия {v}", "en": "Version {v}"},
+    "about_tagline": {"ru": "Ускоренный перевод", "en": "Faster translation"},
     "about_engines": {"ru": "Поддерживаемые движки:", "en": "Supported engines:"},
     "about_engines_list": {
         "ru": "RPG Maker MV/MZ, Ren'Py, Twine и TyranoScript",

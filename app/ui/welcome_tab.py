@@ -11,17 +11,34 @@ import sys
 import time
 
 from PySide6.QtCore import (QEasingCurve, QPropertyAnimation, Qt, QTimer,
-                             QTimeLine)
-from PySide6.QtWidgets import (QCheckBox, QFileDialog, QFormLayout, QFrame,
+                             QTimeLine, QThread, Signal)
+from PySide6.QtWidgets import (QFileDialog, QFormLayout, QFrame,
                                 QGroupBox, QHBoxLayout,
-                                QLabel, QMessageBox, QPlainTextEdit,
-                                QPushButton, QVBoxLayout, QWidget)
+                                QLabel, QMessageBox, QPushButton, QVBoxLayout,
+                                QWidget)
 
 from app.ui.i18n import TR
 from app.ui.icons import icon
 from app.ui.theme import (C_CARD, C_CARD_HOVER, C_PRIMARY, C_SUCCESS,
                             C_TEXT, C_TEXT_SECONDARY, RADIUS_LG, RADIUS_MD,
                             fade_in)
+
+
+class _LaunchWorker(QThread):
+    """Запуск игры в фоне: щупальце ждёт подключения до 60 с —
+    GUI не должен замирать, оверлей с анимацией показывает статус."""
+
+    done = Signal(bool)
+
+    def __init__(self, main_window, game_dir: str, parent=None):
+        super().__init__(parent)
+        self._main = main_window
+        self._game_dir = game_dir
+
+    def run(self):
+        ok = self._main.start_session(self._game_dir)
+        self.done.emit(bool(ok))
+
 
 class WelcomeTab(QWidget):
     def __init__(self, main_window):
@@ -45,11 +62,10 @@ class WelcomeTab(QWidget):
 
         self._root.addWidget(self._stack)
 
-        # live session signals
-        main_window.bridge_client.connect(self._on_live_client)
-        main_window.bridge_translated.connect(self._on_live_translated)
-        main_window.bridge_log.connect(self._on_live_log)
-        main_window.session.game_exited.connect(self._on_live_game_exited)
+        # session signals (для читов)
+        main_window.bridge_client.connect(self._on_session_client)
+        main_window.session.game_exited.connect(self._on_session_game_exited)
+        main_window.session.error.connect(self._on_session_error)
 
         # animation timer
         self._pulse = 0
@@ -206,8 +222,8 @@ class WelcomeTab(QWidget):
         info_form.addRow(TR("dash_stats"), self.lbl_stats)
         lay.addWidget(info_box)
 
-        # quick actions → live session
-        actions_box = QGroupBox(TR("tab_live_realtime"))
+        # quick actions: извлечение, перевод, запуск игры для читов
+        actions_box = QGroupBox(TR("dash_actions"))
         actions_lay = QVBoxLayout(actions_box)
 
         row1 = QHBoxLayout()
@@ -219,33 +235,18 @@ class WelcomeTab(QWidget):
         row1.addWidget(self.btn_translate_files)
         actions_lay.addLayout(row1)
 
-        row_live = QHBoxLayout()
-        self.btn_live_launch = QPushButton(TR("live_start"))
-        self.btn_live_launch.setObjectName("accent")
-        self.btn_live_launch.setMinimumHeight(42)
-        self.btn_live_launch.setIcon(icon("play"))
-        self.btn_live_launch.clicked.connect(self._action_live_toggle)
-        row_live.addWidget(self.btn_live_launch, 1)  # stretch=1 fills width
-        actions_lay.addLayout(row_live)
+        row_launch = QHBoxLayout()
+        self.btn_launch = QPushButton(TR("dash_launch"))
+        self.btn_launch.setObjectName("accent")
+        self.btn_launch.setMinimumHeight(42)
+        self.btn_launch.setIcon(icon("play"))
+        self.btn_launch.clicked.connect(self._action_launch_toggle)
+        row_launch.addWidget(self.btn_launch, 1)  # stretch=1 fills width
+        actions_lay.addLayout(row_launch)
 
-        # перевод можно выключить/включить на лету — читы и переменные
-        # продолжают работать, текст показывается как есть
-        self.chk_live_translate = QCheckBox(TR("live_translate_toggle"))
-        self.chk_live_translate.setChecked(True)
-        self.chk_live_translate.setEnabled(False)
-        self.chk_live_translate.setStyleSheet(
-            "background: transparent;")
-        self.chk_live_translate.toggled.connect(self._on_live_translate_toggle)
-        actions_lay.addWidget(self.chk_live_translate)
-
-        self.lbl_live_status = QLabel(TR("live_stopped"))
-        self.lbl_live_status.setWordWrap(True)
-        actions_lay.addWidget(self.lbl_live_status)
-
-        self.live_log = QPlainTextEdit()
-        self.live_log.setReadOnly(True)
-        self.live_log.setMaximumHeight(120)
-        actions_lay.addWidget(self.live_log)
+        self.lbl_session_status = QLabel(TR("dash_session_idle"))
+        self.lbl_session_status.setWordWrap(True)
+        actions_lay.addWidget(self.lbl_session_status)
 
         lay.addWidget(actions_box)
 
@@ -365,66 +366,60 @@ class WelcomeTab(QWidget):
         if ti >= 0:
             self.main.tabs.setCurrentIndex(ti)
 
-    def _action_live_toggle(self):
+    def _action_launch_toggle(self):
         if self.main.session.is_active():
-            self._action_live_stop()
+            self._action_stop()
         else:
-            self._action_live_launch()
+            self._action_launch()
 
-    def _action_live_launch(self):
+    def _action_launch(self):
         game_dir = self.main.project.game_dir if self.main.project else ""
         if not game_dir:
             return
-        self.btn_live_launch.setEnabled(False)
-        self.btn_live_launch.setText(TR("live_waiting"))
-        self.btn_live_launch.setIcon(icon("play"))
-        engine = self.main.create_engine("realtime")
-        fn = self.main.build_translate_fn(engine) if engine and engine.ping() \
-            else (lambda text: text)
-        self.main.start_session(game_dir, fn)
+        if getattr(self, "_launch_worker", None) and \
+                self._launch_worker.isRunning():
+            return
+        self.btn_launch.setEnabled(False)
+        self.btn_launch.setText(TR("dash_launching"))
+        self.lbl_session_status.setText(TR("dash_launching"))
+        self.main.loading.show_loading(TR("dash_launching"))
+        self._launch_worker = _LaunchWorker(self.main, game_dir, self)
+        self._launch_worker.done.connect(self._on_launch_done)
+        self._launch_worker.start()
 
-    def _action_live_stop(self):
+    def _on_launch_done(self, ok: bool):
+        self.main.loading.hide_loading()
+
+    def _action_stop(self):
         self.main.stop_session()
-        self.btn_live_launch.setEnabled(True)
-        self.btn_live_launch.setText(TR("live_start"))
-        self.btn_live_launch.setIcon(icon("play"))
+        self.btn_launch.setEnabled(True)
+        self.btn_launch.setText(TR("dash_launch"))
+        self.btn_launch.setIcon(icon("play"))
+        self.lbl_session_status.setText(TR("dash_session_idle"))
 
-    def _on_live_client(self, connected: bool):
+    def _on_session_client(self, connected: bool):
         if connected:
-            self.lbl_live_status.setText(TR("live_connected"))
-            self.btn_live_launch.setText(TR("live_stop"))
-            self.btn_live_launch.setIcon(icon("stop"))
-            self.btn_live_launch.setEnabled(True)
-            self.chk_live_translate.setEnabled(True)
-            self.chk_live_translate.setChecked(True)
+            self.lbl_session_status.setText(TR("dash_session_connected"))
+            self.btn_launch.setText(TR("dash_stop"))
+            self.btn_launch.setIcon(icon("stop"))
         else:
-            self.lbl_live_status.setText(TR("live_waiting"))
-            self.btn_live_launch.setText(TR("live_start"))
-            self.btn_live_launch.setIcon(icon("play"))
-            self.btn_live_launch.setEnabled(True)
-            self.chk_live_translate.setEnabled(False)
-            self.chk_live_translate.setChecked(True)
+            self.lbl_session_status.setText(TR("dash_session_idle"))
+            self.btn_launch.setText(TR("dash_launch"))
+            self.btn_launch.setIcon(icon("play"))
+        self.btn_launch.setEnabled(True)
 
-    def _on_live_translate_toggle(self, checked: bool):
-        # вкл/выкл перевод на лету: читы и переменные продолжают работать
-        self.main.set_live_translation(checked)
-        if self.lbl_live_status.text() == TR("live_connected"):
-            self.lbl_live_status.setText(
-                TR("live_connected") if checked else TR("live_translate_off"))
+    def _on_session_game_exited(self):
+        self.btn_launch.setEnabled(True)
+        self.btn_launch.setText(TR("dash_launch"))
+        self.btn_launch.setIcon(icon("play"))
+        self.lbl_session_status.setText(TR("dash_session_closed"))
 
-    def _on_live_translated(self, original: str, translation: str):
-        self.live_log.appendPlainText(f"{original}  =>  {translation}")
-
-    def _on_live_log(self, text: str):
-        self.live_log.appendPlainText(text)
-
-    def _on_live_game_exited(self):
-        self.btn_live_launch.setEnabled(True)
-        self.btn_live_launch.setText(TR("live_start"))
-        self.btn_live_launch.setIcon(icon("play"))
-        self.chk_live_translate.setEnabled(False)
-        self.chk_live_translate.setChecked(True)
-        self.lbl_live_status.setText(TR("live_game_closed"))
+    def _on_session_error(self, text: str):
+        self.lbl_session_status.setText(text)
+        self.btn_launch.setEnabled(True)
+        self.btn_launch.setText(TR("dash_launch"))
+        self.main.loading.hide_loading()
+        self.btn_launch.setIcon(icon("play"))
 
     # ===================================================================
     #  Font patch (Ren'Py)
