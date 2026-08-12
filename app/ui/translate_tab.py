@@ -814,6 +814,7 @@ class TranslateTab(QWidget):
         splitter.addWidget(right)
         splitter.setSizes([270, 760])
         root.addWidget(splitter, 1)
+        self.splitter = splitter
 
         # ── bottom bar: прогресс перевода + статус ──
         bottom = QHBoxLayout()
@@ -825,13 +826,13 @@ class TranslateTab(QWidget):
         self.lbl_status.setWordWrap(True)
         self.lbl_status.setStyleSheet(
             f"color: {C_TEXT_SECONDARY}; background: transparent;")
-        self.lbl_win_size = QLabel("")
-        self.lbl_win_size.setStyleSheet(
+        self.lbl_block_sizes = QLabel("")
+        self.lbl_block_sizes.setStyleSheet(
             f"color: {C_TEXT_SECONDARY}; background: transparent;"
             "font-size: 10.5px;")
         bottom.addWidget(self.progress, 1)
         bottom.addWidget(self.lbl_status, 2)
-        bottom.addWidget(self.lbl_win_size, 0)
+        bottom.addWidget(self.lbl_block_sizes, 0)
         root.addLayout(bottom)
 
         # ── toast «Сохранено» ──
@@ -845,6 +846,24 @@ class TranslateTab(QWidget):
 
         self._refresh_crumbs()
         self._update_steps()
+        self.splitter.splitterMoved.connect(
+            lambda *_: self._update_block_sizes())
+        self.table.horizontalHeader().sectionResized.connect(
+            lambda *_: self._update_block_sizes())
+        self._update_block_sizes()
+
+    def _update_block_sizes(self):
+        """Живые размеры блока «Файлы» и колонок таблицы (для правки бага)."""
+        left = self.splitter.widget(0) if self.splitter else None
+        if left is None or not hasattr(self, "table"):
+            return
+        self.lbl_block_sizes.setText(
+            f"Файлы {left.width()}×{left.height()}"
+            f"  |  №{self.table.columnWidth(COL_IDX)}"
+            f" К{self.table.columnWidth(COL_CTX)}"
+            f" О{self.table.columnWidth(COL_ORIG)}"
+            f" П{self.table.columnWidth(COL_TRANS)}"
+            f" С{self.table.columnWidth(COL_STATUS)}")
 
     # ── helpers ──
 
@@ -863,9 +882,7 @@ class TranslateTab(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        w = self.window()
-        if w is not None:
-            self.lbl_win_size.setText(f"{w.width()}×{w.height()}")
+        self._update_block_sizes()
         if self.toast.isVisible():
             self._place_toast()
 
