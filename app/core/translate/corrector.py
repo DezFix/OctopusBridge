@@ -110,16 +110,3 @@ class Corrector:
         """
         self.diffs = self.compute_corrections(entries, tgt_lang, progress)
         return len(self.diffs)
-
-    def correct_entries(
-        self,
-        entries: list[TranslationEntry],
-        tgt_lang: str,
-        progress: Callable[[int, int], None] | None = None,
-    ) -> int:
-        """Корректирует переведённые записи на месте. Возвращает число исправленных."""
-        diffs = self.compute_corrections(entries, tgt_lang, progress)
-        for d in diffs:
-            d.entry.translation = d.new_text
-            d.entry.status = "corrected"
-        return len(diffs)

@@ -239,7 +239,7 @@ def _run_window(url: str, title: str, profile_dir: str, icon_path: str):
     # Экспорт сейвов игры = скачивание файла; по умолчанию pywebview
     # отменяет загрузки (ALLOW_DOWNLOADS=False).
     webview.settings['ALLOW_DOWNLOADS'] = True
-    win = webview.create_window(
+    webview.create_window(
         title, url, width=1100, height=750,
         resizable=True, background_color='#1d1d1d')
     threading.Thread(
@@ -248,7 +248,11 @@ def _run_window(url: str, title: str, profile_dir: str, icon_path: str):
     try:
         webview.start(private_mode=False, storage_path=profile_dir)
     except Exception:  # noqa: BLE001 — профиль занят другим окном
-        webview.start(private_mode=False, storage_path=profile_dir + '_alt')
+        try:
+            webview.start(private_mode=False,
+                          storage_path=profile_dir + '_alt')
+        except Exception:  # noqa: BLE001 — не открылось и с запасным
+            pass
 
 
 def _set_window_icon_by_title(title: str, icon_path: str):

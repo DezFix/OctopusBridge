@@ -11,7 +11,7 @@ import json
 import os
 
 from PySide6.QtCore import QSettings, Signal
-from PySide6.QtGui import QIcon, QCloseEvent
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (QMainWindow, QTabWidget, QSystemTrayIcon,
                                QMenu)
 
@@ -153,7 +153,6 @@ class MainWindow(QMainWindow):
         central_lay.addWidget(self.tabs, 1)
         central_lay.addWidget(self.status_bar)
         self.setCentralWidget(central)
-        self.translate_tab_visible = False
 
         from app.ui.loading_overlay import LoadingOverlay
         self.loading = LoadingOverlay(central)
@@ -203,10 +202,10 @@ class MainWindow(QMainWindow):
 
     # ---------- показать/скрыть рабочие вкладки ----------
     def _show_work_tabs(self):
-        self.translate_tab_visible = True
+        pass
 
     def _hide_work_tabs(self):
-        self.translate_tab_visible = False
+        pass
 
     # вкладка «Проекты» видна только пока не открыта игра
     def _set_projects_tab_visible(self, visible: bool):

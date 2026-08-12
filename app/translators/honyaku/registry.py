@@ -32,10 +32,6 @@ LANG_NAMES = {
     "pt": "португальский",
 }
 
-TIER_INFO = {
-    "best": "NLLB-200 distilled 600M: одна модель на все пары (~1.2 ГБ), 200 языков, int8",
-}
-
 
 def check(tier: str, pair: str) -> None:
     if tier not in TIERS:

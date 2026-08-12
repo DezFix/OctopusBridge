@@ -125,16 +125,6 @@ class AsarArchive:
             n += 1
         return n
 
-    # ── проверка целостности ссылок ──
-
-    def verify_blob(self, rel: str) -> bool:
-        """Проверяет, что блоб файла физически находится там, где обещает заголовок."""
-        node = self.find(rel)
-        if node is None or "files" in node or node.get("unpacked"):
-            return True
-        data = self.read_file(rel)
-        return data is not None and len(data) == node["size"]
-
 
 def read_header(path: str) -> tuple[dict, int]:
     """(дерево файлов, смещение начала данных)."""

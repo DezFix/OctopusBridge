@@ -10,7 +10,6 @@ Ren'Py: изображения, аудио и видео из game/ и из .rpa
 from __future__ import annotations
 
 import os
-import tempfile
 import uuid
 
 from PySide6.QtCore import Qt, QUrl

@@ -3,14 +3,12 @@
 draft / empty + pct bar), tasks."""
 from __future__ import annotations
 
-from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QProgressBar,
-                                QWidget)
+from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QProgressBar)
 
 from app.ui.i18n import TR
 from app.ui.theme import (C_BORDER_LIGHT, C_CARD, C_PILL_DONE,
                           C_PILL_DRAFT, C_PILL_EMPTY_FG, C_PRIMARY,
-                          C_SUCCESS, C_TEXT, C_TEXT_SECONDARY, C_TRACK,
-                          RADIUS_MD)
+                          C_SUCCESS, C_TEXT, C_TEXT_SECONDARY, C_TRACK)
 
 _QSS_SB = f"""
 QFrame#status_bar {{

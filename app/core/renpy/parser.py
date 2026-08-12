@@ -19,7 +19,6 @@ import os
 import pickle
 import re
 import struct
-import types as pytypes
 import zlib
 
 from app.core.models import TranslationEntry
@@ -341,7 +340,7 @@ def extract(game_dir: str) -> list[TranslationEntry]:
                         if fname.endswith(".rpyc"):
                             parsed = _unpickle_rpyc(raw)
                             if parsed:
-                                data_dict, stmts = parsed
+                                _, stmts = parsed
                                 for kind, s in _walk_ast(stmts):
                                     add(rel, f"{rel}:{kind}", s)
                         else:
@@ -359,10 +358,10 @@ def extract(game_dir: str) -> list[TranslationEntry]:
                     raw = f.read()
                 parsed = _unpickle_rpyc(raw)
                 if parsed:
-                    data_dict, stmts = parsed
+                    _, stmts = parsed
                     for kind, s in _walk_ast(stmts):
                         add(rel, f"{rel}:{kind}", s)
-            except (OSError, Exception):
+            except Exception:
                 pass
 
         # ── .rpy from disk ──
@@ -408,7 +407,18 @@ def _extract_line(rel: str, n: int, line: str, add) -> None:
 
 
 def _escape(text: str) -> str:
-    return text.replace("\\", "\\\\").replace('"', '\\"')
+    """Экранирование для записи в .rpy внутри двойных кавычек.
+
+    Ren'Py 8.2 не парсит строковые литералы с настоящими переносами строк —
+    многострочные реплики игры (\\n внутри исходника) обязаны уходить в
+    файл как escape-последовательность \\n, иначе Ren'Py падает с
+    «Could not parse string». Порядок важен: сначала backslash и кавычки,
+    затем переводы строк (они «рождают» новый backslash, который не должен
+    экранироваться повторно).
+    """
+    return (text.replace("\\", "\\\\").replace('"', '\\"')
+            .replace("\r\n", "\\n").replace("\r", "\\n")
+            .replace("\n", "\\n").replace("\t", "\\t"))
 
 
 def _read_existing_olds(out_path: str) -> set[str]:
@@ -424,7 +434,8 @@ def _read_existing_olds(out_path: str) -> set[str]:
             multiline = re.compile(RE_OLD.pattern, re.MULTILINE)
             raw = multiline.findall(f.read())
         # разэкранирование: old-строки пишутся через _escape()
-        return {r.replace("\\\\", "\\").replace('\\"', '"') for r in raw}
+        return {(r.replace("\\\\", "\\").replace('\\"', '"')
+                 .replace("\\t", "\t").replace("\\n", "\n")) for r in raw}
     except OSError:
         return set()
 

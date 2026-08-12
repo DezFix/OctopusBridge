@@ -78,8 +78,7 @@ def _guard_length(text: str, source: str) -> str:
 
 # ── глоссарий ────────────────────────────────────────────────────────
 # Термины подменяются плейсхолдерами {g0}, {g1}… до перевода и
-# восстанавливаются после. Плейсхолдеры — это «шаблоны» для
-# split_templates(), поэтому до модели не доходят вообще.
+# восстанавливаются после — до модели плейсхолдеры не доходят.
 _LATIN_TERM = re.compile(r"^[A-Za-z0-9 _'.-]+$")
 
 
@@ -139,9 +138,6 @@ class Translator:
     @property
     def tgt_lang(self) -> str:
         return registry.LANG_NAMES[self._tgt]
-
-    def add_terms(self, mapping: dict[str, str]) -> None:
-        self._glossary.update(mapping)
 
     def _ensure_engine(self):
         if self._engine is None:

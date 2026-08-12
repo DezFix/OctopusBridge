@@ -529,8 +529,9 @@ class RpgMakerTentacle(CDPTentacle):
     def game_pid(self) -> int | None:
         if self._proc and self._proc.poll() is None:
             return self._proc.pid
-        return self._pid if (self._pid and proc.pid_exists(self._pid)) \
-            else self._pid
+        if self._pid and proc.pid_exists(self._pid):
+            return self._pid
+        return None
 
 
 # ── Поиск порта ──

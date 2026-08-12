@@ -13,7 +13,6 @@ from __future__ import annotations
 import os
 import struct
 import zlib
-from typing import BinaryIO
 
 
 class RpaArchive:
@@ -72,76 +71,6 @@ class RpaArchive:
                 continue
             offset, length = first[0] ^ key, first[1] ^ key
             self._index[name] = (offset, length)
-
-    def _parse_index_v3_0(self, data: bytes, key: int):
-        """Parse RPA-3.0 index format (Ren'Py 8+).
-
-        After zlib decompress the index has this layout:
-          [0:4]   magic     (80 05 95 bc)
-          [4:8]   count      (05 00 00 00 = 5 — always 5 for RPC2?)
-          [8:12]  unknown
-          [12:]   entries
-
-        Each entry uses a marker-delimited layout:
-          [...path_len(1)][path(path_len)][94 5d 94 4a][offset(4 XOR key)][...(sep,len,suffix)...]
-
-        We parse by finding each 94 5d 94 4a marker, walking backwards through
-        printable ASCII to find the path, and extracting the XOR'd offset.
-        File size is computed as next_entry.offset - current_entry.offset.
-        """
-        marker_seq = b"\x94\x5d\x94\x4a"
-        pos = 12
-        entries = []
-
-        while pos < len(data):
-            m = data.find(marker_seq, pos)
-            if m < 0:
-                break
-
-            # Walk backwards from m-1 collecting printable ASCII + spaces = path
-            end = m
-            start = end
-            while start > 0 and 32 <= data[start - 1] <= 126:
-                start -= 1
-
-            # Walk back up to 4 bytes to find the path_len byte.
-            # Key bytes may exist before path_len (first entry only),
-            # and path_len may be 0x20 (= space, included in backward scan).
-            found = False
-            for lookback in range(0, min(5, start + 1)):
-                path_len_at = start - lookback
-                path_start = path_len_at + 1
-                raw_path = data[path_start:end]
-                pl = len(raw_path)
-                if pl > 0 and path_len_at >= 12 and data[path_len_at] == pl:
-                    start = path_start
-                    found = True
-                    break
-
-            if not found:
-                pos = m + 1
-                continue
-
-            path = data[start:end].decode("ascii", errors="replace")
-
-            # Offset is at marker+4 (4 bytes, LE, XOR with key)
-            off_raw = struct.unpack("<I", data[m + 4:m + 8])[0]
-            offset_val = off_raw ^ key
-
-            entries.append({"path": path, "offset": offset_val})
-            pos = m + 1
-
-        # Build index — compute length from consecutive offsets
-        self._index = {}
-        index_off = getattr(self, "_index_offset", None)
-        if index_off is None:
-            index_off = os.path.getsize(self.path)
-        for idx, entry in enumerate(entries):
-            if idx + 1 < len(entries):
-                length = entries[idx + 1]["offset"] - entry["offset"]
-            else:
-                length = index_off - entry["offset"]
-            self._index[entry["path"]] = (entry["offset"], length)
 
     def _load_v3(self, head: bytes):
         with open(self.path, "rb") as f:
@@ -215,10 +144,6 @@ class RpaArchive:
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         with open(dest, "wb") as f:
             f.write(data)
-
-    def extract_all(self, dest_dir: str):
-        for path in self.files:
-            self.extract_to(path, os.path.join(dest_dir, path))
 
     def __repr__(self):
         return f"RpaArchive({self.path!r}, v{self.version}, {len(self.files)} files)"

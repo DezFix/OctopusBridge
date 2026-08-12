@@ -11,7 +11,6 @@ LZ-String портирован с референс-реализации (MIT, pi
 """
 from __future__ import annotations
 
-import base64
 import json
 import os
 import re

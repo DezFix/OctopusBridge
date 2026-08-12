@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import os
 
-from . import crypto
 from .fileview import DiskFileView, FileView
 
 TILE = 48
@@ -23,15 +22,13 @@ TILE = 48
 # страницы тайлсета: индекс в tilesetNames — [A1,A2,A3,A4,A5,B,C,D,E]
 # (по коду движка: автотайлы A1..A4 -> setNumber 0..3, A5 -> 4, B..E -> 5..8)
 PAGE_A1, PAGE_A2, PAGE_A3, PAGE_A4, PAGE_A5 = 0, 1, 2, 3, 4
-PAGE_B, PAGE_C, PAGE_D, PAGE_E = 5, 6, 7, 8
+PAGE_B = 5
 
 TILE_ID_A5 = 1536
 TILE_ID_A1 = 2048
 TILE_ID_A2 = 2816
 TILE_ID_A3 = 3072
 TILE_ID_A4 = 4352
-
-PAGE_NAMES = ["A1", "A2", "A3", "A4", "A5", "B", "C", "D", "E"]
 
 
 def _normal_tile_xy(num: int) -> tuple[int, int]:
@@ -133,20 +130,6 @@ def tileset_for_map(tilesets: list[dict], tileset_id: int) -> dict | None:
         if t.get("id") == tileset_id:
             return t
     return tilesets[0] if tilesets else None
-
-
-def tileset_page_paths(game_dir: str, tileset: dict,
-                       view: FileView | None = None) -> dict[int, str]:
-    """{страница: rel_png_без_расширения} — только существующие файлы."""
-    names = tileset.get("tilesetNames") or []
-    out: dict[int, str] = {}
-    for page, name in enumerate(names):
-        if not name:
-            continue
-        rel = f"img/tilesets/{name}"
-        if crypto.find_resource(game_dir, rel, (".png",), view=view):
-            out[page] = rel
-    return out
 
 
 # ---------- события ----------

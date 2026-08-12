@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QByteArray, Qt
-from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QIcon, QPainter, QPixmap
 
 # ── Phosphor regular (256x256, stroke=currentColor, stroke-width=16) ──
 
@@ -114,7 +114,3 @@ def icon(name: str, size: int = 18, color: str = "#b0b8cf") -> QIcon:
         ic = QIcon(_pixmap(name, size, color))
         _SVG_CACHE[key] = ic
     return ic
-
-
-def icon_with_color(name: str, color: str, size: int = 18) -> QIcon:
-    return icon(name, size, color)

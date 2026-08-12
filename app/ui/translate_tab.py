@@ -140,8 +140,8 @@ class CorrectWorker(QThread):
                 if self.isInterruptionRequested():
                     raise InterruptedError("cancelled")
                 self.progressed.emit(d, t)
-            n = self.corrector.correct_all(self.entries, self.tgt,
-                                           progress=progress_check)
+            self.corrector.correct_all(self.entries, self.tgt,
+                                       progress=progress_check)
             if not self.isInterruptionRequested():
                 self.corrections_ready.emit(self.corrector.diffs)
         except InterruptedError:
@@ -589,6 +589,11 @@ class TranslateTab(QWidget):
         self.worker: TranslateWorker | None = None
         self.worker_correct: CorrectWorker | None = None
         self._loading = False
+        self._cancelling = False
+        self._cancel_elapsed = 0
+        self._cancel_timer: QTimer | None = None
+        self._status_timer: QTimer | None = None
+        self._last_progress = (0, 0)
         self._selected_file = ""
         self._file_items: list[_FileItem] = []
         self._toast_timer: QTimer | None = None
@@ -1152,7 +1157,7 @@ class TranslateTab(QWidget):
 
     def _update_stats(self):
         p = self._project()
-        done, draft, empty, total = self._project_stats()
+        done, _, _, total = self._project_stats()
         # файловые подсчёты
         by_file: dict[str, list[TranslationEntry]] = {}
         for e in (p.entries if p else []):
@@ -1212,6 +1217,8 @@ class TranslateTab(QWidget):
         self.worker.progressed.connect(self._on_progress)
         self.worker.done.connect(self._on_translated)
         self.worker.failed.connect(self._on_translate_failed)
+        self._cancelling = False
+        self._last_progress = (0, 0)
         self.progress.setVisible(True)
         self.progress.setValue(0)
         self.btn_cancel.setVisible(True)
@@ -1223,30 +1230,64 @@ class TranslateTab(QWidget):
         self.worker.start()
 
     def cancel_translate(self):
-        if self.worker:
-            self.worker.translator.cancel()
-            self.worker.requestInterruption()
-            self.worker.wait(2000)
-            if self.worker.isRunning():
-                self.worker.terminate()
-                self.worker.wait(1000)
-        if self.worker_correct:
-            self.worker_correct.corrector.cancel()
-            self.worker_correct.requestInterruption()
-            self.worker_correct.wait(2000)
-            if self.worker_correct.isRunning():
-                self.worker_correct.terminate()
-                self.worker_correct.wait(1000)
-        self._finish_translate()
+        """Мягкая отмена: флаги остановки + ожидание фонового завершения
+        через таймер (GUI не блокируется, полоса/текст доигрывают плавно)."""
+        self._cancelling = True
+        self._cancel_elapsed = 0
+        for w in (self.worker, self.worker_correct):
+            if not w:
+                continue
+            translator = getattr(w, "translator", None)
+            if translator is not None:
+                translator.cancel()
+            corrector = getattr(w, "corrector", None)
+            if corrector is not None:
+                corrector.cancel()
+            w.requestInterruption()
+        self.btn_cancel.setEnabled(False)
+        self.main.loading.set_text(TR("tr_cancelling"))
+        busy = (self.worker and self.worker.isRunning()) or (
+            self.worker_correct and self.worker_correct.isRunning())
+        if not busy:
+            self._finish_cancelled()
+            return
+        self._cancel_timer = QTimer(self)
+        self._cancel_timer.setSingleShot(True)
+        self._cancel_timer.timeout.connect(self._poll_cancel)
+        self._cancel_timer.start(120)
+
+    def _poll_cancel(self):
+        self._cancel_elapsed += 120
+        busy = (self.worker and self.worker.isRunning()) or (
+            self.worker_correct and self.worker_correct.isRunning())
+        if busy and self._cancel_elapsed < 8000:
+            self._cancel_timer.start(120)
+            return
+        if busy:  # зависший поток — принудительно, но без GUI-блокировки
+            for w in (self.worker, self.worker_correct):
+                if w and w.isRunning():
+                    w.terminate()
+            self._cancel_timer.start(120)
+            return
+        self._finish_cancelled()
+
+    def _finish_cancelled(self):
+        done, total = self._last_progress
+        self._finish_translate(TR("tr_cancelled", done=done, total=total))
+        self.fill_table()
+        self.main.refresh_project_stats()
 
     def _on_progress(self, done, total):
-        self.progress.setMaximum(total)
+        self._last_progress = (done, total)
+        self.progress.setMaximum(max(total, 1))
         self.progress.setValue(done)
         text = TR("tr_progress", done=done, total=total)
         self.lbl_status.setText(text)
         self.main.loading.set_text(text)
 
     def _on_translated(self, n):
+        if self._cancelling:
+            return
         self._finish_translate()
         self.main.save_project()
         self._rebuild_file_list()
@@ -1255,11 +1296,13 @@ class TranslateTab(QWidget):
                                 TR("tr_translate_done", n=n))
 
     def _on_translate_failed(self, msg):
+        if self._cancelling:
+            return
         self._finish_translate()
         self.fill_table()
         QMessageBox.critical(self, TR("err"), msg)
 
-    def _finish_translate(self):
+    def _finish_translate(self, status_text: str = ""):
         self.main.loading.hide_loading()
         self.progress.setVisible(False)
         self.btn_cancel.setVisible(False)
@@ -1271,6 +1314,23 @@ class TranslateTab(QWidget):
         if self.worker_correct:
             self.worker_correct.wait(5000)
             self.worker_correct = None
+        if self._cancel_timer:
+            self._cancel_timer.stop()
+            self._cancel_timer = None
+        if status_text:
+            self.lbl_status.setText(status_text)
+            self.progress.setVisible(True)
+            self.progress.setMaximum(max(max(self._last_progress[1], 1),
+                                         self.progress.value()))
+            self.progress.setValue(self._last_progress[0])
+            if self._status_timer:
+                self._status_timer.stop()
+            self._status_timer = QTimer(self)
+            self._status_timer.setSingleShot(True)
+            self._status_timer.timeout.connect(
+                lambda: self.progress.setVisible(False))
+            self._status_timer.start(4000)
+        self._cancelling = False
         self._update_steps()
 
     # ── correct ──
@@ -1306,6 +1366,8 @@ class TranslateTab(QWidget):
         self.worker_correct.start()
 
     def _on_corrections(self, diffs):
+        if self._cancelling:
+            return
         self._finish_translate()
         if not diffs:
             QMessageBox.information(self, TR("done"),

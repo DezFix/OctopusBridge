@@ -41,13 +41,6 @@ class GameSession(QObject):
     def is_active(self) -> bool:
         return self._tentacle is not None and self._tentacle.is_attached()
 
-    def is_connecting(self) -> bool:
-        """Щупальце создано, но подключение ещё идёт (гонка автопоимки)."""
-        return self._tentacle is not None
-
-    def owns_game(self) -> bool:
-        return self._owns_game
-
     def send_key(self, key: str, code: str = "", keyCode: int = 0,
                  windowsKeyCode: int = 0) -> bool:
         if self._tentacle:

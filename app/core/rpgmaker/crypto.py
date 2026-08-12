@@ -8,7 +8,6 @@ System.json:encryptionKey (MZ) или rpg_core.js (MV).
 from __future__ import annotations
 
 import json
-import os
 import re
 
 from app.core.rpgmaker.fileview import DiskFileView
@@ -45,13 +44,6 @@ def get_key_mv(game_dir: str, view=None) -> str | None:
         return None
     m = re.search(r'encryptionKey["\s:]+([0-9a-f]{32})', text)
     return m.group(1) if m else None
-
-
-def decrypt_file(path: str, key_hex: str) -> bytes:
-    """Расшифровывает файл ресурса и возвращает исходные байты."""
-    with open(path, "rb") as f:
-        body = f.read()
-    return decrypt_bytes(body, key_hex)
 
 
 def decrypt_bytes(body: bytes, key_hex: str) -> bytes:

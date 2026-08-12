@@ -30,13 +30,6 @@ def exe_of(pid: int) -> str:
         return ""
 
 
-def name_of(pid: int) -> str:
-    try:
-        return psutil.Process(pid).name() or ""
-    except (psutil.Error, OSError):
-        return ""
-
-
 def terminate(pid: int, timeout: float = 3.0) -> bool:
     """Мягко завершает процесс (и детей — Chromium плодит subprocess'ы)."""
     try:

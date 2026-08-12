@@ -19,10 +19,8 @@ story.state) в панели приложения, читы (set_variable / exec
 """
 from __future__ import annotations
 
-import base64
 import concurrent.futures
 import json
-import mimetypes
 import os
 import socketserver
 import sys
@@ -584,7 +582,6 @@ class TwineTentacle(Tentacle):
         self._http_thread: threading.Thread | None = None
         self._ws_server: _WSServer | None = None
         self._http_port = 0
-        self._last_state: dict | None = None
         self._port_hint = 0               # фиксированный порт (опционально)
         self._restore_sent = False
         self._last_save_backup = ""
@@ -841,7 +838,6 @@ class TwineTentacle(Tentacle):
     def _on_ws_message(self, msg: dict):
         mtype = msg.get("type")
         if mtype == "state":
-            self._last_state = msg
             self.state_received.emit(msg)
             # Первое сообщение игры после подключения — отдаём бэкап
             # сейва (покрывает и переподключения)

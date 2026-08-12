@@ -206,6 +206,11 @@ _STRINGS = {
         "ru": "Переведено строк: {n}",
         "en": "Translated lines: {n}",
     },
+    "tr_cancelling": {"ru": "Отмена…", "en": "Cancelling…"},
+    "tr_cancelled": {
+        "ru": "Отменено: переведено {done} из {total} строк (перевод сохранён в проекте — его можно доработать или применить)",
+        "en": "Cancelled: {done} of {total} lines translated (kept in project)",
+    },
     "tr_correct_done": {
         "ru": "ИИ-коррекция завершена: {n} строк вычитано",
         "en": "AI correction done: {n} lines reviewed",
@@ -932,10 +937,6 @@ _STRINGS = {
 def set_language(lang: str):
     global _lang
     _lang = lang
-
-
-def language() -> str:
-    return _lang
 
 
 def TR(key: str, **fmt) -> str:

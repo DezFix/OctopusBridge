@@ -8,10 +8,8 @@ from __future__ import annotations
 
 from PySide6.QtCore import QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QColor, QFont, QPalette
-from PySide6.QtWidgets import (QAbstractScrollArea, QApplication,
-                                QComboBox, QFrame, QHBoxLayout, QHeaderView,
-                                QLabel, QLineEdit, QPushButton, QSpinBox,
-                                QTabBar, QTableWidget, QTextEdit, QToolTip,
+from PySide6.QtWidgets import (QApplication,
+                                QLabel,
                                 QWidget)
 
 # ======================================================================
@@ -627,25 +625,9 @@ def section_label(text: str, color: str | None = None,
     return lbl
 
 
-def fade_in(widget: QWidget, duration: int = 200):
-    """Animate opacity fade-in on a widget (sets graphics effect)."""
-    from PySide6.QtWidgets import QGraphicsOpacityEffect
-    eff = QGraphicsOpacityEffect(widget)
-    widget.setGraphicsEffect(eff)
-    anim = QPropertyAnimation(eff, b"opacity")
-    anim.setDuration(duration)
-    anim.setStartValue(0.0)
-    anim.setEndValue(1.0)
-    anim.setEasingCurve(QEasingCurve.OutCubic)
-    anim.start()
-    # prevent GC
-    widget._fade_anim = anim
-    widget._fade_eff = eff
-
-
 def slide_in(widget: QWidget, direction: str = "left", duration: int = 250):
     """Animate a widget sliding in from direction ('left'|'right')."""
-    from PySide6.QtCore import QRect, QPoint
+    from PySide6.QtCore import QPoint
     end_pos = widget.pos()
     if direction == "left":
         start_pos = QPoint(end_pos.x() - 40, end_pos.y())

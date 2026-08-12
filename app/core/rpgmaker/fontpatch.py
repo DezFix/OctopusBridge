@@ -67,12 +67,3 @@ def patch_font(game_dir: str, engine: str, font_path: str) -> dict:
     if engine == "mv":
         return patch_font_mv(game_dir, font_path)
     return patch_font_mz(game_dir, font_path)
-
-
-def restore_font_mz(game_dir: str) -> bool:
-    """Откатывает System.json из бэкапа."""
-    backup = os.path.join(game_dir, "data", "System.json") + MZ_BACKUP_SUFFIX
-    if not os.path.exists(backup):
-        return False
-    shutil.copy2(backup, backup[: -len(MZ_BACKUP_SUFFIX)])
-    return True

@@ -358,7 +358,6 @@ class PythonInjector:
         self._script = None
         self._pid = None
         self._device = None
-        self._last_error = ""
 
     def _get_device(self):
         if self._device is None:
@@ -368,20 +367,18 @@ class PythonInjector:
     def _load_helper(self) -> bool:
         """Создать и загрузить helper-script в текущую Session."""
         if not self._session:
-            self._last_error = "no session"
             return False
         try:
             self._script = self._session.create_script(_HELPER_JS)
             self._script.load()
             return True
-        except Exception as e:  # noqa: BLE001
-            self._last_error = f"helper load failed: {e}"
+        except Exception:  # noqa: BLE001
             return False
 
-    def spawn(self, argv: list[str], cwd: str = "") -> int:
+    def spawn(self, argv: list[str]) -> int:
         """Запускает процесс (suspended), подключается и грузит helper.
 
-        После spawn процесс приостановлен; resume_pid() продолжает.
+        После spawn процесс приостановлен; device.resume(pid) продолжает.
         """
         device = self._get_device()
         pid = device.spawn(argv)
@@ -391,22 +388,6 @@ class PythonInjector:
             # Не страшно — можно вызвать позже через exec_python retry
             pass
         return pid
-
-    def spawn_simple(self, argv: list[str]) -> int:
-        """Запускает процесс без Frida-агента (только RPY-инъекция).
-
-        Frida используется только для spawn/resume, JS-helper НЕ грузится.
-        """
-        device = self._get_device()
-        pid = device.spawn(argv)
-        self._pid = pid
-        self._session = None
-        self._script = None
-        return pid
-
-    def resume_pid(self, pid: int):
-        """Продолжить выполнение после spawn()."""
-        self._get_device().resume(pid)
 
     def attach(self, pid: int) -> bool:
         """Подключиться к уже запущенному процессу и загрузить helper."""
@@ -427,12 +408,10 @@ class PythonInjector:
             {"PyRun_SimpleStringFlags": 4856336, "PyGILState_Ensure": ..., "_dll": "librenpython.dll"}
         """
         if not self._script:
-            self._last_error = "no script loaded"
             return False
         try:
             return bool(self._script.exports_sync.set_offsets(offsets))
-        except Exception as e:  # noqa: BLE001
-            self._last_error = f"set_offsets failed: {e}"
+        except Exception:  # noqa: BLE001
             return False
 
     def exec_python(self, code: str, wait_python: float = 10.0) -> int:
@@ -442,12 +421,10 @@ class PythonInjector:
             0  — PyRun_SimpleString вернул 0 (успех)
            -1  — PyRun_SimpleString вернул -1 (Python-исключение в агенте)
            -2  — символ не найден (смотри loaded_modules)
-           -3  — Frida/Session ошибка (детали в self._last_error)
+           -3  — Frida/Session ошибка
         """
         if not self._script:
-            self._last_error = "helper script not loaded"
             return -3
-        self._last_error = ""
 
         # Ждём готовности CPython (появления PyRun_SimpleString).
         deadline = time.monotonic() + wait_python
@@ -455,34 +432,22 @@ class PythonInjector:
         while time.monotonic() < deadline:
             try:
                 ready = bool(self._script.exports_sync.is_ready())
-            except Exception as e:  # noqa: BLE001
+            except Exception:  # noqa: BLE001
                 # Session, скорее всего, умерла
-                self._last_error = f"is_ready failed: {e}"
                 return -3
             if ready:
                 break
             time.sleep(0.3)
 
         if not ready:
-            try:
-                mods = self._script.exports_sync.loaded_modules()
-            except Exception:  # noqa: BLE001
-                mods = "(unable to enumerate)"
-            self._last_error = (f"isReady=false после {wait_python:.0f}с. "
-                                f"Загружено: {mods}. "
-                                f"Требуются хардкодные офсеты через set_offsets().")
             return -2
 
         try:
             rc = self._script.exports_sync.exec_python(code)
             if rc is None:
                 return -1
-            rc_int = int(rc)
-            if rc_int == -2:
-                self._last_error = "JS не нашёл PyRun_SimpleString. Требуются хардкодные офсеты через set_offsets()."
-            return rc_int
-        except Exception as e:  # noqa: BLE001
-            self._last_error = f"exec_python call failed: {e}"
+            return int(rc)
+        except Exception:  # noqa: BLE001
             return -3
 
     def python_version(self) -> str:
@@ -493,16 +458,6 @@ class PythonInjector:
             return str(self._script.exports_sync.python_version() or "")
         except Exception:  # noqa: BLE001
             return ""
-
-    def is_alive(self) -> bool:
-        if not self._session or not self._script:
-            return False
-        try:
-            # Любой RPC-вызов выбросит, если Session пала
-            _ = self._script.exports_sync.is_ready()
-            return True
-        except Exception:  # noqa: BLE001
-            return False
 
     def detach(self):
         if self._script:

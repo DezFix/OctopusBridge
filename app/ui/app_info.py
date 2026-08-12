@@ -21,7 +21,7 @@ import app
 from app.ui.icons import icon
 from app.ui.i18n import TR
 from app.ui.theme import (C_BORDER, C_CARD, C_PRIMARY, C_TEXT,
-                           C_TEXT_SECONDARY, RADIUS_MD, RADIUS_LG)
+                           C_TEXT_SECONDARY, RADIUS_MD)
 
 # GitHub-репозиторий вида "owner/repo". Пусто — проверка обновлений отключена.
 GITHUB_REPO = "DezFix/OctopusBridge"

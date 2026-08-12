@@ -77,7 +77,6 @@ class CheatTab(QWidget):
         self.item_names: dict[tuple[str, int], str] = {}
         self.item_names_tr: dict[tuple[str, int], str] = {}
         self.state_names: dict[int, str] = {}
-        self.state_names_tr: dict[int, str] = {}
         self._names_worker: NamesWorker | None = None
         self._loading = False
         self._actor_edits: dict[tuple[int, str], int] = {}
@@ -94,7 +93,6 @@ class CheatTab(QWidget):
         tabs.addTab(self._build_vars_tab(), TR("cheat_vars"))
         tabs.addTab(self._build_switches_tab(), TR("cheat_switches"))
         lay.addWidget(tabs, 1)
-        self._tabs = tabs
 
         self.main.bridge_state.connect(self._on_state)
         self.main.bridge_cheat_ack.connect(self._on_ack)
@@ -388,7 +386,6 @@ class CheatTab(QWidget):
         self.var_names_tr = v
         self.switch_names_tr = s
         self.item_names_tr = it
-        self.state_names_tr = st
         self._fill_vars()
         self._fill_switches()
         self._fill_items()

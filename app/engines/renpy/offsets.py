@@ -92,13 +92,7 @@ def _scan_exe_for_version_str(exe_path: str) -> str | None:
 
 
 def _normalize_version(ver: str) -> str:
-    ver = ver.strip()
-    parts = ver.split(".")
-    if len(parts) >= 4:
-        return ver
-    if len(parts) >= 3:
-        return ver
-    return ver
+    return ver.strip()
 
 
 class RenpyOffsetDB:
@@ -137,28 +131,6 @@ class RenpyOffsetDB:
         if version.startswith("8."):
             return "py3"
         return None
-
-    def known_versions(self) -> list[str]:
-        return list(self._data.get("versions", {}).keys())
-
-    def set_symbol(self, version: str, symbol: str, rva: int):
-        if version not in self._data["versions"]:
-            self._data["versions"][version] = {
-                "abi": "py3" if version.startswith("8.") else "py2",
-                "dll": "librenpython.dll",
-                "symbols": {}
-            }
-        if "symbols" not in self._data["versions"][version]:
-            self._data["versions"][version]["symbols"] = {}
-        self._data["versions"][version]["symbols"][symbol] = rva
-        self._save()
-
-    def _save(self):
-        try:
-            with open(self._db_path, "w", encoding="utf-8") as f:
-                json.dump(self._data, f, indent=2, ensure_ascii=False)
-        except OSError:
-            pass
 
 
 def detect_version(game_dir: str, exe_path: str | None = None) -> tuple[str | None, str | None]:

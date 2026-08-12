@@ -16,7 +16,7 @@ import os
 
 from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QGroupBox,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QFormLayout,
                                 QHBoxLayout, QLabel, QLineEdit, QListWidget,
                                 QListWidgetItem, QMenu, QMessageBox,
                                 QPushButton, QScrollArea, QSpinBox,
@@ -255,7 +255,6 @@ class MapTab(QWidget):
         self._base_capped: bool = False
         self._loaded_game: str | None = None
         self._render_seq: int = 0
-        self._render_thread: _MapRenderThread | None = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -403,7 +402,6 @@ class MapTab(QWidget):
             events, dict(self._pages_img), dict(self._char_img))
         th.result_ready.connect(self._on_render_done)
         th.finished.connect(th.deleteLater)
-        self._render_thread = th
         th.start()
 
     def _on_render_done(self, token, base, ev, pages, chars, capped):

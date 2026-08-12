@@ -242,7 +242,6 @@ class GoogleFreeEngine(BaseEngine):
         переводится построчно (замедленно, но без потери результата).
         """
         q = "\n".join(texts)
-        last_err = None
         for attempt in range(3):
             if self._rate_limited():
                 raise EngineError("Google: rate-limit кулдаун")
@@ -261,8 +260,7 @@ class GoogleFreeEngine(BaseEngine):
                     return parts
                 break  # счётчик не сошёлся — построчно
             except (requests.RequestException, ValueError, TypeError,
-                    KeyError, IndexError) as e:
-                last_err = e
+                    KeyError, IndexError):
                 if attempt < 2:
                     time.sleep(6.0 * (attempt + 1) if self._rate_limited()
                                else 1.0 * (attempt + 1))

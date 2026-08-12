@@ -339,7 +339,7 @@ class RenPyTentacle(Tentacle):
 
         # RPY-агент: Ren'Py сам подхватит ob_agent.rpy из game/.
         # Ветка агента выбирается по версии Ren'Py: 7.x = py2, 8.x = py3.
-        version, src = detect_version(game_dir, exe)
+        version, _ = detect_version(game_dir, exe)
         db = RenpyOffsetDB()
         abi = db.get_abi_branch(version) if version else "py3"
         install_agent_rpy(game_dir, self._server.port, abi)
@@ -391,7 +391,7 @@ class RenPyTentacle(Tentacle):
         self._injector = injector
         self._pid = pid
 
-        version, src = detect_version(exe_dir, exe_path)
+        version, _ = detect_version(exe_dir, exe_path)
         if version:
             db = RenpyOffsetDB()
             offsets = db.get_offsets(version)

@@ -14,7 +14,7 @@ import os
 import sys
 import time
 
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QPainter, QPixmap
 from PySide6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QLabel,
                                 QMessageBox, QPushButton, QVBoxLayout,
@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QLabel,
 import app as app_paths
 from app.ui.i18n import TR
 from app.ui.icons import icon
-from app.ui.theme import (C_BORDER, C_CARD, C_CARD_HOVER, C_PRIMARY,
+from app.ui.theme import (C_CARD, C_CARD_HOVER, C_PRIMARY,
                           C_SURFACE, C_TEXT, C_TEXT_DIM, C_TEXT_SECONDARY,
                           RADIUS_LG, RADIUS_MD)
 

@@ -106,8 +106,6 @@ with tempfile.TemporaryDirectory() as td:
         "привет мир".encode("utf-8")
     assert open(os.path.join(out, "sub", "b.bin"), "rb").read() == \
         b"\x00\x01\x02\x03"
-    # каждый блоб физически на своём месте (смещения совпадают с данными)
-    assert all(ar.verify_blob(r) for r in files)
 print("   OK")
 
 print("2) ASAR: патчинг на месте (файл ужался — заголовок не тронут)...")

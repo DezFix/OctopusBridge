@@ -14,8 +14,6 @@ from datetime import datetime
 
 from .models import TranslationEntry
 
-CJK_RE = re.compile(r'[　-鿿\uac00-\ud7af\uf900-\ufaff\ufe30-\ufe4f\uff00-\uffef]')
-
 # Команды событий, несущие текст
 CMD_DIALOG = 401        # строка диалога
 CMD_SCROLL = 405        # прокручиваемый текст
@@ -68,10 +66,6 @@ def find_data_dir(game_dir: str) -> str:
     if os.path.isdir(os.path.join(game_dir, "www", "data")):
         return "www/data"
     return "data"
-
-
-def has_cjk(text: str) -> bool:
-    return bool(CJK_RE.search(text))
 
 
 # ---------- пути внутри JSON ----------

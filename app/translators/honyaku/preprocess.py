@@ -71,34 +71,5 @@ def _merge_en(parts: list[str]) -> list[str]:
     return merged
 
 
-def chunk_text(text: str, lang: str = "ja", max_chars: int = 300) -> list[str]:
-    if len(text) <= max_chars:
-        return [text]
-    hard = _JA_HARD if lang == "ja" else _EN_HARD
-    pieces = hard.split(text)
-    chunks: list[str] = []
-    cur = ""
-    for p in pieces:
-        while len(p) > max_chars:
-            if cur:
-                chunks.append(cur)
-                cur = ""
-            chunks.append(p[:max_chars])
-            p = p[max_chars:]
-        if cur and len(cur) + len(p) > max_chars:
-            chunks.append(cur)
-            cur = p
-        else:
-            cur += p
-    if cur:
-        chunks.append(cur)
-    return chunks
-
-
 def has_letters(text: str) -> bool:
     return any(ch.isalpha() for ch in text)
-
-
-def split_templates(text: str) -> tuple[list[str], list[str]]:
-    parts = _PLACEHOLDER.split(text)
-    return parts[0::2], parts[1::2]

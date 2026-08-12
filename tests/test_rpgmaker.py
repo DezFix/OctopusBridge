@@ -11,7 +11,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core.rpgmaker import parser
-from app.core.rpgmaker.fontpatch import patch_font_mz, patch_font_mv, restore_font_mz
+from app.core.rpgmaker.fontpatch import patch_font_mz, patch_font_mv
 
 
 def make_project(root: str, variant: str = "mz") -> None:
@@ -96,7 +96,7 @@ with tempfile.TemporaryDirectory() as td:
                    for x in re_entries)
 print("   OK: пропущено:", len(skipped))
 
-print("5) Патчер шрифта MZ (System.json) с откатом...")
+print("5) Патчер шрифта MZ (System.json)...")
 with tempfile.TemporaryDirectory() as td:
     os.makedirs(os.path.join(td, "fonts"))
     os.makedirs(os.path.join(td, "data"))
@@ -112,10 +112,6 @@ with tempfile.TemporaryDirectory() as td:
     assert adv["mainFontFilename"] == "MyFont.ttf"
     assert os.path.exists(os.path.join(td, "fonts", "MyFont.ttf"))
     assert report["backup"]
-    assert restore_font_mz(td)
-    adv = json.load(open(os.path.join(td, "data", "System.json"),
-                         encoding="utf-8"))["advanced"]
-    assert adv["mainFontFilename"] == "mplus-1m-regular.woff"
 print("   OK")
 
 print("6) Патчер шрифта MV (gamefont.css)...")

@@ -8,19 +8,17 @@ from __future__ import annotations
 
 import os
 import sys
-import time
 
-from PySide6.QtCore import (QEasingCurve, QPropertyAnimation, Qt, QTimer,
-                             QTimeLine, QThread, Signal)
+from PySide6.QtCore import (Qt, QTimer,
+                             QThread, Signal)
 from PySide6.QtWidgets import (QFileDialog, QFormLayout, QGroupBox,
                                 QHBoxLayout, QLabel, QMessageBox, QPushButton,
                                 QVBoxLayout, QWidget)
 
 from app.ui.i18n import TR
 from app.ui.icons import icon
-from app.ui.theme import (C_CARD, C_CARD_HOVER, C_PRIMARY, C_SUCCESS,
-                            C_SURFACE, C_TEXT, C_TEXT_SECONDARY, RADIUS_LG,
-                            RADIUS_MD, fade_in)
+from app.ui.theme import (C_SURFACE, C_TEXT, C_TEXT_SECONDARY,
+                          RADIUS_LG)
 
 
 class _LaunchWorker(QThread):
@@ -320,7 +318,6 @@ class WelcomeTab(QWidget):
                  if f.endswith("save")]) if os.path.isdir(save_dir) else 0
         self.lbl_saves.setText(str(n))
 
-        from app.core.rpgmaker import parser
         total = len(p.entries)
         done = sum(1 for e in p.entries if e.translation.strip())
         if total:
@@ -553,7 +550,7 @@ class WelcomeTab(QWidget):
 
     def _do_open(self, path: str):
         self._loading = False
-        engine = self.main.open_project(path)
+        self.main.open_project(path)
         if self.main.engine_module is not None:
             self.lbl_status.setText("")
         else:

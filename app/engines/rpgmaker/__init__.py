@@ -15,7 +15,6 @@
 - fontpatch: замена шрифта на кириллический
 - varnames: имена переменных/переключателей
 - maprender: данные для карт
-- textwrap: подгонка текста под рамки диалогов
 - tentacle: CDP-подключение к живой игре
 """
 from __future__ import annotations

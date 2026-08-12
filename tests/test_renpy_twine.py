@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core.renpy import parser as renpy
 from app.core.twine import parser as twine
+from app.core.models import TranslationEntry
 
 # ── Ren'Py ──
 
@@ -66,6 +67,26 @@ with tempfile.TemporaryDirectory() as td:
     c2 = open(os.path.join(stats2["out_dir"], "ob_game__script.rpy"),
               encoding="utf-8").read()
     assert c2.count('old "Привет, я ведьма."') == 1
+print("   OK")
+
+print("2b) Ren'Py: многострочные строки уходят как \\\\n (Ren'Py 8.2 не парсит сырые переводы строк)...")
+with tempfile.TemporaryDirectory() as td:
+    make_renpy(td)
+    entries = renpy.extract(td)
+    entries.append(TranslationEntry(
+        999, "game/script.rpy", "", "",
+        "Первая строка\nВторая строка",
+        "Первый перевод\nВторой перевод", "translated"))
+    stats = renpy.apply(td, entries, "ru")
+    out = os.path.join(stats["out_dir"], "ob_game__script.rpy")
+    content = open(out, encoding="utf-8").read()
+    assert 'old "Первая строка\\nВторая строка"' in content, content
+    assert 'new "Первый перевод\\nВторой перевод"' in content, content
+    for line in content.splitlines():
+        if 'old "' in line or 'new "' in line:
+            assert line.rstrip().endswith('"'), \
+                f"строка old/new не однострочная: {line!r}"
+    renpy.apply(td, entries, "ru")  # повторная генерация не падает
 print("   OK")
 
 # ── Twine ──

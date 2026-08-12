@@ -19,9 +19,6 @@ import shutil
 from datetime import datetime
 
 from app.core.models import TranslationEntry
-from app.core.rpgmaker import crypto
-
-CJK_RE = re.compile(r'[　-鿿\uac00-\ud7af\uf900-\ufaff\ufe30-\ufe4f\uff00-\uffef]')
 
 # ── Коды команд событий ──
 CMD_DIALOG = 401
@@ -76,10 +73,6 @@ def find_data_dir(game_dir: str) -> str:
     if os.path.isdir(os.path.join(game_dir, "www", "data")):
         return "www/data"
     return "data"
-
-
-def has_cjk(text: str) -> bool:
-    return bool(CJK_RE.search(text))
 
 
 # ── Пути внутри JSON ──
