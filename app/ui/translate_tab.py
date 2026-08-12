@@ -74,15 +74,19 @@ class ExtractWorker(QThread):
     done = Signal(object)       # list[TranslationEntry]
     failed = Signal(str)
 
-    def __init__(self, module, game_dir: str):
+    def __init__(self, module, game_dir: str, extract_lang: str | None = None):
         super().__init__()
         self.setObjectName("ExtractWorker")
         self._module = module
         self._game_dir = game_dir
+        self._extract_lang = extract_lang
 
     def run(self):
         try:
-            entries = self._module.extract(self._game_dir)
+            if self._extract_lang and hasattr(self._module, "list_languages"):
+                entries = self._module.extract(self._game_dir, self._extract_lang)
+            else:
+                entries = self._module.extract(self._game_dir)
             if not self.isInterruptionRequested():
                 self.done.emit(entries)
         except Exception as e:  # noqa: BLE001

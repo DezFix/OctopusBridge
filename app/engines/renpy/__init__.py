@@ -9,7 +9,7 @@ from app.ui.i18n import TR
 class RenPyModule(EngineModule):
     key = "renpy"
     title = "Ren'Py"
-    features = {"files", "cheats", "resources", "font"}
+    features = {"files", "cheats", "resources", "font", "langs"}
 
     @classmethod
     def detect(cls, game_dir: str) -> int:
@@ -32,9 +32,14 @@ class RenPyModule(EngineModule):
     def display(self) -> str:
         return "Ren'Py"
 
-    def extract(self, game_dir: str) -> list:
+    def extract(self, game_dir: str, extract_lang: str | None = None) -> list:
         from app.core.renpy import parser
-        return parser.extract(game_dir)
+        return parser.extract(game_dir, extract_lang)
+
+    def list_languages(self, game_dir: str) -> list[str]:
+        """Языки официальных переводов игры (game/tl/* на диске и в RPA)."""
+        from app.core.renpy import parser
+        return parser.list_languages(game_dir)
 
     def apply(self, game_dir: str, entries: list, **kwargs) -> dict:
         from app.core.renpy import parser

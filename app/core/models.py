@@ -39,6 +39,7 @@ class Project:
     entries: list[TranslationEntry] = field(default_factory=list)
     var_names: dict[str, str] = field(default_factory=dict)
     switch_names: dict[str, str] = field(default_factory=dict)
+    extract_lang: str | None = None  # Ren'Py: какой tl/<lang> извлекать (None = все)
 
     def to_dict(self) -> dict:
         return {
@@ -49,6 +50,7 @@ class Project:
             "entries": [e.to_dict() for e in self.entries],
             "var_names": self.var_names,
             "switch_names": self.switch_names,
+            "extract_lang": self.extract_lang,
         }
 
     @staticmethod
@@ -62,4 +64,5 @@ class Project:
         p.entries = [TranslationEntry.from_dict(e) for e in d.get("entries", [])]
         p.var_names = d.get("var_names", {})
         p.switch_names = d.get("switch_names", {})
+        p.extract_lang = d.get("extract_lang")
         return p

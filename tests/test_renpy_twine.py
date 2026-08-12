@@ -89,6 +89,34 @@ with tempfile.TemporaryDirectory() as td:
     renpy.apply(td, entries, "ru")  # повторная генерация не падает
 print("   OK")
 
+print("2c) Ren'Py: многоязычность (tl/<lang>) — выбор одного языка...")
+with tempfile.TemporaryDirectory() as td:
+    make_renpy(td)
+    tl = os.path.join(td, "game", "tl")
+    os.makedirs(os.path.join(tl, "english"), exist_ok=True)
+    os.makedirs(os.path.join(tl, "french"), exist_ok=True)
+    with open(os.path.join(tl, "english", "adv.rpy"), "w",
+              encoding="utf-8") as f:
+        f.write('translate english strings:\n'
+                '    old "Hello, witch."\n'
+                '    new "Hi, witch."\n')
+    with open(os.path.join(tl, "french", "adv.rpy"), "w",
+              encoding="utf-8") as f:
+        f.write('translate french strings:\n'
+                '    old "Bonjour, sorcière."\n'
+                '    new "Salut, sorcière."\n')
+    langs = renpy.list_languages(td)
+    assert langs == ["english", "french"], langs
+    base = {e.original for e in renpy.extract(td)}
+    assert "Привет, я ведьма." in base
+    assert "Hello, witch." not in base and "Bonjour, sorcière." not in base
+    en = {e.original for e in renpy.extract(td, "english")}
+    assert "Hello, witch." in en and "Bonjour, sorcière." not in en, en
+    fr = {e.original for e in renpy.extract(td, "french")}
+    assert "Bonjour, sorcière." in fr and "Hello, witch." not in fr, fr
+    assert "Привет, я ведьма." in en and "Привет, я ведьма." in fr
+print("   OK")
+
 # ── Twine ──
 
 STORY_HTML = """<!DOCTYPE html>

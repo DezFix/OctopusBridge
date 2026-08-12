@@ -280,12 +280,53 @@ def find_rpa_archives(game_dir: str) -> list[str]:
     return result
 
 
-def _iter_rpy(game_dir: str):
-    """Iterate .rpy and .rpyc files from game/ and .rpa archives."""
+def list_languages(game_dir: str) -> list[str]:
+    """Языки официальных переводов игры: подпапки game/tl/* на диске
+    и каталоги tl/<lang>/ внутри .rpa архивов."""
+    langs: set[str] = set()
+    tl_dir = os.path.join(game_dir, "game", "tl")
+    if os.path.isdir(tl_dir):
+        for name in os.listdir(tl_dir):
+            if os.path.isdir(os.path.join(tl_dir, name)) \
+                    and not name.startswith("."):
+                langs.add(name)
+    try:
+        from app.core.renpy.rpa import RpaArchive, find_rpa_archives as _find_rpa
+        for arc_path in _find_rpa(game_dir):
+            try:
+                arc = RpaArchive(arc_path)
+            except Exception:
+                continue
+            for fname in arc.files:
+                if fname.startswith("tl/") \
+                        and (fname.endswith(".rpy") or fname.endswith(".rpyc")):
+                    head = fname[len("tl/"):].split("/", 1)[0]
+                    if head:
+                        langs.add(head)
+    except ImportError:
+        pass
+    return sorted(langs)
+
+
+def _iter_rpy(game_dir: str, extract_lang: str | None = None):
+    """Iterate .rpy and .rpyc files from game/ and .rpa archives.
+
+    extract_lang: если задан — берём только tl/<язык>/ (на диске и в
+    архивах), остальные языки пропускаем. None = старое поведение:
+    на диске tl/ пропускается целиком, в архивах берётся всё.
+    """
     game_sub = os.path.join(game_dir, "game")
     if os.path.isdir(game_sub):
         for root, dirs, files in os.walk(game_sub):
-            dirs[:] = [d for d in dirs if d not in ("tl", "renpy", "__pycache__")]
+            def keep(d: str) -> bool:
+                if d in ("renpy", "__pycache__"):
+                    return False
+                if d == "tl":
+                    return extract_lang is not None
+                if extract_lang is not None and os.path.basename(root) == "tl":
+                    return d == extract_lang
+                return True
+            dirs[:] = [d for d in dirs if keep(d)]
             for f in sorted(files):
                 if f.endswith(".rpy") or f.endswith(".rpyc"):
                     path = os.path.join(root, f)
@@ -301,14 +342,25 @@ def _iter_rpy(game_dir: str):
             except Exception:
                 continue
             for fname in arc.files:
-                if fname.endswith(".rpy") or fname.endswith(".rpyc"):
-                    yield f"rpa://{arc_name}/{fname}", fname
+                if not (fname.endswith(".rpy") or fname.endswith(".rpyc")):
+                    continue
+                if extract_lang and fname.startswith("tl/"):
+                    head = fname[len("tl/"):].split("/", 1)[0]
+                    if head != extract_lang:
+                        continue
+                yield f"rpa://{arc_name}/{fname}", fname
     except ImportError:
         pass
 
 
-def extract(game_dir: str) -> list[TranslationEntry]:
-    """Extract all translatable strings from .rpy/.rpyc files."""
+def extract(game_dir: str, extract_lang: str | None = None
+            ) -> list[TranslationEntry]:
+    """Extract all translatable strings from .rpy/.rpyc files.
+
+    extract_lang: выбрать один язык из game/tl/ (см. list_languages),
+    остальные языки не извлекаются (иначе текст дублируется по числу
+    языков — 13k строк × 5 языков = 65k).
+    """
     entries: list[TranslationEntry] = []
     next_id = 1
     seen_originals: set[str] = set()
@@ -326,7 +378,7 @@ def extract(game_dir: str) -> list[TranslationEntry]:
             context=context, original=key))
         next_id += 1
 
-    for path, rel in _iter_rpy(game_dir):
+    for path, rel in _iter_rpy(game_dir, extract_lang):
         # ── .rpyc from RPA archive ──
         if path.startswith("rpa://"):
             try:

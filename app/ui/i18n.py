@@ -121,6 +121,23 @@ _STRINGS = {
     "dash_stop": {"ru": "Остановить игру", "en": "Stop game"},
     "dash_launching": {"ru": "Запускаю игру…", "en": "Launching game…"},
     "project_opening": {"ru": "Открываю проект…", "en": "Opening project…"},
+    "lang_dialog_title": {
+        "ru": "Многоязычная игра",
+        "en": "Multilingual game",
+    },
+    "lang_dialog_text": {
+        "ru": "В игре несколько языков перевода (tl/): {langs}.\n"
+              "Выберите ОДИН язык — иначе текст продублируется по числу "
+              "языков (13 тыс. строк × 5 языков = 65 тыс.).",
+        "en": "The game has several translation languages (tl/): {langs}.\n"
+              "Pick ONE language — otherwise the text duplicates per "
+              "language (13k lines × 5 languages = 65k).",
+    },
+    "lang_dialog_all": {
+        "ru": "Все языки (как раньше — долго и с дублями)",
+        "en": "All languages (legacy — slow, duplicated)",
+    },
+    "lang_dialog_pick": {"ru": "Язык для перевода", "en": "Language to translate"},
     "dash_session_idle": {"ru": "Игра не запущена", "en": "Game not running"},
     "dash_session_connected": {
         "ru": "Игра запущена и подключена",
