@@ -1,4 +1,6 @@
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/k_k)
+[![License](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](./LICENSE)
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-support-F16061?logo=ko-fi&logoColor=white)](https://ko-fi.com/k_k)
+[![Release](https://img.shields.io/github/v/release/DezFix/OctopusBridge?color=blue)](https://github.com/DezFix/OctopusBridge/releases)
 
 # OctopusBridge
 
