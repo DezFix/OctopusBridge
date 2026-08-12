@@ -926,28 +926,20 @@ _STRINGS = {
     "done": {"ru": "Готово", "en": "Done"},
     "about_title": {"ru": "О программе", "en": "About"},
     "about_version": {"ru": "Версия {v}", "en": "Version {v}"},
-    "about_tagline": {"ru": "Ускоренный перевод", "en": "Faster translation"},
-    "about_engines": {"ru": "Поддерживаемые движки:", "en": "Supported engines:"},
-    "about_engines_list": {
-        "ru": "RPG Maker MV/MZ, Ren'Py, Twine и TyranoScript",
-        "en": "RPG Maker MV/MZ, Ren'Py, Twine and TyranoScript",
+    "about_desc": {
+        "ru": "Бесплатная программа для перевода и модификации игр: "
+              "RPG Maker MV/MZ, Ren'Py, Twine и TyranoScript.",
+        "en": "Free app for translating and modding games: "
+              "RPG Maker MV/MZ, Ren'Py, Twine and TyranoScript.",
     },
-    "about_check_updates": {"ru": "Проверить обновления", "en": "Check for updates"},
+    "about_support": {
+        "ru": "Приложение бесплатно и без подписок. Если хотите поддержать "
+              "проект: <a href=\"{url}\">ko-fi.com/k_k</a>",
+        "en": "The app is free with no subscriptions. Want to support the "
+              "project: <a href=\"{url}\">ko-fi.com/k_k</a>",
+    },
+    "about_changelog": {"ru": "Что нового", "en": "Changelog"},
     "about_close": {"ru": "Закрыть", "en": "Close"},
-    "changelog_title": {"ru": "Что нового в OctopusBridge", "en": "What's new in OctopusBridge"},
-    "updates_title": {"ru": "Доступна новая версия", "en": "Update available"},
-    "updates_msg": {
-        "ru": "OctopusBridge {v} уже доступен.\nОткрыть страницу релизов?",
-        "en": "OctopusBridge {v} is available.\nOpen the release page?",
-    },
-    "updates_none": {
-        "ru": "Установлена последняя версия.",
-        "en": "You have the latest version.",
-    },
-    "updates_check_failed": {
-        "ru": "Не удалось проверить обновления.",
-        "en": "Could not check for updates.",
-    },
 }
 
 

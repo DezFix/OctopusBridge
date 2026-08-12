@@ -165,10 +165,6 @@ class MainWindow(QMainWindow):
         self.refresh_status_bar()
         self.refresh_project_stats()
 
-        from PySide6.QtCore import QTimer
-        from app.ui.app_info import maybe_show_changelog
-        QTimer.singleShot(900, lambda: maybe_show_changelog(self))
-
     def resizeEvent(self, event):
         if getattr(self, "loading", None):
             self.loading.setGeometry(self.rect())
