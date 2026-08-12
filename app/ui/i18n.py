@@ -927,17 +927,15 @@ _STRINGS = {
     "about_title": {"ru": "О программе", "en": "About"},
     "about_version": {"ru": "Версия {v}", "en": "Version {v}"},
     "about_desc": {
-        "ru": "Бесплатная программа для перевода и модификации игр: "
-              "RPG Maker MV/MZ, Ren'Py, Twine и TyranoScript.",
-        "en": "Free app for translating and modding games: "
-              "RPG Maker MV/MZ, Ren'Py, Twine and TyranoScript.",
+        "ru": "Программа для перевода и модификации игр.",
+        "en": "App for translating and modding games.",
     },
-    "about_support": {
-        "ru": "Приложение бесплатно и без подписок. Если хотите поддержать "
-              "проект: <a href=\"{url}\">ko-fi.com/k_k</a>",
-        "en": "The app is free with no subscriptions. Want to support the "
-              "project: <a href=\"{url}\">ko-fi.com/k_k</a>",
+    "about_free": {
+        "ru": "Приложение бесплатно и без подписок",
+        "en": "The app is free with no subscriptions",
     },
+    "about_engines": {"ru": "Поддерживаемые движки", "en": "Supported engines"},
+    "about_kofi": {"ru": "Поддержать проект на Ko-fi", "en": "Support the project on Ko-fi"},
     "about_changelog": {"ru": "Что нового", "en": "Changelog"},
     "about_close": {"ru": "Закрыть", "en": "Close"},
 }
