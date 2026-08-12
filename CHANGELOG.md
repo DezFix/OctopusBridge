@@ -1,208 +1,194 @@
 # Changelog
 
-Все заметные изменения проекта. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
-версионирование — [SemVer](https://semver.org/lang/ru/).
-
-## [0.6.5] — 2026-08-12
-
-### Исправлено
-- Чейнджлог в «О программе» показывал только строку версии — тело секции обрезалось при разбиении Markdown (внутренние заголовки «### » считались границей секций). Теперь выводится вся секция релиза.
-
-## [0.6.4] — 2026-08-12
-
-### Изменено
-- «О программе»: кнопка «Поддержать проект на Ko-fi» (открывает ko-fi.com/k_k в браузере).
-- Теги поддерживаемых движков подтягиваются автоматически из реестра (`app/engines/registry.py`) — новый движок появится сам; каждому тегу свой цвет.
-- Чейнджлог в «О программе» рендерится как Markdown (заголовки, списки, код, ссылки); берётся с GitHub, при отсутствии сети — из локального файла.
-
-## [0.6.3] — 2026-08-12
-
-### Изменено
-- **«О программе» переработан**: сверху — иконка приложения, версия и короткое описание, снизу — чейнджлог; всплывающее окно «Что нового» при старте убрано.
-- Убрана кнопка «Проверить обновления» (заглушка) и подпись «Ускоренный перевод».
-- Добавлена строка о бесплатности и поддержке проекта: ko-fi.com/k_k (кликабельная ссылка).
-
-## [0.6.2] — 2026-08-12
-
-### Исправлено
-- Отображение вкладки «Перевод файлов»: ничего больше не обрезается. Панель файлов зафиксирована на 403 px, колонки таблицы — № 33 / контекст 180 / оригинал 343 / перевод 340 / статус 82 (по замерам пользователя).
+All notable changes to the project. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning follows [SemVer](https://semver.org/).
 
 ## [0.6.1] — 2026-08-12
 
-### Изменено
-- Временная отладочная надпись с размерами блоков (панель файлов + колонки) — удалена после подбора фиксированных размеров.
+### Added
+- About dialog: engine tags are pulled automatically from the registry (`app/engines/registry.py`) — a new engine appears on its own; each tag has its own color.
+- About dialog: the changelog is rendered as Markdown (headings, lists, code, links); it is fetched from GitHub and falls back to the bundled file when offline.
+
+### Changed
+- About dialog redesigned: app icon, version and a short description on top, changelog at the bottom; the "What's new" popup on startup removed.
+- Removed the stub "Check for updates" button and the "Faster translation" tagline.
+- Added a "free, no subscriptions" note and a "Support the project on Ko-fi" button that opens ko-fi.com/k_k in the browser.
+- Window size removed from the title bar.
+
+### Fixed
+- Translate tab layout: nothing is cut off anymore. The file panel is fixed at 403 px, table columns — # 33 / context 180 / original 343 / translation 340 / status 82 (user-measured).
+- The changelog in About showed only the version line — the section body was cut off when splitting Markdown (inner "### " headings were counted as section boundaries). The whole release section is now shown.
 
 ## [0.6.0] — 2026-08-12
 
-### Добавлено
-- **Движок Google переработан: ~11× быстрее (замер: 28 600 стр/мин против ~2 500).** Каскад бесплатных эндпоинтов:
-  1. `translate-pa.googleapis.com/v1/translateHtml` (тот же сервис, что у расширения Google Translate) — один запрос на пакет до 100 строк, каждая строка отдельным элементом (без хрупкой `\n`-склейки); замер ~90 мс на 50 строк. Основной путь.
-  2. Классический `translate_a/single` (склейка через `\n`) — фолбэк для строк с переводами строк (fast-эндпоинт их теряет) и при сбое №1.
-  3. `translate.google.com/m` (HTML-версия, щедрые лимиты) — последний фолбэк.
-- Соединения переиспользуются (`requests.Session`, keep-alive) — раньше каждый запрос делал новое TLS-рукопожатие. Пакеты крупнее: до 100 строк, 4 параллельных воркера (было 32 строки / 2 воркера).
-- Защита от rate-limit сохранена: 429/капча — кулдаун 60 с, rotate уходит на Bing; отзыв публичного ключа fast-эндпоинта (403) — автоматический переход на классический эндпоинт без паузы.
+### Added
+- **Google engine rewritten: ~11× faster (measured: 28,600 lines/min vs ~2,500).** Cascade of free endpoints:
+  1. `translate-pa.googleapis.com/v1/translateHtml` (the same service the Google Translate extension uses) — one request per batch of up to 100 lines, each line a separate element (no fragile `\n`-joining); measured ~90 ms per 50 lines. Primary path.
+  2. Classic `translate_a/single` (`\n`-joined) — fallback for lines containing newlines (the fast endpoint drops them) and when path #1 fails.
+  3. `translate.google.com/m` (HTML version, generous limits) — last resort.
+- Connections are reused (`requests.Session`, keep-alive) — previously every request did a new TLS handshake. Bigger batches: up to 100 lines, 4 parallel workers (was 32 lines / 2 workers).
+- Rate-limit protection kept: 429/captcha — 60 s cooldown, rotation switches to Bing; fast-endpoint public-key revocation (403) — automatic switch to the classic endpoint without a pause.
 
-### Изменено
-- Пакеты в сервисе перевода увеличены (32 → 100 строк, лимит токенов 600 → 1500) — меньше запросов на ту же работу.
+### Changed
+- Translation service batches enlarged (32 → 100 lines, token limit 600 → 1500) — fewer requests for the same work.
 
 ## [0.5.12] — 2026-08-12
 
-### Добавлено
-- Окно по умолчанию — 1390×755 (размер выбран по фактическому экрану); панель файлов во вкладке «Перевод» придвинута влево на 4px.
+### Changed
+- Default window 1390×755 (chosen for the actual screen); the file panel in the Translate tab moved 4 px left.
 
 ## [0.5.11] — 2026-08-12
 
-### Исправлено
-- **После «Отмена» перевода файлы-списки не обновлялись и показывали 0%.** Отмена не сохраняла переведённое и не пересобирала список файлов — панель слева оставалась со старыми счётчиками «0/N», а перевод пропадал при перезапуске. Теперь при отмене (и при ошибке) перевод сохраняется в проект, список файлов пересчитывается, полоски и цифры «сделано/всего» показывают реальное состояние.
+### Fixed
+- **After "Cancel", file lists were not updated and showed 0%.** Cancellation did not save the translated lines and did not rebuild the file list — the left panel kept old "0/N" counters, and the translation was lost on restart. Now on cancel (and on error) the translation is saved to the project, the file list is rebuilt, and the bars and "done/total" digits show the real state.
 
-### Добавлено
-- **Размер окна виден в заголовке** («…v0.5.11 — 1440×900» — обновляется при растягивании); размер окна запоминается между запусками. Окно по умолчанию увеличено до 1440×900; статус внизу вкладки «Перевод» больше не сжимается (текст переносится), панель файлов шире — цифры «переведено/всего» видны.
+### Added
+- **Window size shown in the title** ("…v0.5.11 — 1440×900", updates while resizing); the window size is remembered between runs. Default window enlarged to 1440×900; the status label at the bottom of the Translate tab no longer gets squeezed (text wraps), the file panel is wider — "translated/total" digits are visible.
 
 ## [0.5.10] — 2026-08-12
 
-### Добавлено
-- **Многоязычные игры (Ren'Py `tl/`): выбор одного языка.** Если в игре несколько официальных языков перевода (`tl/english`, `tl/french`, … — на диске или в `.rpa`), при открытии проекта появляется предупреждение с выбором: переводится только ОДИН выбранный язык (+ основной текст игры), остальные пропускаются. Раньше извлекались все языки сразу — те же строки дублировались по числу языков (13 тыс. строк × 5 языков = 65 тыс.). Выбор сохраняется в проекте и используется при «Извлечь текст»; в диалоге можно вернуться к старому режиму «все языки» (медленно, с дублями).
+### Added
+- **Multilingual games (Ren'Py `tl/`): pick ONE language.** If the game has several official translation languages (`tl/english`, `tl/french`, … — on disk or in `.rpa`), a warning with a choice appears on project open: only the chosen language is translated (plus the game's main text), the rest are skipped. Previously all languages were extracted at once — the same lines were duplicated per language (13k lines × 5 languages = 65k). The choice is saved in the project and used by "Extract text"; the dialog can switch back to the legacy "all languages" mode (slow, with duplicates).
 
 ## [0.5.9] — 2026-08-12
 
-### Исправлено
-- **Ren'Py 8.2: краш загрузки игры «Could not parse string».** Многострочные строки игры (с переносами `\n` внутри реплики) записывались в `game/tl/<lang>/ob_*.rpy` с настоящими переводами строк — Ren'Py не парсит такие литералы. Теперь переносы уходят как escape-`\n` (так же `\t`), файл валиден, текст в игре отображается с переносами как раньше. Уже сгенерированные битые `ob_*.rpy` самовосстанавливаются при следующем «Применить».
-- **«Отмена» во время перевода больше не рвёт UI.** Раньше отмена блокировала интерфейс (`wait` в GUI-потоке) и мгновенно дёргала все полоски. Теперь: мягкая остановка без блокировки, оверлей показывает «Отмена…», при завершении — плавное скрытие, текст «Отменено: переведено N из M» и полоса прогресса останавливается ровно на фактическом количестве (а не прыгает в 100%), затем скрывается. Переведённое до отмены остаётся в проекте — его можно доработать или применить.
-- ИИ-коррекция: диалог «принять правки» больше не выскакивает, если пользователь нажал «Отмена».
+### Fixed
+- **Ren'Py 8.2: game load crash "Could not parse string".** Multi-line game strings (with `\n` inside a line) were written to `game/tl/<lang>/ob_*.rpy` with real newlines — Ren'Py cannot parse such literals. Now newlines go out as escaped `\n` (same for `\t`), the file is valid, and the in-game text still shows line breaks. Already broken `ob_*.rpy` files self-heal on the next "Apply".
+- **"Cancel" during translation no longer breaks the UI.** Previously cancellation blocked the interface (`wait` in the GUI thread) and jerked all progress bars. Now: soft stop without blocking, overlay shows "Cancelling…", smooth hide on finish, "Cancelled: translated N of M" text, and the progress bar stops exactly at the actual count (instead of jumping to 100%) then hides. What was translated before the cancel stays in the project — it can be refined or applied.
+- AI correction: the "accept edits" dialog no longer pops up if the user pressed "Cancel".
 
-### Добавлено
-- Плавные анимации оверлея (fade-in/out 150 мс); спиннер перестал крутиться впустую, когда оверлей скрыт (снята лишняя нагрузка на процессор).
+### Added
+- Smooth overlay animations (fade-in/out 150 ms); the spinner no longer spins uselessly when the overlay is hidden (removed the CPU load).
 
 ## [0.5.8] — 2026-08-11
 
-### Добавлено
-- **Пакетный перевод (реальное ускорение «Ускоренного перевода»).** Google больше не шлёт по одной строке: до 32 строк уходят одним запросом (строки склеиваются и разрезаются обратно по `\n`), несколько пакетов идут параллельно. Замер на живом сервисе: ~4625 стр/мин пакетами против ~71 по одной — десятки раз быстрее. При склейке строк Google (счётчик не сошёлся) пакет надёжно переводится построчно — результат не теряется.
-- Режим «Google + Bing» перестроен: основной путь — Google пакетами (тот самый ×60), Bing — страховка: при сбое Google перевод продолжается построчно на Bing.
-- Защита от rate-limit: при 429/капче (страница `/sorry/`) Google уходит в кулдаун на 60 секунд — в это время запросы к нему вообще не шлются, перевод автоматически работает на Bing; кулдаун снимается сам.
+### Added
+- **Batch translation (the real speed-up behind "Fast translation").** Google no longer sends lines one by one: up to 32 lines go in a single request (lines are joined and split back on `\n`), several batches run in parallel. Measured on the live service: ~4,625 lines/min batched vs ~71 one by one — dozens of times faster. When Google merges lines (count mismatch), the batch is reliably translated line-by-line — no results lost.
+- "Google + Bing" mode rebuilt: the primary path is Google in batches (that ×60), Bing is a safety net — on Google failure translation continues line-by-line on Bing.
+- Rate-limit protection: on 429/captcha (`/sorry/` page) Google enters a 60-second cooldown — no requests are sent to it during that time, translation automatically runs on Bing; the cooldown lifts by itself.
 
 ## [0.5.7] — 2026-08-11
 
-### Добавлено
-- **Ускоренный перевод**: одна кнопка «Перевод» запускает перевод игры в фоне — приложение остаётся отзывчивым, прогресс виден в статус-баре, по завершении игра готова к запуску.
-- Кнопка «Запуск с переводом» переводит игру и сразу запускает её, не дожидаясь окончания вручную.
-- Анимации при длительных операциях: спиннер поверх окна при запуске игры, извлечении текста, переводе и открытии проекта.
+### Added
+- **Fast translation**: one "Translate" button runs game translation in the background — the app stays responsive, progress is visible in the status bar, the game is ready to launch when done.
+- "Launch with translation" button translates the game and launches it right away, without waiting manually.
+- Animations for long operations: spinner over the window when launching the game, extracting text, translating and opening projects.
 
-### Удалено
-- Живой (построчный) перевод во всех движках: CDP-щупальца Tyrano/RPG Maker/Twine и агент Ren'Py больше не подключаются к игре и не переводят текст в рантайме — перевод только пакетный, до запуска игры. Это ускоряет запуск и устраняет фризы игр при переводе.
+### Removed
+- Live (per-line) translation in all engines: CDP tentacles for Tyrano/RPG Maker/Twine and the Ren'Py agent no longer connect to the game and translate text at runtime — translation is batch-only, before launching the game. This speeds up launch and removes in-game freezes during translation.
 
 ## [0.5.5] — 2026-08-07
 
-### Исправлено
-- Зависания игр при выключенном переводе: агент Ren'Py теперь знает о паузе (`set_paused`) — не шлёт запросы и не блокирует игровой поток на каждой реплике, когда перевод отключён.
-- Фризы Ren'Py из-за кэша: ограничен лимитом 20k пар (прунинг при загрузке и добавлении), запись на диск не чаще раза в 5 секунд и только после успешной записи (раньше `json.dump` всего кэша выполнялся в главном потоке игры на каждый кадр).
-- «Подвисание во время перевода» у Tyrano/RPG Maker: bulk-претранслейт больше не забивает общий пул воркеров живого перевода (прямой вызов в своём фоновом потоке), живой перевод не ждёт до 12 секунд в очереди.
-- JS-пейлоады Tyrano/RPG Maker/Twine при выключенном переводе продолжали сканировать DOM и слать запросы впустую — добавлен флаг `enabled`/`__octopus_setEnabled` с синхронизацией статуса при подключении и переподключении.
-- RPG Maker: при выключенном переводе окно диалога не держится на плейсхолдерах «…» и не ждёт таймаут гейта на каждой строке.
-- Tyrano: добавлен детект перемотки (`isSkip` по `kag.config.skip`/классу `tyrano_skip`) — при скипе DOM не сканируется и таймеры стабилизации не ставятся; пропущенные при перемотке строки не теряются и переводятся при следующем показе.
+### Fixed
+- Game freezes with translation disabled: the Ren'Py agent now knows about the pause (`set_paused`) — it doesn't send requests and doesn't block the game thread on every line when translation is off.
+- Ren'Py freezes caused by the cache: capped at 20k pairs (pruned on load and on add), disk writes at most once per 5 seconds and only after a successful write (previously `json.dump` of the whole cache ran in the game's main thread on every frame).
+- "Hang during translation" in Tyrano/RPG Maker: bulk pretranslation no longer fills the shared worker pool of live translation (direct call in its own background thread), live translation no longer waits up to 12 seconds in the queue.
+- JS payloads for Tyrano/RPG Maker/Twine kept scanning the DOM and sending requests with translation disabled — added an `enabled`/`__octopus_setEnabled` flag with status sync on connect and reconnect.
+- RPG Maker: with translation disabled the dialog window no longer holds on "…" placeholders and doesn't wait for the gate timeout on every line.
+- Tyrano: added skip detection (`isSkip` via `kag.config.skip`/`tyrano_skip` class) — during skip the DOM is not scanned and stabilization timers are not set; lines skipped during fast-forward are not lost and get translated on the next display.
 
 ## [0.5.4] — 2026-08-05
 
-### Добавлено
-- Новый движок **RPG Maker (Electron)** — поддержка игр RPG Maker MZ/MV, упакованных в Electron (данные внутри `resources/app.asar`, например «遥かなるセレスフィア»).
-- Чтение и патчинг ASAR-архивов (`app/core/asar.py`): разбор заголовка, извлечение по префиксу, внедрение файлов «на месте» (дополнение пробелами, заголовок не трогается) или пересборкой при росте файла, бэкапы оригинала в `backup/<дата>/`, файл сохраняется как `.ob.bak`.
-- Детект варианта (MZ по `game.rmmzproject`/`js/rmmz_core.js`, MV по `js/rpg_core.js`), извлечение/внедрение через временный проект из `project/data` (парсер RPG Maker переиспользован), вкладка читов.
-- Живой перевод для RPG Maker (Electron): то же CDP-щупальце, что у обычного RPG Maker.
+### Added
+- New engine **RPG Maker (Electron)** — support for RPG Maker MZ/MV games packaged in Electron (data inside `resources/app.asar`, e.g. «遥かなるセレスフィア»).
+- ASAR archive reading and patching (`app/core/asar.py`): header parsing, prefix-based extraction, in-place file injection (padded with spaces, header untouched) or rebuild when the file grows, backups of the original to `backup/<date>/`, the file saved as `.ob.bak`.
+- Variant detection (MZ by `game.rmmzproject`/`js/rmmz_core.js`, MV by `js/rpg_core.js`), extraction/injection through a temporary project from `project/data` (the RPG Maker parser is reused), cheats tab.
+- Live translation for RPG Maker (Electron): the same CDP tentacle as regular RPG Maker.
 
 ## [0.5.4] — 2026-08-06
 
-### Удалено
-- Локальный офлайн-переводчик Honyaku (NLLB-200): не оправдал ожиданий по качеству, пока убираем из приложения и сборки. Провайдер «Honyaku» пропал из настроек, модели (~0,6 ГБ) больше не копируются в dist — сборка стала легче. Код библиотеки остаётся в репозитории (`app/translators/honyaku/`): вернём, когда появится лучшее решение.
+### Removed
+- Local offline translator Honyaku (NLLB-200): didn't meet quality expectations — temporarily removed from the app and the build. The "Honyaku" provider disappeared from settings, models (~0.6 GB) are no longer copied to dist — the build got lighter. The library code stays in the repo (`app/translators/honyaku/`): we'll bring it back when a better solution appears.
 
-### Изменено
-- Провайдер по умолчанию — «Google + Bing» (чередование с фолбэком). Старые настройки, где выбран honyaku/nllb/argos, автоматически переводятся на него при запуске.
+### Changed
+- Default provider — "Google + Bing" (rotation with fallback). Old settings with honyaku/nllb/argos selected are migrated automatically on startup.
 
 ## [0.5.3] — 2026-08-05
 
-### Изменено
-- Чистка мёртвого кода: удалены `honyaku_download`, `honyaku_models_status`, `honyaku_missing_pairs_all` и `HONYAKU_ALL_PAIRS` — остатки удалённой кнопки скачивания моделей (модели идут в комплекте, скачивать нечего).
-- Устаревшие тексты обновлены: подсказки и сообщения об ошибках больше не обещают «модели скачаются автоматически» — модели в комплекте, при пропаже каталога подсказка объясняет, что восстановить.
+### Changed
+- Dead code removed: `honyaku_download`, `honyaku_models_status`, `honyaku_missing_pairs_all` and `HONYAKU_ALL_PAIRS` — leftovers of the removed model-download button (models ship with the app, nothing to download).
+- Outdated texts updated: hints and error messages no longer promise "models will be downloaded automatically" — models are bundled; if the folder goes missing, the hint explains how to restore.
 
-### Исправлено
-- Движок «Google + Bing» (rotate): сессии Bing создавались через умножение списка — все «несколько сессий» ссылались на один и тот же экземпляр с общим токеном и квотой, вопреки документации. Теперь каждая сессия Bing — независимый экземпляр.
+### Fixed
+- "Google + Bing" (rotate) engine: Bing sessions were created by list multiplication — all "several sessions" referenced one and the same instance with a shared token and quota, contrary to the docs. Now each Bing session is an independent instance.
 
 ## [0.5.2] — 2026-08-05
 
-### Добавлено
-- Honyaku v0.3.0: детект галлюцинаций — подозрительный перевод (низкая уверенность модели, повторы, чужое письмо) пересчитывается с beam=4, при повторном мусоре возвращается оригинал.
-- Honyaku v0.3.0: автоподбор compute_type (int8_float16 → int8 → float16 → float32) и резка длинных строк по токенам — стабильная скорость на любом железе.
+### Added
+- Honyaku v0.3.0: hallucination detection — a suspicious translation (low model confidence, repetitions, foreign script) is re-computed with beam=4; on repeated garbage the original is returned.
+- Honyaku v0.3.0: automatic compute_type selection (int8_float16 → int8 → float16 → float32) and splitting long lines by tokens — stable speed on any hardware.
 
-### Изменено
-- Honyaku: убран fast-тир (OPUS-MT) — галлюцинировал на многих строках. Осталась одна мультиязычная модель NLLB (best) на все языковые пары; сборка с моделями похудела с ~1,2 ГБ до ~0,65 ГБ. Скорость best на CPU: ~190 симв/с (10 фраз ~0.9 с).
-- Офлайн-модели больше не требуют действий: кнопка «Скачать», стартовое окно и блок в настройках удалены — модели идут в комплекте, приложение их только прогревает.
-- Сборка: CHANGELOG.md включается в exe — «Что нового» работает и в собранном приложении.
+### Changed
+- Honyaku: fast tier (OPUS-MT) removed — it hallucinated on many lines. One multilingual NLLB model (best) remains for all language pairs; the build with models slimmed from ~1.2 GB to ~0.65 GB. Best speed on CPU: ~190 chars/s (10 phrases ~0.9 s).
+- Offline models no longer require any action: the "Download" button, the first-run window and the settings block were removed — models ship with the app, the app only warms them up.
+- Build: CHANGELOG.md is included in the exe — "What's new" works in the built app too.
 
-### Исправлено
-- Перевод: одиночные знаки алфавитов (кана ホ, ァ…, кириллица, латиница) больше не отправляются переводчику — кнопки кана-клавиатуры и хоткеи возвращаются как есть, а не «Домой» (галлюцинация NLLB/Google). Защита работает во всех провайдерах и режимах (живая сессия, файлы, пакетный перевод), а также до памяти переводов — старый мусор из кеша не вылезает.
-- Производительность: после закрытия игры приложение больше не грузит процессор. Модели honyaku грузятся в общий кэш ровно один раз за сессию (его используют все вкладки и потоки), а прогрев запускается только вместе с живой сессией — раньше он стартовал при открытии приложения, грузил модели в одноразовые объекты и дублировал загрузку NLLB для каждой вкладки.
-- Краш при выходе: RuntimeError «Internal C++ object (_HonyakuWarm) already deleted» при закрытии окна во время фонового прогрева моделей.
-- **Краш приложения (access violation в `_sentencepiece.pyd`).** Один общий Translator honyaku использовался из нескольких потоков сразу (живая сессия + файловый перевод + прогрев), а sentencepiece-токенизатор не потокобезопасен — одновременные вызовы роняли процесс на уровне C++. Вызовы модели сериализуются общим локом.
-- Прогрев моделей теперь действительно загружает NLLB в память в фоне при старте живой сессии (греется активная пара из настроек, не все 5) — раньше создавались пустые объекты, и первый перевод всё ещё ждал загрузку модели в потоке игры.
+### Fixed
+- Translation: single alphabet characters (kana ホ, ァ…, Cyrillic, Latin) are no longer sent to the translator — kana-keyboard buttons and hotkeys return as-is instead of "Home" (NLLB/Google hallucination). The guard works in all providers and modes (live session, files, batch translation), and before the translation memory — old garbage doesn't leak from the cache.
+- Performance: after closing the game the app no longer loads the CPU. Honyaku models are loaded into the shared cache exactly once per session (all tabs and threads use it), and warmup starts only together with the live session — previously it ran on app start, loaded models into one-off objects and duplicated NLLB loading for each tab.
+- Crash on exit: RuntimeError "Internal C++ object (_HonyakuWarm) already deleted" when closing the window during background model warmup.
+- **App crash (access violation in `_sentencepiece.pyd`).** One shared honyaku Translator was used from several threads at once (live session + file translation + warmup), and the sentencepiece tokenizer is not thread-safe — concurrent calls crashed the process at the C++ level. Model calls are serialized with a shared lock.
+- Model warmup now actually loads NLLB into memory in the background when the live session starts (warms the active pair from settings, not all 5) — previously it created empty objects and the first translation still waited for the model load in the game thread.
 
 ## [0.5.1] — 2026-08-05
 
-### Добавлено
-- Автономная работа: офлайн-модели honyaku (fast + best, ~1,2 ГБ) скачиваются в папку `models/` рядом с приложением (в корень проекта при запуске из исходников) и копируются в сборку `dist/models/` — перевод работает без интернета и без обращений к HuggingFace.
-- Всплывающее окно при старте, если офлайн-модели не скачаны: «Скачать» / «Позже» с прогресс-баром и отменой.
-- Настройки → Основные: блок «Офлайн-модели Honyaku» — статус (сколько пар скачано, размер) и кнопка «Скачать» на всякий случай.
+### Added
+- Fully offline operation: honyaku offline models (fast + best, ~1.2 GB) are downloaded to the `models/` folder next to the app (repo root when running from sources) and copied into the build `dist/models/` — translation works without internet and without contacting HuggingFace.
+- First-run popup if offline models are not downloaded: "Download" / "Later" with a progress bar and cancel.
+- Settings → General: "Honyaku offline models" block — status (pairs downloaded, size) and a "Download" button just in case.
 
-### Исправлено
-- **Критический баг: живой перевод зависал и не переводил (все движки).** Honyaku при отсутствии моделей запускал их синхронную докачку с HuggingFace прямо в серверном потоке Ren'Py / CDP-потоке Tyrano без таймаута — игра «висла» до 30с на каждой строке диалога, перевод не появлялся вовсе (приходилось убивать через диспетчер задач).
-- Honyaku: в путь перевода модели больше не докачиваются — при отсутствии моделей возврат оригинала мгновенный, без блокировок; модели по-прежнему качаются фоновой задачей при старте, перевод заработает сам, как только они будут готовы.
-- Щупальца: перевод живой сессии ограничен по времени (12с на строку) — зависший/медленный движок (сетевая недоступность, бесконечные ретраи) больше не морозит игру ни в одном движке.
-- Ren'Py: агент ждёт ответ сервера не 30с, а 10с на строку — даже при полном зависании сервера игра не «висит» десятки секунд.
-- Honyaku: после фоновой докачки модели прогреваются (загружаются в память) — первые строки живой сессии больше не платят полную загрузку NLLB (~10-30с) в серверном потоке.
+### Fixed
+- **Critical bug: live translation hung and didn't translate (all engines).** Honyaku with missing models ran a synchronous re-download from HuggingFace right in the Ren'Py server thread / Tyrano CDP thread without a timeout — the game "hung" up to 30 s on each dialog line, no translation appeared at all (had to be killed via Task Manager).
+- Honyaku: models are no longer re-downloaded into the translation path — with missing models the original is returned instantly, without blocking; models still download in a background task at startup, and translation starts working on its own once they are ready.
+- Tentacles: live-session translation is time-limited (12 s per line) — a hung/slow engine (network down, endless retries) no longer freezes the game in any engine.
+- Ren'Py: the agent waits 10 s per line for the server response instead of 30 s — even if the server hangs completely, the game doesn't stall for dozens of seconds.
+- Honyaku: after the background download models are warmed up (loaded into memory) — the first lines of a live session no longer pay the full NLLB load (~10–30 s) in the server thread.
 
 ## [0.5.0] — 2026-08-04
 
-### Добавлено
-- Ядро **TyranoScript / TyranoBuilder**: детект по `data/scenario/*.ks` + `tyrano/`, извлечение/внедрение текста (сегменты строк + атрибуты `text="..."` тегов link/button/ruby, пропуск `[iscript]`-блоков, комментариев и меток), автоопределение кодировки UTF-8/Shift-JIS, бэкапы, защита от сдвига и проверка сохранности переменных (`%var`, `&var`, `tf./f./sf.`).
-- Ядро TyranoScript: живой перевод через CDP (NW.js/Electron) — MutationObserver на `#tyrano_base`, кэш переводов в `tyrano_cache.json`, bulk-предзагрузка перевода .ks.
-- TyranoScript live: защита от галлюцинаций и двойных переводов — строки короче 2 символов и кириллица не отправляются в переводчик (одиночные каны при посимвольном наборе больше не дают «Домой»), стабилизация текста 300 мс (перематывание не дёргает переводчик), сверка текста узла перед заменой (устаревшие ответы не применяются), set уже переведённых строк исключает feedback-цикл.
-- TyranoScript live: перевод целых строк диалога `.message_inner p` (вместо отдельных текстовых узлов с одиночными канами), замена внутри `span.current_span` без поломки вёрстки движка.
-- TyranoScript live: кэш перевода заливается в страницу сразу при подключении и повторно после каждой перезагрузки страницы (титул, загрузка сейва) — одни и те же строки больше не запрашиваются/переводятся повторно.
-- Иконка движка TyranoScript в списке проектов.
-- Единый кэш переводов: все движки (RPG Maker, Ren'Py, Twine, TyranoScript) пишут один файл `octopus_cache.json` в папке игры; старые кэши (`.translation_cache.json`, `tyrano_cache.json` и др.) читаются автоматически и переносятся в новый формат при следующем сохранении.
-- Переключатель «Перевод в реальном времени» на дашборде: перевод можно выключить/включить на лету, не прерывая сессию — читы, переменные и состояние игры продолжают работать, текст показывается без перевода (все движки).
-- Вкладка «Проекты»: игры можно перетаскивать в список из проводника.
-- Диалог «О программе» (версия, движки) и «Что нового» (показывается при обновлении версии, содержимое из CHANGELOG.md).
-- Проверка обновлений через GitHub Releases — отключена до появления публичного репозитория (константа `GITHUB_REPO` в `app/ui/app_info.py`).
+### Added
+- **TyranoScript / TyranoBuilder core**: detection by `data/scenario/*.ks` + `tyrano/`, text extraction/injection (line segments + `text="..."` attributes of link/button/ruby tags, skipping `[iscript]` blocks, comments and labels), automatic UTF-8/Shift-JIS encoding detection, backups, shift protection and variable-preservation checks (`%var`, `&var`, `tf./f./sf.`).
+- TyranoScript core: live translation via CDP (NW.js/Electron) — MutationObserver on `#tyrano_base`, translation cache in `tyrano_cache.json`, bulk preloading of translated .ks.
+- TyranoScript live: protection against hallucinations and double translations — lines shorter than 2 characters and Cyrillic are not sent to the translator (single kana during character-by-character typing no longer give "Home"), 300 ms text stabilization (fast-forward no longer spams the translator), node text verification before replacement (stale responses are not applied), re-setting already translated lines excludes the feedback loop.
+- TyranoScript live: whole dialogue lines `.message_inner p` are translated (instead of separate text nodes with single kana), replacement inside `span.current_span` without breaking the engine's layout.
+- TyranoScript live: the translation cache is injected into the page right on connect and again after every page reload (title, save load) — the same lines are no longer requested/translated repeatedly.
+- TyranoScript engine icon in the project list.
+- Unified translation cache: all engines (RPG Maker, Ren'Py, Twine, TyranoScript) write one `octopus_cache.json` in the game folder; old caches (`.translation_cache.json`, `tyrano_cache.json` and others) are read automatically and migrated to the new format on the next save.
+- "Live translation" toggle on the dashboard: translation can be turned off/on on the fly without interrupting the session — cheats, variables and game state keep working, text shows untranslated (all engines).
+- Projects tab: games can be dragged into the list from Explorer.
+- "About" dialog (version, engines) and "What's new" (shown on version update, content from CHANGELOG.md).
+- Update check via GitHub Releases — disabled until a public repository appears (`GITHUB_REPO` constant in `app/ui/app_info.py`).
 
-### Исправлено
-- Парсер Tyrano: теги с вложенными `]` в атрибутах (`text="a[b]"`, `[emb expr="arr[0]"]`) разбираются целиком — текст `text="..."` извлекается и переводится, мусорные текстовые сегменты из хвостов атрибутов не создаются, теги не ломаются при внедрении (раньше перевод сегмента в такой строке мог стереть закрывающую `]` тега).
-- Парсер Tyrano: внедрение сохраняет переводы строк файла (CRLF/LF) и завершающий перевод строки — файлы не переписываются из CRLF в LF.
-- Парсер Tyrano: пути .ks при извлечении строятся с корректными разделителями (совпадают с ключами кэша кодировок при внедрении).
-- Удалён мёртвый код: `_KAG_LIKE_NAMES`, `_TAG_ONLY_RE`.
+### Fixed
+- Tyrano parser: tags with nested `]` in attributes (`text="a[b]"`, `[emb expr="arr[0]"]`) are parsed whole — `text="..."` is extracted and translated, no garbage text segments from attribute tails, tags don't break on injection (previously translating a segment in such a line could erase the closing `]`).
+- Tyrano parser: injection preserves the file's line endings (CRLF/LF) and the trailing newline — files are not rewritten from CRLF to LF.
+- Tyrano parser: .ks paths on extraction use correct separators (match the encoding-cache keys on injection).
+- Dead code removed: `_KAG_LIKE_NAMES`, `_TAG_ONLY_RE`.
 
-### Удалено
-- TyranoScript: вкладка «Переменные»/читы убрана — в играх Tyrano игровых переменных нет (только внутренний конфиг движка: громкость, галерея CG), читерить нечего.
+### Removed
+- TyranoScript: the "Variables"/cheats tab removed — Tyrano games have no game variables (only internal engine config: volume, CG gallery), nothing to cheat.
 
-### Под капотом (0.5.0)
-- Лицензия проекта сменена: MIT → GPL-3.0.
-- Документация: README разбит на русский (README.md) и английский (README.en.md), CHANGELOG актуализирован.
+### Under the hood (0.5.0)
+- Project license changed: MIT → GPL-3.0.
+- Docs: README split into Russian (README.md) and English (README.en.md), CHANGELOG updated.
 
 ## [0.2.0] — 2026-08-01
 
-Первая публичная версия. Стабильны ядра RPG Maker MV/MZ и Ren'Py, Twine — экспериментально.
+First public version. RPG Maker MV/MZ and Ren'Py cores are stable, Twine is experimental.
 
-### Добавлено
-- Ядро Ren'Py: извлечение текста из `.rpy`/`.rpyc` (диалоги, меню, translate-блоки), чтение `.rpa` архивов v1/v2/v3.
-- Ядро Ren'Py: живой перевод через Frida-инъекцию Python-агента, подмена шрифта (FontGroup), читы (переменные, золото, heal, teleport), автозапуск и автодетект процессов.
-- Ядро RPG Maker MV/MZ: пакетный перевод `www/data`, живой перевод через CDP, читы, редактор карт, редактор сейвов, просмотр ресурсов (`.png_`, `.rpgmvp`, аудио), патчинг шрифта.
-- Ядро Twine (SugarCube): извлечение/внедрение перевода, живой мост HTTP+WS, редактор сейвов (LZ-String).
-- Провайдеры перевода: Honyaku (офлайн, NLLB), Google Free, Bing, чередование Google+Bing с fallback, OpenAI-совместимый API.
-- Глоссарий, память переводов (SQLite), маскирование игровых кодов, AI-корректор.
-- GUI: тёмная тема, SVG-иконки, RU/EN локализация, системный трей, первый запуск с установкой языковых пакетов.
-- Сборка: PyInstaller + Inno Setup, версия в exe-ресурсах, единый источник версии `app/__init__.py`.
+### Added
+- Ren'Py core: text extraction from `.rpy`/`.rpyc` (dialogs, menus, translate blocks), `.rpa` archive reading v1/v2/v3.
+- Ren'Py core: live translation via Frida Python-agent injection, font replacement (FontGroup), cheats (variables, gold, heal, teleport), auto-launch and process auto-detection.
+- RPG Maker MV/MZ core: batch translation of `www/data`, live translation via CDP, cheats, map editor, save editor, resource viewer (`.png_`, `.rpgmvp`, audio), font patching.
+- Twine (SugarCube) core: translation extraction/injection, live HTTP+WS bridge, save editor (LZ-String).
+- Translation providers: Honyaku (offline, NLLB), Google Free, Bing, Google+Bing rotation with fallback, OpenAI-compatible API.
+- Glossary, translation memory (SQLite), game-code masking, AI corrector.
+- GUI: dark theme, SVG icons, RU/EN localization, system tray, first run with language pack installation.
+- Build: PyInstaller + Inno Setup, version in exe resources, single version source `app/__init__.py`.
 
-### Исправлено (ядро Ren'Py, 11 багов)
-- Frida: `get_usb_device` → `get_local_device`; `spawn` теперь вызывает `attach`; весь `exec_python` переписан через `Script`/RPC (`Session.evaluate` не существует в Frida).
-- Извлечение: `.rpyc` на диске теперь парсятся, добавлен regex диалогов `<speaker> "text"`, дедупликация строк.
-- Вкладка читов Ren'Py вместо ошибочной RPG Maker; автозапуск Ren'Py; детект процессов по `game/`+`lib/`; исправлен путь к шрифту; FontGroup-диапазоны без перекрытия.
+### Fixed (Ren'Py core, 11 bugs)
+- Frida: `get_usb_device` → `get_local_device`; `spawn` now calls `attach`; all `exec_python` rewritten via `Script`/RPC (`Session.evaluate` doesn't exist in Frida).
+- Extraction: `.rpyc` files on disk are now parsed, dialogue regex `<speaker> "text"` added, string deduplication.
+- Ren'Py cheats tab instead of the wrong RPG Maker one; Ren'Py auto-launch; process detection via `game/`+`lib/`; fixed the font path; FontGroup ranges without overlaps.
 
-### Под капотом (0.2.0)
-- Репозиторий подготовлен к публикации: `.gitignore`, README (RU/EN), CHANGELOG, CI (GitHub Actions), удалены дублирующиеся модули.
+### Under the hood (0.2.0)
+- Repository prepared for publication: `.gitignore`, README (RU/EN), CHANGELOG, CI (GitHub Actions), duplicate modules removed.
