@@ -75,7 +75,7 @@ def changelog_path() -> str:
 
 def _latest_md_section(md: str) -> str:
     """Возвращает самую свежую секцию '## [vX.Y.Z]' (Что нового)."""
-    sections = re.split(r"(?m)^#+ ", md)
+    sections = re.split(r"(?m)^## ", md)
     for s in sections[1:]:
         s = s.strip()
         if re.match(r"\[?v?\d+\.\d+", s):
