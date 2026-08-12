@@ -171,6 +171,9 @@ class _MapRenderThread(QThread):
             painter.scale(scale, scale)
         gl, ol = len(self._ground), len(self._overlay)
         for cy in range(h):
+            if self.isInterruptionRequested():
+                painter.end()
+                return
             row = cy * w
             for cx in range(w):
                 i = row + cx
@@ -183,6 +186,9 @@ class _MapRenderThread(QThread):
         if sl:
             half = t // 2
             for cy in range(h):
+                if self.isInterruptionRequested():
+                    painter.end()
+                    return
                 for cx in range(w):
                     i = cy * w + cx
                     if i >= sl or not self._shadow[i]:
@@ -194,6 +200,8 @@ class _MapRenderThread(QThread):
                             painter.fillRect(cx * t + qx, cy * t + qy,
                                              half, half, QColor(0, 0, 40, 90))
         painter.end()
+        if self.isInterruptionRequested():
+            return
         ev = QImage(bw, bh, QImage.Format_ARGB32_Premultiplied)
         ev.fill(Qt.transparent)
         painter = QPainter(ev)
@@ -255,6 +263,10 @@ class MapTab(QWidget):
         self._base_capped: bool = False
         self._loaded_game: str | None = None
         self._render_seq: int = 0
+        # живые ссылки на рендер-потоки: пока поток работает, держим
+        # wrapper в Python, иначе C++-объект удалится во время run() и Qt
+        # упадёт («QThread: Destroyed while thread is still running»)
+        self._render_threads: set = set()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -401,8 +413,22 @@ class MapTab(QWidget):
             list(self._tileset_names), w, h, ground, overlay, shadow,
             events, dict(self._pages_img), dict(self._char_img))
         th.result_ready.connect(self._on_render_done)
-        th.finished.connect(th.deleteLater)
+        th.finished.connect(lambda: self._on_thread_finished(th))
+        self._render_threads.add(th)
         th.start()
+
+    def _on_thread_finished(self, th):
+        self._render_threads.discard(th)
+        th.deleteLater()
+
+    def cleanup(self):
+        """Останавливает фоновые рендер-потоки (вызов при смене проекта/выходе)."""
+        for th in list(self._render_threads):
+            th.requestInterruption()
+        for th in list(self._render_threads):
+            if th.isRunning():
+                th.wait()   # run() выходит по isInterruptionRequested()
+        self._render_threads.clear()
 
     def _on_render_done(self, token, base, ev, pages, chars, capped):
         if token != self._render_seq or base is None:
