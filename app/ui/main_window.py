@@ -96,8 +96,12 @@ class MainWindow(QMainWindow):
         _migrate_qsettings(self.settings)
         _cleanup_legacy_settings(self.settings)
         set_language(self.settings.value("ui_lang", "en"))
-        self.setWindowTitle(f"{TR('app_title')}  v{app_paths.__version__}")
-        self.resize(1100, 750)
+        self._base_title = f"{TR('app_title')}  v{app_paths.__version__}"
+        self.setWindowTitle(self._base_title)
+        self.resize(1440, 900)
+        saved_geo = self.settings.value("window_geometry")
+        if saved_geo:
+            self.restoreGeometry(saved_geo)
         icon_path = app_paths.icon_path()
         if os.path.isfile(icon_path):
             self.setWindowIcon(QIcon(icon_path))
@@ -168,6 +172,9 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event):
         if getattr(self, "loading", None):
             self.loading.setGeometry(self.rect())
+        base = getattr(self, "_base_title", None)
+        if base:
+            self.setWindowTitle(f"{base} — {self.width()}×{self.height()}")
         super().resizeEvent(event)
 
     # ---------- трей ----------
@@ -580,6 +587,7 @@ class MainWindow(QMainWindow):
             self.tray.showMessage(TR("app_title"), TR("tray_minimized"),
                                   QSystemTrayIcon.MessageIcon.Information, 2000)
             return
+        self.settings.setValue("window_geometry", self.saveGeometry())
         self._stop_workers()
         self.stop_session(kill_game=True)
         self.save_project()

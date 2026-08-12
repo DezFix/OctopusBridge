@@ -688,7 +688,7 @@ class TranslateTab(QWidget):
 
         # left: sidebar
         left = QWidget()
-        left.setMinimumWidth(220)
+        left.setMinimumWidth(260)
         left_lay = QVBoxLayout(left)
         left_lay.setContentsMargins(10, 10, 8, 0)
         left_lay.setSpacing(8)
@@ -822,10 +822,11 @@ class TranslateTab(QWidget):
         self.progress = QProgressBar()
         self.progress.setVisible(False)
         self.lbl_status = QLabel("")
+        self.lbl_status.setWordWrap(True)
         self.lbl_status.setStyleSheet(
             f"color: {C_TEXT_SECONDARY}; background: transparent;")
         bottom.addWidget(self.progress, 1)
-        bottom.addWidget(self.lbl_status)
+        bottom.addWidget(self.lbl_status, 2)
         root.addLayout(bottom)
 
         # ── toast «Сохранено» ──
@@ -1278,6 +1279,8 @@ class TranslateTab(QWidget):
     def _finish_cancelled(self):
         done, total = self._last_progress
         self._finish_translate(TR("tr_cancelled", done=done, total=total))
+        self.main.save_project()
+        self._rebuild_file_list()
         self.fill_table()
         self.main.refresh_project_stats()
 
@@ -1303,6 +1306,8 @@ class TranslateTab(QWidget):
         if self._cancelling:
             return
         self._finish_translate()
+        self.main.save_project()
+        self._rebuild_file_list()
         self.fill_table()
         QMessageBox.critical(self, TR("err"), msg)
 

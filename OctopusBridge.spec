@@ -10,8 +10,8 @@ binaries, hiddenimports = [], []
 
 version_info = VSVersionInfo(
     ffi=FixedFileInfo(
-        filevers=(0, 5, 10, 0),
-        prodvers=(0, 5, 10, 0),
+        filevers=(0, 5, 11, 0),
+        prodvers=(0, 5, 11, 0),
         mask=0x3F,
         flags=0x0,
         OS=0x40004,
@@ -24,11 +24,11 @@ version_info = VSVersionInfo(
             StringTable('040904B0', [
                 StringStruct('CompanyName', 'OctopusBridge'),
                 StringStruct('FileDescription', 'OctopusBridge - game translation & modding tool'),
-                StringStruct('FileVersion', '0.5.10'),
+                StringStruct('FileVersion', '0.5.11'),
                 StringStruct('InternalName', 'OctopusBridge'),
-                StringStruct('OriginalFilename', 'OctopusBridge_v0.5.10.exe'),
+                StringStruct('OriginalFilename', 'OctopusBridge_v0.5.11.exe'),
                 StringStruct('ProductName', 'OctopusBridge'),
-                StringStruct('ProductVersion', '0.5.10'),
+                StringStruct('ProductVersion', '0.5.11'),
             ]),
         ]),
         VarFileInfo([VarStruct('Translation', [1033, 1200])]),
@@ -56,7 +56,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='OctopusBridge_v0.5.10.exe',
+    name='OctopusBridge_v0.5.11.exe',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
