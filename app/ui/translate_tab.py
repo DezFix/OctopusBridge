@@ -690,7 +690,7 @@ class TranslateTab(QWidget):
         left = QWidget()
         left.setMinimumWidth(260)
         left_lay = QVBoxLayout(left)
-        left_lay.setContentsMargins(10, 10, 8, 0)
+        left_lay.setContentsMargins(6, 10, 8, 0)
         left_lay.setSpacing(8)
 
         self.file_search = QLineEdit()

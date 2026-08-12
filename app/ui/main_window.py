@@ -98,7 +98,7 @@ class MainWindow(QMainWindow):
         set_language(self.settings.value("ui_lang", "en"))
         self._base_title = f"{TR('app_title')}  v{app_paths.__version__}"
         self.setWindowTitle(self._base_title)
-        self.resize(1440, 900)
+        self.resize(1390, 755)
         saved_geo = self.settings.value("window_geometry")
         if saved_geo:
             self.restoreGeometry(saved_geo)
