@@ -138,7 +138,7 @@ assert n == 2 and entries[0].translation == "ホ" \
 assert ce.calls == 1, "движок вызван только для настоящей строки"
 print("   OK")
 
-print("6) Google пакетами: один запрос на 32 строки, счётчик сохраняется...")
+print("6) Google: быстрый батч (translateHtml) — один запрос на пакет...")
 import app.core.translate.engines as engmod
 
 
@@ -155,87 +155,100 @@ class FakeResp:
         return self._data
 
 
-def google_fake_resp(q, sl, tl):
+def fake_fast_resp(texts):
+    return FakeResp([[f"RU:{t}" for t in texts], ["ja"] * len(texts)])
+
+
+def fake_join_resp(q, sl, tl):
     lines = q.split("\n")
     segs = [["RU:" + line + ("\n" if i < len(lines) - 1 else ""),
              line, None, None, None] for i, line in enumerate(lines)]
     return FakeResp([segs, None, sl, None, None, None, None])
 
 
+def patch_session(eng, post=None, get=None):
+    if post:
+        eng._session.post = post
+    if get:
+        eng._session.get = get
+
+
 eng = engmod.GoogleFreeEngine()
 calls = []
 
 
-def fake_get(url, params, timeout):
-    calls.append(params["q"])
-    return google_fake_resp(params["q"], params["sl"], params["tl"])
+def fake_post_fast(url, headers=None, data=None, timeout=30):
+    texts = json.loads(data)[0][0]
+    calls.append(texts)
+    return fake_fast_resp(texts)
 
 
-orig_get = engmod.requests.get
-engmod.requests.get = fake_get
+patch_session(eng, post=fake_post_fast)
 texts = [f"строка{i}" for i in range(70)]
 out = eng.translate(texts, "ja", "ru")
 assert len(out) == 70 and out == [f"RU:строка{i}" for i in range(70)], \
     (len(out), out[:3])
-assert len(calls) == 3, f"ожидалось 3 пакетных запроса (32+32+6), было {len(calls)}"
-assert all(len(q.split("\n")) in (32, 6) for q in calls)
-print("   OK: 70 строк ->", len(calls), "запроса по", end=" ")
-print(",".join(str(len(q.split("\n"))) for q in calls))
+assert len(calls) == 1, f"ожидался 1 запрос на 70 строк, было {len(calls)}"
+print("   OK: 70 строк -> 1 запрос по", len(calls[0]), "строк")
 
-print("7) Google: склейка строк -> построчный фолбэк, порядок цел...")
+print("7) Google: каскад — fast сбой/склейка -> склейка -> построчно...")
 calls.clear()
+
+
+def fake_post_fail(url, headers=None, data=None, timeout=30):
+    raise engmod.EngineError("fast endpoint down")
 
 
 def fake_get_merge(url, params, timeout):
     q = params["q"]
     if len(q.split("\n")) > 1 and len(calls) == 0:
-        # Google «склеил» две строки: в ответе на один \\n меньше
-        segs = [["RU:" + line + ("\n" if i < len(q.split("\n")) - 1 else ""),
+        # Google «склеил» строки: в ответе на один \\n меньше
+        lines = q.split("\n")
+        segs = [["RU:" + line + ("\n" if i < len(lines) - 1 else ""),
                  line, None, None, None]
-                for i, line in enumerate(q.split("\n")[:3] + q.split("\n")[6:])]
+                for i, line in enumerate(lines[:3] + lines[6:])]
         return FakeResp([segs, None, params["sl"], None, None, None, None])
-    return google_fake_resp(q, params["sl"], params["tl"])
+    return fake_join_resp(q, params["sl"], params["tl"])
 
 
-engmod.requests.get = fake_get_merge
+patch_session(eng, post=fake_post_fail, get=fake_get_merge)
 out = eng.translate([f"l{i}" for i in range(40)], "ja", "ru")
 assert len(out) == 40, (len(out), calls)
 assert out[:6] == [f"RU:l{i}" for i in range(6)], out[:6]
-print("   OK: порядок строк сохранён, фолбэк посегментно")
+print("   OK: fast недоступен -> склейка, склейка склеила -> построчно")
 
-print("8) Rotate: пакет уходит в Google, при сбое Google — построчный обход...")
+print("8) Rotate: пакет уходит в Google, при полном сбое Google — Bing...")
 calls.clear()
 
 
-def fake_get_rotate(url, params, timeout):
-    if len(params["q"].split("\n")) > 1:
-        raise engmod.EngineError("Google offline")
-    return google_fake_resp(params["q"], params["sl"], params["tl"])
+def fake_get_dead(url, params, timeout):
+    raise engmod.EngineError("Google offline")
 
 
-engmod.requests.get = fake_get_rotate
+patch_session(eng, post=fake_post_fail, get=fake_get_dead)
 orig_bing = engmod.BingEngine.translate
 engmod.BingEngine.translate = lambda self, texts, source, target, **kw: \
     ["RU:" + t for t in texts]
 rot = engmod.RotateEngine()
+rot._engines[0] = eng   # наш движок с фейковыми эндпоинтами
 out = rot.translate([f"s{i}" for i in range(12)], "ja", "ru")
 assert len(out) == 12 and out == [f"RU:s{i}" for i in range(12)], out[:3]
 engmod.BingEngine.translate = orig_bing
-engmod.requests.get = orig_get
 print("   OK: фолбэк работает, 12 строк возвращены")
 
 print("9) Google: 429/капча -> кулдаун, запросы не шлются...")
 calls.clear()
 
 
-def fake_get_rl(url, params, timeout):
+def fake_post_rl(url, headers=None, data=None, timeout=30):
     calls.append("x")
     return FakeResp(None, status_code=429,
                     url="https://www.google.com/sorry/index?continue=...")
 
 
-engmod.requests.get = fake_get_rl
+patch_session(eng, post=fake_post_rl, get=None)
 eng2 = engmod.GoogleFreeEngine()
+patch_session(eng2, post=fake_post_rl)
 try:
     eng2._translate_one("hi", "en", "ru")
     raise AssertionError("ожидался EngineError после 429")
@@ -249,7 +262,6 @@ try:
 except engmod.EngineError:
     pass
 assert len(calls) == 1, "во время кулдауна запросов быть не должно"
-engmod.requests.get = orig_get
 print("   OK: 429 -> кулдаун 60с, в кулдауне запросы не шлются")
 
 print()

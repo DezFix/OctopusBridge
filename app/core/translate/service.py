@@ -17,9 +17,11 @@ from .mask import (is_code_only, mask, split_edge_codes, tokens_present,
 from .memory import TranslationMemory
 
 # батчи для LLM ограничиваем по примерному числу токенов, а не только
-# по числу строк: длинные строки обрывают ответ модели
-TARGET_TOKENS = 600
-MAX_BATCH_LINES = 32
+# по числу строк: длинные строки обрывают ответ модели.
+# Пакеты крупнее = меньше запросов: Google отдаёт до 200 строк за раз,
+# LLM-движки режут батч сами.
+TARGET_TOKENS = 1500
+MAX_BATCH_LINES = 100
 
 
 def _estimate_tokens(text: str) -> int:

@@ -2,6 +2,7 @@
 """Движки машинного перевода: AI (LLM), Google Free, Bing, Rotate."""
 from __future__ import annotations
 
+import html
 import json
 import re
 import threading
@@ -170,13 +171,22 @@ class AIEngine(BaseEngine):
 
 
 class GoogleFreeEngine(BaseEngine):
-    """Google Translate — бесплатный неофициальный endpoint (без ключа).
+    """Google Translate — бесплатные неофициальные эндпоинты (без ключа).
 
-    Ускорение — пакетная отправка: строки пакета склеиваются в один
-    текст через \\n, ответ режется обратно по \\n (замер: ~4625 стр/мин
-    против ~71 по одной — десятки раз быстрее). Пакеты переводятся
-    параллельно (пул потоков). Если Google склеил строки и счётчик не
-    сошёлся — пакет переводится построчно, результат не теряется.
+    Каскад эндпоинтов (от быстрого к медленному):
+    1. translate-pa.googleapis.com/v1/translateHtml — тот же сервис, что
+       у расширения Google Translate: публичный ключ, один запрос на весь
+       пакет (каждая строка — отдельный элемент, БЕЗ \\n-склейки),
+       замер: ~90 мс на 50 строк, 277 мс на 200. Это основной путь.
+    2. translate.googleapis.com/translate_a/single — классический gtx:
+       строки пакета через \\n, ответ режется обратно (фолбэк для строк
+       с переводами строк — translateHtml их теряет — и при сбое №1).
+    3. translate.google.com/m — HTML-версия, щедрые лимиты (последний
+       фолбэк перед построчным обходом).
+
+    Соединение переиспользуется (requests.Session, keep-alive — раньше
+    каждый запрос делал новый TLS-рукопожатие). Пакеты переводятся
+    параллельно (пул потоков).
 
     Защита от rate-limit: при 429/капче (страница /sorry/) Google
     уходит в кулдаун — в течение кулдауна запросы не шлются вовсе
@@ -184,12 +194,22 @@ class GoogleFreeEngine(BaseEngine):
     """
 
     name = "google_free"
-    URL = "https://translate.googleapis.com/translate_a/single"
-    WORKERS = 2
-    BATCH_LINES = 32
+    URL_SINGLE = "https://translate.googleapis.com/translate_a/single"
+    URL_FAST = "https://translate-pa.googleapis.com/v1/translateHtml"
+    URL_M = "https://translate.google.com/m"
+    FAST_KEY = "AIzaSyATBXajvzQLTDHEQbcpq0Ihe0vWDHmO520"
+    WORKERS = 4
+    BATCH_LINES = 100
+    _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+           "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
     def __init__(self):
         self._ratelimit_until = 0.0
+        self._session = requests.Session()
+        self._session.headers.update({
+            "User-Agent": self._UA,
+            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+        })
 
     def _rate_limited(self) -> bool:
         return time.time() < self._ratelimit_until
@@ -204,39 +224,53 @@ class GoogleFreeEngine(BaseEngine):
 
     def ping(self) -> bool:
         try:
-            requests.get(self.URL, params={"client": "gtx", "sl": "en",
-                                           "tl": "ru", "dt": "t", "q": "hi"},
-                         timeout=5)
+            self._session.get(self.URL_SINGLE,
+                              params={"client": "gtx", "sl": "en",
+                                      "tl": "ru", "dt": "t", "q": "hi"},
+                              timeout=5)
             return True
         except requests.RequestException:
             return False
 
-    def _translate_one(self, text: str, src: str, target: str) -> str:
-        last_err = None
-        for attempt in range(3):
-            if self._rate_limited():
-                raise EngineError("Google: rate-limit кулдаун")
-            try:
-                r = requests.get(self.URL, params={
-                    "client": "gtx", "sl": src, "tl": target,
-                    "dt": "t", "q": text}, timeout=30)
-                if self._is_rate_limit(r):
-                    self._mark_rate_limited()
-                    raise requests.HTTPError(f"rate limit ({r.status_code})")
-                r.raise_for_status()
-                data = r.json()
-                return "".join(seg[0] for seg in data[0] if seg[0])
-            except (requests.RequestException, ValueError, TypeError,
-                    KeyError, IndexError) as e:
-                last_err = e
-                if attempt < 2:
-                    time.sleep(6.0 * (attempt + 1) if self._rate_limited()
-                               else 1.0 * (attempt + 1))
-        raise EngineError(
-            f"Google Translate unavailable: {last_err}") from last_err
+    # ── 1. translateHtml: быстрый батч (без \n-склейки) ──
+    def _translate_fast(self, texts: list[str], src: str, target: str
+                        ) -> list[str]:
+        """Один запрос на весь пакет. Только для строк без переводов
+        строк (translateHtml их теряет). Кидает EngineError при сбое."""
+        if self._rate_limited():
+            raise EngineError("Google: rate-limit кулдаун")
+        try:
+            r = self._session.post(
+                self.URL_FAST,
+                headers={"X-Goog-API-Key": self.FAST_KEY,
+                         "Content-Type": "application/json+protobuf"},
+                data=json.dumps([[texts, "auto", target], "wt_lib"],
+                                ensure_ascii=False),
+                timeout=30)
+        except requests.RequestException as e:
+            raise EngineError(f"Google fast unavailable: {e}") from e
+        if r.status_code == 429 or "sorry" in getattr(r, "url", ""):
+            self._mark_rate_limited()
+            raise EngineError(f"rate limit ({r.status_code})")
+        # 403/404 = ключ отозван/недоступен — без кулдауна, уходим на
+        # классический эндпоинт, он живёт без ключа
+        if r.status_code in (403, 404):
+            raise EngineError(f"fast endpoint {r.status_code}")
+        try:
+            r.raise_for_status()
+            data = r.json()
+            out = [html.unescape(str(t)) for t in data[0]]
+        except (requests.RequestException, ValueError, TypeError,
+                KeyError, IndexError) as e:
+            raise EngineError(f"fast response: {e}") from e
+        if len(out) != len(texts):
+            raise EngineError(f"fast response length {len(out)}")
+        return out
 
-    def _translate_batch(self, texts: list[str], src: str, target: str) -> list[str]:
-        """Один запрос на весь пакет: строки через \\n, ответ режется обратно.
+    # ── 2. классический gtx: пакет через \n ──
+    def _translate_batch_join(self, texts: list[str], src: str,
+                              target: str) -> list[str]:
+        """Один запрос на пакет: строки через \\n, ответ режется обратно.
 
         Если Google склеил строки и число сегментов не совпало — пакет
         переводится построчно (замедленно, но без потери результата).
@@ -246,7 +280,7 @@ class GoogleFreeEngine(BaseEngine):
             if self._rate_limited():
                 raise EngineError("Google: rate-limit кулдаун")
             try:
-                r = requests.get(self.URL, params={
+                r = self._session.get(self.URL_SINGLE, params={
                     "client": "gtx", "sl": src, "tl": target,
                     "dt": "t", "q": q}, timeout=30)
                 if self._is_rate_limit(r):
@@ -266,6 +300,76 @@ class GoogleFreeEngine(BaseEngine):
                                else 1.0 * (attempt + 1))
         return [self._translate_one(t, src, target) for t in texts]
 
+    # ── 3. translate.google.com/m: HTML-фолбэк ──
+    def _translate_m(self, text: str, src: str, target: str) -> str:
+        """Старая мобильная HTML-версия — щедрые лимиты, последний
+        фолбэк перед построчным обходом. Только без переводов строк."""
+        if self._rate_limited():
+            raise EngineError("Google: rate-limit кулдаун")
+        try:
+            r = self._session.get(self.URL_M, params={
+                "sl": src, "tl": target, "q": text}, timeout=30)
+            if self._is_rate_limit(r):
+                self._mark_rate_limited()
+                raise requests.HTTPError(f"rate limit ({r.status_code})")
+            r.raise_for_status()
+            m = re.search(r'class="(?:result-container|tlid-translation)">'
+                          r'(.*?)</div>', r.text)
+            if not m:
+                raise ValueError("result container not found")
+            return re.sub(r"<[^>]+>", "", m.group(1))
+        except (requests.RequestException, ValueError) as e:
+            raise EngineError(f"Google m unavailable: {e}") from e
+
+    def _translate_one(self, text: str, src: str, target: str) -> str:
+        # быстрый одиночный запрос (только без переводов строк)
+        if "\n" not in text:
+            try:
+                return self._translate_fast([text], src, target)[0]
+            except EngineError:
+                pass
+        last_err = None
+        for attempt in range(3):
+            if self._rate_limited():
+                raise EngineError("Google: rate-limit кулдаун")
+            try:
+                r = self._session.get(self.URL_SINGLE, params={
+                    "client": "gtx", "sl": src, "tl": target,
+                    "dt": "t", "q": text}, timeout=30)
+                if self._is_rate_limit(r):
+                    self._mark_rate_limited()
+                    raise requests.HTTPError(f"rate limit ({r.status_code})")
+                r.raise_for_status()
+                data = r.json()
+                return "".join(seg[0] for seg in data[0] if seg[0])
+            except (requests.RequestException, ValueError, TypeError,
+                    KeyError, IndexError) as e:
+                last_err = e
+                if attempt < 2:
+                    time.sleep(6.0 * (attempt + 1) if self._rate_limited()
+                               else 1.0 * (attempt + 1))
+        try:
+            return self._translate_m(text, src, target)
+        except EngineError:
+            pass
+        raise EngineError(
+            f"Google Translate unavailable: {last_err}") from last_err
+
+    def _translate_chunk(self, texts: list[str], src: str,
+                         target: str) -> list[str]:
+        """Один пакет: быстрый батч → склейка → построчно."""
+        simple = all("\n" not in t for t in texts)
+        if simple:
+            try:
+                return self._translate_fast(texts, src, target)
+            except EngineError:
+                pass
+        try:
+            return self._translate_batch_join(texts, src, target)
+        except EngineError:
+            pass
+        return [self._translate_one(t, src, target) for t in texts]
+
     def translate(self, texts: list[str], source: str, target: str,
                   context_before: list[str] | None = None,
                   context_after: list[str] | None = None) -> list[str]:
@@ -278,7 +382,7 @@ class GoogleFreeEngine(BaseEngine):
                   for i in range(0, len(texts), self.BATCH_LINES)]
         results: list[list[str] | None] = [None] * len(chunks)
         with ThreadPoolExecutor(max_workers=min(self.WORKERS, len(chunks))) as ex:
-            futures = {ex.submit(self._translate_batch, c, src, target): i
+            futures = {ex.submit(self._translate_chunk, c, src, target): i
                        for i, c in enumerate(chunks)}
             for f in as_completed(futures):
                 results[futures[f]] = f.result()
