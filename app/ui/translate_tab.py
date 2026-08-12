@@ -825,8 +825,13 @@ class TranslateTab(QWidget):
         self.lbl_status.setWordWrap(True)
         self.lbl_status.setStyleSheet(
             f"color: {C_TEXT_SECONDARY}; background: transparent;")
+        self.lbl_win_size = QLabel("")
+        self.lbl_win_size.setStyleSheet(
+            f"color: {C_TEXT_SECONDARY}; background: transparent;"
+            "font-size: 10.5px;")
         bottom.addWidget(self.progress, 1)
         bottom.addWidget(self.lbl_status, 2)
+        bottom.addWidget(self.lbl_win_size, 0)
         root.addLayout(bottom)
 
         # ── toast «Сохранено» ──
@@ -858,6 +863,9 @@ class TranslateTab(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        w = self.window()
+        if w is not None:
+            self.lbl_win_size.setText(f"{w.width()}×{w.height()}")
         if self.toast.isVisible():
             self._place_toast()
 

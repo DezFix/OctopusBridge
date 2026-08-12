@@ -172,9 +172,6 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event):
         if getattr(self, "loading", None):
             self.loading.setGeometry(self.rect())
-        base = getattr(self, "_base_title", None)
-        if base:
-            self.setWindowTitle(f"{base} — {self.width()}×{self.height()}")
         super().resizeEvent(event)
 
     # ---------- трей ----------
