@@ -1,4 +1,4 @@
-Support the project — [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/k_k)
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/k_k)
 
 # OctopusBridge
 
@@ -6,7 +6,7 @@ Translate and mod PC games. Supported: **RPG Maker MV/MZ** (including Electron b
 
 Translation is **batch-based**: text is extracted from the game files, translated and written back before the game is launched.
 
-Version: **0.6.1** · [Русская версия](README.md)
+Version:  [Русская версия](README.md)
 
 ## Features
 
@@ -48,7 +48,6 @@ Version: **0.6.1** · [Русская версия](README.md)
 ## Notes
 
 - Google/Bing are unofficial free endpoints — no keys, but may be rate-limited. For heavy workloads connect an AI provider in the settings.
-- There is no live (per-line) translation in-game: translation is done before launching the game — faster startup, no in-game freezes.
 - Injection modifies the game process in memory; use the tool only on games you own or are allowed to mod.
 - Version history: [CHANGELOG.md](CHANGELOG.md).
 
