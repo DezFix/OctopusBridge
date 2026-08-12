@@ -49,7 +49,7 @@ Version:  [Русская версия](README.md)
 
 - Google/Bing are unofficial free endpoints — no keys, but may be rate-limited. For heavy workloads connect an AI provider in the settings.
 - Injection modifies the game process in memory; use the tool only on games you own or are allowed to mod.
-- Version history: [CHANGELOG.md](CHANGELOG.md).
+- Version history — [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
