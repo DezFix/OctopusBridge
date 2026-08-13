@@ -210,6 +210,14 @@ _STRINGS = {
         "ru": "\nСтрок на целевом языке (не требуют перевода): {skipped}",
         "en": "\nLines already in target language (skipped): {skipped}",
     },
+    "tr_file_target_lang": {
+        "ru": "на целевом языке",
+        "en": "in target language",
+    },
+    "tr_file_target_lang_hint": {
+        "ru": "Файл не требует перевода: текст уже на целевом языке.",
+        "en": "No translation needed: the text is already in the target language.",
+    },
     "tr_cancelling": {"ru": "Отмена…", "en": "Cancelling…"},
     "tr_cancelled": {
         "ru": "Отменено: переведено {done} из {total} строк (перевод сохранён в проекте — его можно доработать или применить)",

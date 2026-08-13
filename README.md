@@ -1,14 +1,24 @@
-[![License](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](./LICENSE)
-[![Ko-fi](https://img.shields.io/badge/Ko--fi-support-F16061?logo=ko-fi&logoColor=white)](https://ko-fi.com/k_k)
-[![Release](https://img.shields.io/github/v/release/DezFix/OctopusBridge?color=blue)](https://github.com/DezFix/OctopusBridge/releases)
+<p align="center">
+  <img src="ico.ico" width="96" alt="OctopusBridge" />
+</p>
 
-# OctopusBridge
+<h1 align="center">OctopusBridge</h1>
 
-Перевод и модификация игр на ПК. Поддерживаются **RPG Maker MV/MZ** (включая Electron-сборки), **Ren'Py**, **Twine** и **TyranoScript**.
+<p align="center">
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0-blue.svg" alt="License"></a>
+  <a href="https://ko-fi.com/k_k"><img src="https://img.shields.io/badge/Ko--fi-support-F16061?logo=ko-fi&logoColor=white" alt="Ko-fi"></a>
+  <a href="https://github.com/DezFix/OctopusBridge/releases"><img src="https://img.shields.io/github/v/release/DezFix/OctopusBridge?color=blue" alt="Release"></a>
+</p>
 
-Перевод **пакетный**: текст извлекается из файлов игры, переводится и внедряется обратно до запуска игры.
+<p align="center">
+  Перевод и модификация игр на ПК.<br>
+  Поддерживаются <b>RPG Maker MV/MZ</b> (включая Electron-сборки), <b>Ren'Py</b>, <b>Twine</b> и <b>TyranoScript</b>.<br>
+  Перевод <b>пакетный</b>: текст извлекается из файлов игры, переводится и внедряется обратно до запуска игры.
+</p>
 
-Версия:  [English](README.en.md)
+<p align="center">
+  <a href="README.en.md">English</a>
+</p>
 
 ## Возможности
 

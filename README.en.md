@@ -1,14 +1,24 @@
-[![License](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](./LICENSE)
-[![Ko-fi](https://img.shields.io/badge/Ko--fi-support-F16061?logo=ko-fi&logoColor=white)](https://ko-fi.com/k_k)
-[![Release](https://img.shields.io/github/v/release/DezFix/OctopusBridge?color=blue)](https://github.com/DezFix/OctopusBridge/releases)
+<p align="center">
+  <img src="ico.ico" width="96" alt="OctopusBridge" />
+</p>
 
-# OctopusBridge
+<h1 align="center">OctopusBridge</h1>
 
-Translate and mod PC games. Supported: **RPG Maker MV/MZ** (including Electron builds), **Ren'Py**, **Twine** and **TyranoScript**.
+<p align="center">
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0-blue.svg" alt="License"></a>
+  <a href="https://ko-fi.com/k_k"><img src="https://img.shields.io/badge/Ko--fi-support-F16061?logo=ko-fi&logoColor=white" alt="Ko-fi"></a>
+  <a href="https://github.com/DezFix/OctopusBridge/releases"><img src="https://img.shields.io/github/v/release/DezFix/OctopusBridge?color=blue" alt="Release"></a>
+</p>
 
-Translation is **batch-based**: text is extracted from the game files, translated and written back before the game is launched.
+<p align="center">
+  Translate and mod PC games.<br>
+  Supported: <b>RPG Maker MV/MZ</b> (including Electron builds), <b>Ren'Py</b>, <b>Twine</b> and <b>TyranoScript</b>.<br>
+  Translation is <b>batch-based</b>: text is extracted from the game files, translated and written back before the game is launched.
+</p>
 
-Version:  [Русская версия](README.md)
+<p align="center">
+  <a href="README.md">Русская версия</a>
+</p>
 
 ## Features
 
@@ -32,26 +42,26 @@ Version:  [Русская версия](README.md)
 
 ## Requirements
 
-- Windows 10/11 (x64).
-- ~500 MB disk.
+- Windows 10/11 (64-bit).
+- ~500 MB of disk space.
 
-## Install
+## Installation
 
 1. Download `OctopusBridge.exe` from the releases and run it.
 
-> The EXE is unsigned — Windows SmartScreen may warn («More info → Run anyway»).
+> The EXE is unsigned — Windows SmartScreen may show a warning («More info → Run anyway»).
 
 ## Quick start
 
-1. **Open a game** — drag the game folder or `Game.exe` into the app window (or into the Projects tab list).
-2. **Translate** — the Translate tab: extract the text, press Translate, then Apply to write the translation into the game.
-3. **Cheats / maps / saves** — appear in the engine tabs after a project is opened: cheats and maps work with the running game, the save editor works directly on save files.
+1. **Open a game** — drag the game folder or `Game.exe` into the app window (or into the list on the "Projects" tab).
+2. **Translate** — "File translation" tab: extract the text, press "Translate", then "Apply" to write the translation back into the game.
+3. **Cheats / maps / saves** — appear in the engine tabs after opening a project: cheats and maps work with a running game, the save editor works with files directly.
 
 ## Notes
 
-- Google/Bing are unofficial free endpoints — no keys, but may be rate-limited. For heavy workloads connect an AI provider in the settings.
-- Injection modifies the game process in memory; use the tool only on games you own or are allowed to mod.
-- Version history — [CHANGELOG.md](CHANGELOG.md).
+- Google/Bing are unofficial free endpoints: no keys, but they may limit volume. For big projects, connect an AI provider in the settings.
+- Injections modify the game process in memory — use the tool only on games you own or are allowed to modify.
+- Changelog — [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

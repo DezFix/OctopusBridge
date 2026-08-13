@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (QAbstractItemDelegate, QAbstractItemView,
                                QVBoxLayout, QWidget)
 
 from app.core.models import TranslationEntry
+from app.core.translate.detect import detect_lang
 from app.core.translate.service import Translator
 from app.ui.i18n import TR, engine_hint
 from app.ui.icons import icon
@@ -354,10 +355,12 @@ class _FileItem(QFrame):
     """
 
     def __init__(self, fname: str, total: int, done: int,
-                 all_item: bool = False, parent=None):
+                 all_item: bool = False, target_lang: bool = False,
+                 parent=None):
         super().__init__(parent)
         self.setObjectName("file_item")
         self.fname = fname
+        self._tl = target_lang
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedHeight(52)
         self.setMinimumWidth(0)
@@ -390,6 +393,19 @@ class _FileItem(QFrame):
         self.bar.setMinimumWidth(0)
         lay.addWidget(self.bar)
 
+        self.tag = QLabel("")
+        self.tag.setStyleSheet(
+            f"color: {C_PILL_DRAFT}; background: transparent;"
+            "font-size: 10.5px;")
+        self.tag.setVisible(False)
+        lay.addWidget(self.tag)
+
+        if target_lang:
+            self.bar.setVisible(False)
+            self.tag.setText(TR("tr_file_target_lang"))
+            self.tag.setVisible(True)
+            self.count.setText("")
+            self.setToolTip(TR("tr_file_target_lang_hint"))
         self.update_counts(done, total)
 
     def update_counts(self, done: int, total: int):
@@ -405,12 +421,13 @@ class _FileItem(QFrame):
         self.bar.setProperty("fillstate", state)
         self.bar.style().unpolish(self.bar)
         self.bar.style().polish(self.bar)
-        self.count.setText(f"{done}/{total}")
-        self.count.setStyleSheet(
-            ("color: #39c98f;" if pct == 100 else
-             f"color: {C_PILL_EMPTY_FG};")
-            + " background: transparent; font-size: 10.5px;")
-        self.setToolTip(f"{done}/{total} ({pct}%)")
+        if not self._tl:
+            self.count.setText(f"{done}/{total}")
+            self.count.setStyleSheet(
+                ("color: #39c98f;" if pct == 100 else
+                 f"color: {C_PILL_EMPTY_FG};")
+                + " background: transparent; font-size: 10.5px;")
+            self.setToolTip(f"{done}/{total} ({pct}%)")
 
     def set_active(self, active: bool):
         self.setProperty("active", active)
@@ -578,6 +595,21 @@ def _entry_matches(q: str, e: TranslationEntry) -> bool:
     """Поиск по строке: имя/оригинал/перевод (без учёта регистра)."""
     return (q in (e.original or "").lower()
             or q in (e.translation or "").lower())
+
+
+def _file_is_target_lang(fe: list[TranslationEntry], tgt: str) -> bool:
+    """Файл целиком на целевом языке — перевод ему не нужен.
+
+    Проверяем выборку строк (до 40): если все распознанные языки
+    совпадают с целевым — файл отделяется в конец списка с меткой.
+    """
+    texts = [e.original for e in fe if e.original.strip()]
+    if not texts:
+        return False
+    known = [l for l in (detect_lang(t) for t in texts[:40]) if l]
+    if not known:
+        return False
+    return all(l == tgt for l in known)
 
 
 def _ctx_short(ctx: str) -> str:
@@ -978,6 +1010,9 @@ class TranslateTab(QWidget):
         self._file_list_lay.insertWidget(0, all_item)
         self._file_items.append(all_item)
 
+        # файлы на целевом языке (не требуют перевода) — в конец списка
+        tgt = p.target_lang
+        groups = {"": [], "tl": []}
         for fname in sorted(by_file):
             if q:
                 if q in fname.lower():
@@ -985,13 +1020,19 @@ class TranslateTab(QWidget):
                 elif not any(_entry_matches(q, e) for e in by_file[fname]):
                     continue  # ни имя, ни строки не совпали
             fe = by_file[fname]
-            total = len(fe)
-            done = sum(1 for e in fe
-                       if e.translation.strip() and e.status != "skip")
-            item = _FileItem(fname, total, done)
-            item.clicked.connect(lambda _, f=fname: self._select_file(f))
-            self._file_list_lay.insertWidget(len(self._file_items), item)
-            self._file_items.append(item)
+            groups["tl" if _file_is_target_lang(fe, tgt) else ""].append(
+                (fname, fe))
+        for key in ("", "tl"):
+            for fname, fe in groups[key]:
+                total = len(fe)
+                done = sum(1 for e in fe
+                           if e.translation.strip() and e.status != "skip")
+                item = _FileItem(fname, total, done,
+                                 target_lang=(key == "tl"))
+                item.clicked.connect(
+                    lambda _, f=fname: self._select_file(f))
+                self._file_list_lay.insertWidget(len(self._file_items), item)
+                self._file_items.append(item)
 
         self._highlight_file()
         self._update_stats()
