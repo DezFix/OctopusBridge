@@ -109,7 +109,7 @@ with tempfile.TemporaryDirectory() as td:
     assert langs == ["english", "french"], langs
     base = {e.original for e in renpy.extract(td)}
     assert "Привет, я ведьма." in base
-    assert "Hello, witch." not in base and "Bonjour, sorcière." not in base
+    assert "Hello, witch." in base and "Bonjour, sorcière." in base
     en = {e.original for e in renpy.extract(td, "english")}
     assert "Hello, witch." in en and "Bonjour, sorcière." not in en, en
     fr = {e.original for e in renpy.extract(td, "french")}

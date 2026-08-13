@@ -95,7 +95,7 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("OctopusBridge", "OctopusBridge")
         _migrate_qsettings(self.settings)
         _cleanup_legacy_settings(self.settings)
-        set_language(self.settings.value("ui_lang", "en"))
+        set_language(self.settings.value("ui_lang", "ru"))
         self._base_title = f"{TR('app_title')}  v{app_paths.__version__}"
         self.setWindowTitle(self._base_title)
         self.resize(1390, 755)

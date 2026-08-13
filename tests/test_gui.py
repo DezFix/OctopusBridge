@@ -167,8 +167,43 @@ for key in ("settings_corr_tab", "settings_glossary_box",
             "glossary_search", "glossary_count", "glossary_lang_ja",
             "update_title", "update_found", "update_open_release",
             "tr_translate_done", "tr_translate_done_skipped",
-            "tr_file_target_lang", "tr_file_target_lang_hint"):
+            "tr_file_target_lang", "tr_file_target_lang_hint",
+            "tr_translate_lang", "tr_lang_all", "tr_lang_dialog_title",
+            "tr_lang_dialog_question", "tr_lang_dialog_remember",
+            "tr_lang_applied", "cheat_box_battle", "cheat_box_movement",
+            "cheat_kind_all", "cheat_kind_items", "cheat_kind_weapons",
+            "cheat_kind_armor", "tbl_col_idx", "tbl_col_id", "tbl_col_name",
+            "tbl_col_value", "tbl_col_type", "tbl_col_count", "tbl_col_on",
+            "party_col_class", "party_col_level", "party_col_hp",
+            "party_col_mp", "party_col_exp", "party_col_inparty",
+            "sv_search_ph", "sv_open_title", "sv_params", "sv_unsaved",
+            "sv_save_err", "settings_status_ping",
+            "cheat_names_translating"):
     assert TR(key), key
+print("   OK")
+
+print("8) Ren'Py: выбор языка перевода (tl/*)...")
+from app.ui.translate_tab import _LanguageChoiceDialog
+with tempfile.TemporaryDirectory() as td:
+    make_renpy(td)
+    tl = os.path.join(td, "game", "tl")
+    for lang in ("english", "french"):
+        os.makedirs(os.path.join(tl, lang), exist_ok=True)
+        with open(os.path.join(tl, lang, "adv.rpy"), "w",
+                  encoding="utf-8") as f:
+            f.write('translate %s strings:\n    old "Hello."\n    new "Hi."\n'
+                    % lang)
+    assert w.open_project(td) == "renpy"
+    assert w.translate_tab._lang_options() == ["english", "french"]
+    w.project.extract_lang = "english"
+    w.project.lang_asked = True
+    w.translate_tab._refresh_lang_menu()
+    assert w.translate_tab._lang_actions[None].isChecked() is False
+    assert w.translate_tab._lang_actions["english"].isChecked()
+    dlg = _LanguageChoiceDialog(["english", "french"], w)
+    assert dlg.choice() is None  # по умолчанию — весь текст
+    dlg._radio_lang["french"].setChecked(True)
+    assert dlg.choice() == "french"
 print("   OK")
 
 w.close()

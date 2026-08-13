@@ -89,13 +89,14 @@ class SaveEditorTab(QWidget):
         search_bar = QHBoxLayout()
         search_bar.addWidget(QLabel(TR("cheat_item_search")))
         self.var_search = QLineEdit()
-        self.var_search.setPlaceholderText("имя или значение…")
+        self.var_search.setPlaceholderText(TR("sv_search_ph"))
         self.var_search.textChanged.connect(self._fill_vars)
         search_bar.addWidget(self.var_search, 1)
         t_lay.addLayout(search_bar)
 
         self.vars_table = QTableWidget(0, 3)
-        self.vars_table.setHorizontalHeaderLabels(["#", "Переменная", "Значение"])
+        self.vars_table.setHorizontalHeaderLabels(
+            ["#", TR("rpy_var_name"), TR("rpy_var_value")])
         self.vars_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.vars_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.vars_table.itemChanged.connect(self._on_var_edit)
@@ -135,7 +136,7 @@ class SaveEditorTab(QWidget):
         if self.main.project:
             start = self.main.project.game_dir
         path, _ = QFileDialog.getOpenFileName(
-            self, "Выберите .save", start,
+            self, TR("sv_open_title"), start,
             "Save files (*.save);;All files (*)")
         if path:
             self._load_save(path)
@@ -145,7 +146,7 @@ class SaveEditorTab(QWidget):
         try:
             data = savefile.load_save(path)
         except (ValueError, OSError) as e:
-            QMessageBox.warning(self, "Ошибка", str(e))
+            QMessageBox.warning(self, TR("err"), str(e))
             return
 
         self._save_path = path
@@ -160,7 +161,7 @@ class SaveEditorTab(QWidget):
         self.btn_save.setEnabled(True)
         self.stack.setCurrentIndex(1)
         self.lbl_status.setText(
-            f"{os.path.basename(path)} — {len(self._vars)} параметров")
+            TR("sv_params", name=os.path.basename(path), n=len(self._vars)))
 
     # ── таблица ──
     def _fill_vars(self):
@@ -218,7 +219,8 @@ class SaveEditorTab(QWidget):
             except (ValueError, TypeError):
                 self._revert_cell(item, old)
                 return
-        self.lbl_status.setText(f"{name} = {var['value']!r} (не сохранено)")
+        self.lbl_status.setText(
+            TR("sv_unsaved", name=name, value=var["value"]))
 
     def _revert_cell(self, item, old):
         self._loading = True
@@ -243,4 +245,4 @@ class SaveEditorTab(QWidget):
                 TR("save_saved", name=os.path.basename(self._save_path),
                    n=len(updates)))
         except (ValueError, OSError) as e:
-            QMessageBox.warning(self, "Ошибка сохранения", str(e))
+            QMessageBox.warning(self, TR("sv_save_err"), str(e))

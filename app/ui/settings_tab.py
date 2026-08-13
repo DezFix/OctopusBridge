@@ -2,12 +2,14 @@
 """Диалог настроек: три вкладки — Основные, Файлы, AI-корректор."""
 from __future__ import annotations
 
+from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFormLayout,
                                 QGroupBox, QHBoxLayout, QLabel, QLineEdit,
                                 QPushButton, QTabWidget, QVBoxLayout, QWidget)
 
 from app.core.translate.engines import PROVIDERS, AI_PROVIDERS
 from app.ui.i18n import TR, provider_name
+from app.ui.loading_overlay import BusyLabel
 
 PRESETS = {
     "OpenRouter": "https://openrouter.ai/api/v1",
@@ -16,6 +18,22 @@ PRESETS = {
     "LM Studio": "http://localhost:1234/v1",
     "Ollama": "http://localhost:11434/v1",
 }
+
+
+class PingWorker(QThread):
+    done = Signal(bool)
+
+    def __init__(self, engine):
+        super().__init__()
+        self.setObjectName("PingWorker")
+        self.engine = engine
+
+    def run(self):
+        try:
+            ok = self.engine.ping()
+        except Exception:  # noqa: BLE001
+            ok = False
+        self.done.emit(ok)
 
 
 class SettingsDialog(QDialog):
@@ -28,6 +46,7 @@ class SettingsDialog(QDialog):
         self.setMinimumWidth(650)
         self.setMinimumHeight(520)
         lay = QVBoxLayout(self)
+        self._ping_workers: dict[str, PingWorker] = {}
 
         tabs = QTabWidget()
         self.tabs = tabs
@@ -91,7 +110,9 @@ class SettingsDialog(QDialog):
 
         btn_row = QHBoxLayout()
         btn_ping = QPushButton(TR("settings_check"))
+        busy = BusyLabel(box, size=12)
         btn_row.addWidget(btn_ping)
+        btn_row.addWidget(busy)
         btn_row.addStretch(1)
         form.addRow(btn_row)
 
@@ -102,7 +123,7 @@ class SettingsDialog(QDialog):
         box._eng = {
             "engine": combo, "base_url": base_url, "api_key": api_key, "model": model,
             "preset_row": preset_row, "preset_buttons": preset_buttons,
-            "btn_ping": btn_ping,
+            "btn_ping": btn_ping, "busy": busy,
             "lbl_status": lbl_status, "form": form,
         }
         return box
@@ -131,7 +152,7 @@ class SettingsDialog(QDialog):
         ui_form = QFormLayout(ui_box)
         self.ui_lang = QComboBox()
         self.ui_lang.addItems(["Русский", "English"])
-        self.ui_lang.setCurrentIndex(0 if s.value("ui_lang", "en") == "ru" else 1)
+        self.ui_lang.setCurrentIndex(0 if s.value("ui_lang", "ru") == "ru" else 1)
         ui_form.addRow(TR("settings_ui_lang"), self.ui_lang)
         lay.addWidget(ui_box)
 
@@ -281,13 +302,27 @@ class SettingsDialog(QDialog):
     def _ping(self, prefix: str):
         eng = {"files": self.files_eng,
                "corrector": self.corr_eng}.get(prefix, self.files_eng)
+        w = self._ping_workers.get(prefix)
+        if w and w.isRunning():
+            return
         engine = self.main.create_engine(prefix)
         if engine is None:
             eng["lbl_status"].setText(TR("settings_status_fail"))
             return
-        ok = engine.ping()
+        eng["btn_ping"].setEnabled(False)
+        eng["busy"].start(TR("settings_status_ping"))
+        w = PingWorker(engine)
+        self._ping_workers[prefix] = w
+        w.done.connect(
+            lambda ok, e=eng, p=prefix: self._ping_done(p, e, ok))
+        w.start()
+
+    def _ping_done(self, prefix: str, eng: dict, ok: bool):
+        eng["btn_ping"].setEnabled(True)
+        eng["busy"].stop()
         eng["lbl_status"].setText(
             TR("settings_status_ready") if ok else TR("settings_status_fail"))
+        self._ping_workers.pop(prefix, None)
 
     # ── Save & close ──
     def _save_engine(self, eng: dict, engine_key: str, prefix: str):
@@ -309,7 +344,7 @@ class SettingsDialog(QDialog):
         s.setValue("file_overwrite_mode", self.overwrite_mode.currentIndex())
         s.setValue("auto_backup", self.auto_backup.isChecked())
         s.setValue("glossary_use_ai", self.glossary_use_ai.isChecked())
-        old_lang = s.value("ui_lang", "en")
+        old_lang = s.value("ui_lang", "ru")
         new_lang = "ru" if self.ui_lang.currentIndex() == 0 else "en"
         s.setValue("ui_lang", new_lang)
         if new_lang != old_lang:
@@ -319,3 +354,9 @@ class SettingsDialog(QDialog):
         if hasattr(self.main, "refresh_status_bar"):
             self.main.refresh_status_bar()
         self.accept()
+
+    def closeEvent(self, event):
+        for w in self._ping_workers.values():
+            if w.isRunning():
+                w.wait(5000)
+        super().closeEvent(event)

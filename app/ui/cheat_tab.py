@@ -24,6 +24,7 @@ from app.core.rpgmaker.varnames import (extract_names,
                                         extract_state_names)
 from app.core.translate.service import Translator
 from app.ui.i18n import TR
+from app.ui.loading_overlay import BusyLabel
 
 CHANGED_COLOR = QColor(255, 255, 150)  # жёлтый фон для изменённых ячеек
 
@@ -93,6 +94,8 @@ class CheatTab(QWidget):
         self.lbl_status = QLabel(TR("cheat_hint"))
         self.lbl_status.setWordWrap(True)
         lay.addWidget(self.lbl_status)
+        self.busy_names = BusyLabel(self, size=14)
+        lay.addWidget(self.busy_names)
 
         tabs = QTabWidget()
         tabs.addTab(self._build_main_tab(), TR("cheat_main"))
@@ -224,7 +227,7 @@ class CheatTab(QWidget):
         v.addLayout(menu_row2)
         lay.addWidget(menu_box)
 
-        battle_box = QGroupBox("Battle")
+        battle_box = QGroupBox(TR("cheat_box_battle"))
         row = QHBoxLayout(battle_box)
         btn_heal = QPushButton(TR("cheat_heal"))
         btn_heal.clicked.connect(lambda: self._cheat("heal"))
@@ -234,7 +237,7 @@ class CheatTab(QWidget):
         row.addWidget(btn_win)
         lay.addWidget(battle_box)
 
-        move_box = QGroupBox("Movement")
+        move_box = QGroupBox(TR("cheat_box_movement"))
         row = QHBoxLayout(move_box)
         self.cb_noclip = QCheckBox(TR("cheat_noclip"))
         self.cb_noclip.toggled.connect(
@@ -262,7 +265,9 @@ class CheatTab(QWidget):
         lay = QVBoxLayout(w)
         self.party_table = QTableWidget(0, 8)
         self.party_table.setHorizontalHeaderLabels(
-            ["ID", "Name", "Class", "Level", "HP", "MP", "EXP", "In Party"])
+            [TR("tbl_col_id"), TR("tbl_col_name"), TR("party_col_class"),
+             TR("party_col_level"), TR("party_col_hp"), TR("party_col_mp"),
+             TR("party_col_exp"), TR("party_col_inparty")])
         self.party_table.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.Stretch)
         self.party_table.itemChanged.connect(self._on_party_edit)
@@ -283,13 +288,15 @@ class CheatTab(QWidget):
         self.item_search.textChanged.connect(self._fill_items)
         filt.addWidget(self.item_search, 1)
         self.item_kind = QComboBox()
-        self.item_kind.addItems(["All", "Items", "Weapons", "Armor"])
+        self.item_kind.addItems([TR("cheat_kind_all"), TR("cheat_kind_items"),
+                                 TR("cheat_kind_weapons"), TR("cheat_kind_armor")])
         self.item_kind.currentIndexChanged.connect(self._fill_items)
         filt.addWidget(self.item_kind)
         lay.addLayout(filt)
         self.items_table = QTableWidget(0, 4)
         self.items_table.setHorizontalHeaderLabels(
-            ["Type", "ID", "Name", "Count"])
+            [TR("tbl_col_type"), TR("tbl_col_id"), TR("tbl_col_name"),
+             TR("tbl_col_count")])
         self.items_table.horizontalHeader().setSectionResizeMode(
             2, QHeaderView.Stretch)
         self.items_table.itemChanged.connect(self._on_item_edit)
@@ -308,7 +315,8 @@ class CheatTab(QWidget):
         filt.addWidget(self.var_search, 1)
         lay.addLayout(filt)
         self.vars_table = QTableWidget(0, 3)
-        self.vars_table.setHorizontalHeaderLabels(["#", "Name", "Value"])
+        self.vars_table.setHorizontalHeaderLabels(
+            [TR("tbl_col_idx"), TR("tbl_col_name"), TR("tbl_col_value")])
         self.vars_table.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.Stretch)
         self.vars_table.itemChanged.connect(self._on_var_edit)
@@ -327,7 +335,8 @@ class CheatTab(QWidget):
         filt.addWidget(self.sw_search, 1)
         lay.addLayout(filt)
         self.sw_table = QTableWidget(0, 3)
-        self.sw_table.setHorizontalHeaderLabels(["#", "Name", "On"])
+        self.sw_table.setHorizontalHeaderLabels(
+            [TR("tbl_col_idx"), TR("tbl_col_name"), TR("tbl_col_on")])
         self.sw_table.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.Stretch)
         self.sw_table.itemChanged.connect(self._on_switch_toggle)
@@ -383,6 +392,7 @@ class CheatTab(QWidget):
         translator = Translator(engine, tm=self.main.tm,
                                 glossary=self.main.glossary)
         tgt = self.main.settings.value("target_lang", "ru")
+        self.busy_names.start(TR("cheat_names_translating"))
         self._names_worker = NamesWorker(
             translator, tgt,
             self.var_names, self.switch_names,
@@ -394,6 +404,7 @@ class CheatTab(QWidget):
         self.var_names_tr = v
         self.switch_names_tr = s
         self.item_names_tr = it
+        self.busy_names.stop()
         self._fill_vars()
         self._fill_switches()
         self._fill_items()

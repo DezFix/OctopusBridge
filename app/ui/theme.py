@@ -293,6 +293,40 @@ QLineEdit, QSpinBox, QComboBox {{
 QLineEdit:focus, QSpinBox:focus {{
     border-color: {C_INPUT_FOCUS};
 }}
+/* Редакторы ячеек таблиц (QLineEdit внутри QTableView): padding
+   из правила выше съедает всю высоту строки (~30px) — контентная
+   область становится 8px, и набираемый текст не виден. Свой стиль
+   с минимальным отступом и подчёркнутой рамкой. */
+QAbstractItemView QLineEdit {{
+    padding: 0px 2px;
+    border: 1px solid {C_PRIMARY};
+    border-radius: 4px;
+    background-color: {C_INPUT_BG};
+    color: {C_TEXT};
+    selection-background-color: {C_PRIMARY};
+    selection-color: #ffffff;
+}}
+QAbstractItemView QLineEdit:focus {{
+    border-color: {C_INPUT_FOCUS};
+}}
+/* То же для textarea-редакторов (колонка перевода) и комбобоксов
+   в ячейках — текст не должен обрезаться высотой строки. */
+QAbstractItemView QPlainTextEdit {{
+    padding: 0px 2px;
+    border: 1px solid {C_PRIMARY};
+    border-radius: 4px;
+    background-color: {C_INPUT_BG};
+    color: {C_TEXT};
+    selection-background-color: {C_PRIMARY};
+    selection-color: #ffffff;
+}}
+QAbstractItemView QComboBox {{
+    padding: 0px 2px;
+    background-color: {C_INPUT_BG};
+    color: {C_TEXT};
+    border: 1px solid {C_PRIMARY};
+    border-radius: 4px;
+}}
 QComboBox:hover {{
     border-color: {C_PRIMARY};
 }}

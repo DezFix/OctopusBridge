@@ -312,8 +312,9 @@ def _iter_rpy(game_dir: str, extract_lang: str | None = None):
     """Iterate .rpy and .rpyc files from game/ and .rpa archives.
 
     extract_lang: если задан — берём только tl/<язык>/ (на диске и в
-    архивах), остальные языки пропускаем. None = старое поведение:
-    на диске tl/ пропускается целиком, в архивах берётся всё.
+    архивах), остальные языки пропускаем. None = весь текст игры,
+    включая все официальные переводы tl/* (раньше tl/ на диске
+    пропускалась целиком — «весь текст» не был всем текстом).
     """
     game_sub = os.path.join(game_dir, "game")
     if os.path.isdir(game_sub):
@@ -321,8 +322,6 @@ def _iter_rpy(game_dir: str, extract_lang: str | None = None):
             def keep(d: str) -> bool:
                 if d in ("renpy", "__pycache__"):
                     return False
-                if d == "tl":
-                    return extract_lang is not None
                 if extract_lang is not None and os.path.basename(root) == "tl":
                     return d == extract_lang
                 return True
@@ -359,7 +358,8 @@ def extract(game_dir: str, extract_lang: str | None = None
 
     extract_lang: выбрать один язык из game/tl/ (см. list_languages),
     остальные языки не извлекаются (иначе текст дублируется по числу
-    языков — 13k строк × 5 языков = 65k).
+    языков — 13k строк × 5 языков = 65k). None = весь текст, включая
+    все официальные переводы tl/*.
     """
     entries: list[TranslationEntry] = []
     next_id = 1

@@ -6,14 +6,16 @@ from __future__ import annotations
 
 from PySide6.QtCore import (QEvent, QPointF, QRectF, QSize, Qt, QThread,
                             QTimer, Signal)
-from PySide6.QtGui import (QActionGroup, QColor, QFont, QIcon, QLinearGradient,
-                           QPainter, QPainterPath, QPen, QPixmap)
+from PySide6.QtGui import (QAction, QActionGroup, QColor, QFont, QIcon,
+                           QLinearGradient, QPainter, QPainterPath, QPen,
+                           QPixmap)
 from PySide6.QtWidgets import (QAbstractItemDelegate, QAbstractItemView,
-                               QComboBox, QDialog, QFileDialog, QFrame,
-                               QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-                               QMenu, QMessageBox, QPlainTextEdit,
-                               QProgressBar, QPushButton, QScrollArea,
-                               QSplitter, QStackedWidget, QStyledItemDelegate,
+                               QButtonGroup, QCheckBox, QComboBox, QDialog,
+                               QFileDialog, QFrame, QHBoxLayout, QHeaderView,
+                               QLabel, QLineEdit, QMenu, QMessageBox,
+                               QPlainTextEdit, QProgressBar, QPushButton,
+                               QRadioButton, QScrollArea, QSplitter,
+                               QStackedWidget, QStyledItemDelegate,
                                QTableWidget, QTableWidgetItem, QToolButton,
                                QVBoxLayout, QWidget)
 
@@ -22,6 +24,7 @@ from app.core.translate.detect import detect_lang
 from app.core.translate.service import Translator
 from app.ui.i18n import TR, engine_hint
 from app.ui.icons import icon
+from app.ui.loading_overlay import BusyLabel
 from app.ui.theme import (C_ACCENT, C_BG, C_GROUP_BORDER,
                           C_PILL_DONE, C_PILL_DRAFT, C_PILL_EMPTY_FG,
                           C_PRIMARY, C_TEXT, C_TEXT_SECONDARY,
@@ -92,6 +95,50 @@ class ExtractWorker(QThread):
                 self.done.emit(entries)
         except Exception as e:  # noqa: BLE001
             self.failed.emit(str(e))
+
+
+class _LanguageChoiceDialog(QDialog):
+    """Выбор: переводить весь текст игры или только один официальный
+    перевод (Ren'Py, несколько tl/<lang>)."""
+
+    def __init__(self, langs: list[str], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(TR("tr_lang_dialog_title"))
+        self.setModal(True)
+        self.setMinimumWidth(400)
+        lay = QVBoxLayout(self)
+        hint = QLabel(TR("tr_lang_dialog_question"))
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+        self._group = QButtonGroup(self)
+        self._radio_all = QRadioButton(TR("tr_lang_all"))
+        self._group.addButton(self._radio_all)
+        self._radio_all.setChecked(True)
+        lay.addWidget(self._radio_all)
+        self._radio_lang: dict[str, QRadioButton] = {}
+        for lang in langs:
+            rb = QRadioButton(lang)
+            self._group.addButton(rb)
+            self._radio_lang[lang] = rb
+            lay.addWidget(rb)
+        self.chk_remember = QCheckBox(TR("tr_lang_dialog_remember"))
+        lay.addWidget(self.chk_remember)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        b_ok = QPushButton(TR("btn_ok"))
+        b_cancel = QPushButton(TR("btn_cancel"))
+        b_ok.clicked.connect(self.accept)
+        b_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(b_ok)
+        btn_row.addWidget(b_cancel)
+        lay.addLayout(btn_row)
+
+    def choice(self) -> str | None:
+        """Выбранный язык или None = весь текст."""
+        for lang, rb in self._radio_lang.items():
+            if rb.isChecked():
+                return lang
+        return None
 
 
 class TranslateWorker(QThread):
@@ -455,13 +502,14 @@ class _TransEditor(QPlainTextEdit):
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.document().setDocumentMargin(3)
         self.setStyleSheet(f"""
             QPlainTextEdit {{
                 background: #1e2230;
                 border: 1.5px solid {C_PRIMARY};
                 border-radius: 6px;
                 color: {C_TEXT};
-                padding: 4px;
+                padding: 2px;
                 font-size: 12.5px;
             }}
         """)
@@ -496,6 +544,11 @@ class _TransDelegate(QStyledItemDelegate):
 
     def setEditorData(self, editor, index):
         editor.setPlainText(index.data(Qt.ItemDataRole.DisplayRole) or "")
+
+    def updateEditorGeometry(self, editor, option, index):
+        r = option.rect
+        h = max(r.height() * 3, 64)
+        editor.setGeometry(r.x(), r.y(), r.width(), h)
 
     def setModelData(self, editor, model, index):
         model.setData(index,
@@ -672,6 +725,11 @@ class TranslateTab(QWidget):
         menu = QMenu(self.btn_translate)
         menu.addAction(self._act_new)
         menu.addAction(self._act_all)
+        self._lang_menu = menu.addMenu(TR("tr_translate_lang"))
+        self._lang_menu.setIcon(icon("translate", 14, C_TEXT_SECONDARY))
+        self._lang_group = QActionGroup(self)
+        self._lang_actions: dict[str | None, QAction] = {}
+        self._refresh_lang_menu()
         self.btn_translate.setMenu(menu)
         self.btn_translate.setCursor(Qt.PointingHandCursor)
         self.btn_translate.clicked.connect(self.translate_all)
@@ -1242,10 +1300,102 @@ class TranslateTab(QWidget):
 
     # ── translate ──
 
+    def _lang_options(self) -> list[str]:
+        """Официальные языки перевода игры (Ren'Py: game/tl/*)."""
+        module = self.main.engine_module
+        p = self._project()
+        if not (module and p and hasattr(module, "list_languages")):
+            return []
+        try:
+            return list(module.list_languages(p.game_dir) or [])
+        except Exception:  # noqa: BLE001
+            return []
+
+    def _refresh_lang_menu(self):
+        """Пункты «Язык перевода»: весь текст + каждый официальный язык."""
+        self._lang_menu.clear()
+        self._lang_actions = {}
+        p = self._project()
+        current = p.extract_lang if p else None
+
+        def _act(label: str, value: str | None):
+            a = self._lang_group.addAction(label)
+            a.setCheckable(True)
+            a.setChecked(current == value)
+            a.triggered.connect(lambda _=False, v=value: self._set_lang(v))
+            self._lang_menu.addAction(a)
+            self._lang_actions[value] = a
+
+        _act(TR("tr_lang_all"), None)
+        for lang in self._lang_options():
+            _act(lang, lang)
+
+    def _set_lang(self, lang: str | None):
+        """Сменить язык перевода → сохранить и переизвлечь проект."""
+        p = self._project()
+        if not p:
+            return
+        prev = p.extract_lang
+        p.extract_lang = lang
+        p.lang_asked = True
+        self.main.save_project()
+        self._refresh_lang_menu()
+        if prev == lang:
+            return
+        self.btn_extract.setEnabled(False)
+        self.lbl_status.setText(TR("tr_extracting"))
+        self.main.start_extraction(self._on_lang_extracted)
+
+    def _on_lang_extracted(self, restored: int, error: str):
+        self.btn_extract.setEnabled(True)
+        if error:
+            self.lbl_status.setText(error)
+            return
+        self.main.refresh_all()
+        self.lbl_status.setText(TR("tr_lang_applied", count=len(
+            self._project().entries) if self._project() else 0))
+
+    def _on_lang_extracted_then_translate(self, restored: int, error: str):
+        self.btn_extract.setEnabled(True)
+        if error:
+            self.lbl_status.setText(error)
+            return
+        self.main.refresh_all()
+        self.translate_all()
+
+    def _ensure_lang_then_translate(self) -> bool:
+        """Первый раз: спросить, что переводить — весь текст игры или
+        только один официальный язык (Ren'Py, несколько tl/<lang>).
+        True — перевод можно начинать; False — запущено переизвлечение."""
+        p = self._project()
+        if getattr(p, "lang_asked", False):
+            return True
+        langs = self._lang_options()
+        if len(langs) < 2:
+            return True
+        dlg = _LanguageChoiceDialog(langs, self)
+        if not dlg.exec():
+            return False
+        choice = dlg.choice()
+        prev = p.extract_lang
+        p.extract_lang = choice
+        if dlg.chk_remember.isChecked():
+            p.lang_asked = True
+        self.main.save_project()
+        self._refresh_lang_menu()
+        if prev == choice:
+            return True
+        self.btn_extract.setEnabled(False)
+        self.lbl_status.setText(TR("tr_extracting"))
+        self.main.start_extraction(self._on_lang_extracted_then_translate)
+        return False
+
     def translate_all(self):
         p = self._project()
         if not p or not p.entries:
             QMessageBox.information(self, TR("err"), TR("tr_no_data"))
+            return
+        if not self._ensure_lang_then_translate():
             return
         engine = self.main.create_engine("files")
         if engine is None:
@@ -1567,7 +1717,7 @@ class TermsDialog(QDialog):
         btn_apply = QPushButton(TR("glossary_terms_apply"))
         btn_apply.setObjectName("accent")
         btn_apply.clicked.connect(self._collect)
-        btn_cancel = QPushButton(TR("cancel"))
+        btn_cancel = QPushButton(TR("btn_cancel"))
         btn_cancel.clicked.connect(self.reject)
         row.addStretch(1)
         row.addWidget(btn_cancel)
@@ -1669,24 +1819,26 @@ class GlossaryDialog(QDialog):
 
         # ── кнопки ──
         row = QHBoxLayout()
-        btn_add = QPushButton(TR("glossary_add"))
-        btn_add.setIcon(icon("plus", 15, C_TEXT))
-        btn_add.clicked.connect(self._add_row)
-        btn_del = QPushButton(TR("glossary_del"))
-        btn_del.setIcon(icon("trash", 15, C_TEXT))
-        btn_del.clicked.connect(self._del)
-        btn_analyze = QPushButton(TR("glossary_analyze"))
-        btn_analyze.setIcon(icon("sparkles", 15, C_TEXT))
-        btn_analyze.clicked.connect(self._analyze)
-        btn_save = QPushButton(TR("glossary_save"))
-        btn_save.setIcon(icon("floppy-disk", 15, C_TEXT))
-        btn_save.clicked.connect(self._save)
-        btn_save.setDefault(True)
-        row.addWidget(btn_add)
-        row.addWidget(btn_del)
+        self.btn_add = QPushButton(TR("glossary_add"))
+        self.btn_add.setIcon(icon("plus", 15, C_TEXT))
+        self.btn_add.clicked.connect(self._add_row)
+        self.btn_del = QPushButton(TR("glossary_del"))
+        self.btn_del.setIcon(icon("trash", 15, C_TEXT))
+        self.btn_del.clicked.connect(self._del)
+        self.btn_analyze = QPushButton(TR("glossary_analyze"))
+        self.btn_analyze.setIcon(icon("sparkles", 15, C_TEXT))
+        self.btn_analyze.clicked.connect(self._analyze)
+        self.btn_save = QPushButton(TR("glossary_save"))
+        self.btn_save.setIcon(icon("floppy-disk", 15, C_TEXT))
+        self.btn_save.clicked.connect(self._save)
+        self.btn_save.setDefault(True)
+        row.addWidget(self.btn_add)
+        row.addWidget(self.btn_del)
+        self.busy = BusyLabel(self, size=14)
+        row.addWidget(self.busy)
         row.addStretch(1)
-        row.addWidget(btn_analyze)
-        row.addWidget(btn_save)
+        row.addWidget(self.btn_analyze)
+        row.addWidget(self.btn_save)
         lay.addLayout(row)
 
         hint = QLabel(TR("glossary_hint"))
@@ -1752,11 +1904,23 @@ class GlossaryDialog(QDialog):
                 self, TR("err"), TR("glossary_analyze_need_ai"))
             return
         src, tgt = self._current_pair()
+        self._set_busy(True)
         self.analyze_worker = AnalyzeWorker(self.engine, self.texts, src, tgt)
         self.analyze_worker.done.connect(self._analyze_done)
         self.analyze_worker.failed.connect(self._analyze_failed)
         self.setWindowTitle(TR("glossary_analyze_running"))
         self.analyze_worker.start()
+
+    def _set_busy(self, busy: bool):
+        self.busy.setVisible(busy)
+        if busy:
+            self.busy.spinner.setVisible(True)
+            self.busy.start(TR("glossary_analyze_running"))
+        else:
+            self.busy.stop()
+        for w in (self.btn_analyze, self.btn_save, self.btn_add,
+                  self.btn_del, self.pair, self.search, self.table):
+            w.setEnabled(not busy)
 
     def closeEvent(self, event):
         # Даём воркеру-анализатору штатно завершиться, иначе Qt упадёт
@@ -1768,6 +1932,7 @@ class GlossaryDialog(QDialog):
 
     def _analyze_done(self, terms: dict):
         self.setWindowTitle(TR("glossary_title"))
+        self._set_busy(False)
         if not terms:
             QMessageBox.information(
                 self, TR("done"), TR("glossary_analyze_none"))
@@ -1786,6 +1951,7 @@ class GlossaryDialog(QDialog):
 
     def _analyze_failed(self, err: str):
         self.setWindowTitle(TR("glossary_title"))
+        self._set_busy(False)
         QMessageBox.critical(
             self, TR("err"), TR("glossary_analyze_fail", msg=err))
 

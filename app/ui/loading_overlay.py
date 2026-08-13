@@ -22,7 +22,7 @@ from app.ui.theme import (C_BORDER, C_CARD, C_PRIMARY, C_TEXT,
 _FADE_MS = 150
 
 
-class _Spinner(QWidget):
+class Spinner(QWidget):
     """Спиннер: вращающаяся дуга (QPainter, ~60 FPS только пока виден)."""
 
     def __init__(self, parent=None, size: int = 44):
@@ -63,6 +63,40 @@ class _Spinner(QWidget):
         return pen
 
 
+class BusyLabel(QWidget):
+    """Компактный индикатор «спиннер + текст» для встраивания в диалоги
+    и вкладки (глоссарий, чит-имена, ping в настройках и т.п.).
+
+    show(text) — запустить, hide()/stop() — скрыть. Скрыт по умолчанию.
+    """
+
+    def __init__(self, parent=None, size: int = 14):
+        super().__init__(parent)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        self.spinner = Spinner(self, size)
+        self.spinner.setVisible(False)
+        lay.addWidget(self.spinner)
+        self.lbl = QLabel("")
+        self.lbl.setStyleSheet(
+            f"color: {C_TEXT_SECONDARY}; font-size: 12px; background: transparent;")
+        lay.addWidget(self.lbl)
+        self.hide()
+
+    def start(self, text: str = ""):
+        self.lbl.setText(text)
+        self.spinner.setVisible(True)
+        self.show()
+
+    def stop(self):
+        self.hide()
+        self.spinner.setVisible(False)
+
+
+_Spinner = Spinner  # обратная совместимость
+
+
 class LoadingOverlay(QWidget):
     """Полнооконный оверлей: спиннер + текст + (опц.) кнопка «Отмена».
 
@@ -93,7 +127,7 @@ class LoadingOverlay(QWidget):
 
         row = QHBoxLayout()
         row.setSpacing(16)
-        row.addWidget(_Spinner(card, 40))
+        row.addWidget(Spinner(card, 40))
         self.lbl_text = QLabel("")
         self.lbl_text.setWordWrap(True)
         self.lbl_text.setStyleSheet(

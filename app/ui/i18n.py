@@ -218,6 +218,30 @@ _STRINGS = {
         "ru": "Файл не требует перевода: текст уже на целевом языке.",
         "en": "No translation needed: the text is already in the target language.",
     },
+    "tr_translate_lang": {
+        "ru": "Язык перевода",
+        "en": "Translation language",
+    },
+    "tr_lang_all": {
+        "ru": "Весь текст игры (все языки)",
+        "en": "All game text (every language)",
+    },
+    "tr_lang_dialog_title": {
+        "ru": "Язык перевода",
+        "en": "Translation language",
+    },
+    "tr_lang_dialog_question": {
+        "ru": "В игре несколько официальных переводов (tl/). Что переводить?",
+        "en": "The game has several official translations (tl/). What should be translated?",
+    },
+    "tr_lang_dialog_remember": {
+        "ru": "Не спрашивать больше (запомнить для этого проекта)",
+        "en": "Don't ask again (remember for this project)",
+    },
+    "tr_lang_applied": {
+        "ru": "Язык применён: извлечено {count} строк",
+        "en": "Language applied: {count} lines extracted",
+    },
     "tr_cancelling": {"ru": "Отмена…", "en": "Cancelling…"},
     "tr_cancelled": {
         "ru": "Отменено: переведено {done} из {total} строк (перевод сохранён в проекте — его можно доработать или применить)",
@@ -326,6 +350,10 @@ _STRINGS = {
         "ru": "Читы работают через запущенную игру («Домой» → «Запустить игру»).",
         "en": "Cheats require the running game (\"Home\" → \"Launch game\").",
     },
+    "cheat_names_translating": {
+        "ru": "ИИ переводит имена…",
+        "en": "AI translating names…",
+    },
     "cheat_main": {"ru": "Главная", "en": "Main"},
     "cheat_party": {"ru": "Пати", "en": "Party"},
     "cheat_map": {"ru": "Карта", "en": "Map"},
@@ -348,6 +376,25 @@ _STRINGS = {
     "cheat_refresh": {"ru": "Обновить данные из игры", "en": "Refresh from game"},
     "cheat_heal": {"ru": "Вылечить партию (HP/MP)", "en": "Heal party (HP/MP)"},
     "cheat_win": {"ru": "Мгновенная победа", "en": "Instant win"},
+    "cheat_box_battle": {"ru": "Бой", "en": "Battle"},
+    "cheat_box_movement": {"ru": "Перемещение", "en": "Movement"},
+    "cheat_kind_all": {"ru": "Все", "en": "All"},
+    "cheat_kind_items": {"ru": "Предметы", "en": "Items"},
+    "cheat_kind_weapons": {"ru": "Оружие", "en": "Weapons"},
+    "cheat_kind_armor": {"ru": "Броня", "en": "Armor"},
+    "tbl_col_idx": {"ru": "#", "en": "#"},
+    "tbl_col_id": {"ru": "ID", "en": "ID"},
+    "tbl_col_name": {"ru": "Имя", "en": "Name"},
+    "tbl_col_value": {"ru": "Значение", "en": "Value"},
+    "tbl_col_type": {"ru": "Тип", "en": "Type"},
+    "tbl_col_count": {"ru": "Кол-во", "en": "Count"},
+    "tbl_col_on": {"ru": "Вкл", "en": "On"},
+    "party_col_class": {"ru": "Класс", "en": "Class"},
+    "party_col_level": {"ru": "Уровень", "en": "Level"},
+    "party_col_hp": {"ru": "HP", "en": "HP"},
+    "party_col_mp": {"ru": "MP", "en": "MP"},
+    "party_col_exp": {"ru": "EXP", "en": "EXP"},
+    "party_col_inparty": {"ru": "В партии", "en": "In Party"},
     "cheat_speed": {"ru": "Скорость игрока", "en": "Player speed"},
     "cheat_noclip": {"ru": "Ноуклип (сквозь стены)", "en": "No-clip (through walls)"},
     "cheat_clicktp": {"ru": "Телепорт по Ctrl+клику", "en": "Teleport on Ctrl+click"},
@@ -423,13 +470,17 @@ _STRINGS = {
     },
     "settings_provider_lbl": {"ru": "Провайдер:", "en": "Provider:"},
     "settings_preset": {"ru": "Пресет:", "en": "Preset:"},
-    "settings_base_url": {"ru": "Base URL:", "en": "Base URL:"},
+    "settings_base_url": {"ru": "URL сервера:", "en": "Base URL:"},
     "settings_api_key": {"ru": "API-ключ:", "en": "API Key:"},
     "settings_model": {"ru": "Модель:", "en": "Model:"},
-    "settings_ollama_url": {"ru": "Ollama URL:", "en": "Ollama URL:"},
+    "settings_ollama_url": {"ru": "URL Ollama:", "en": "Ollama URL:"},
     "settings_src_lang": {"ru": "Язык оригинала:", "en": "Source language:"},
     "settings_tgt_lang": {"ru": "Язык перевода:", "en": "Target language:"},
     "settings_check": {"ru": "Проверить провайдера", "en": "Check provider"},
+    "settings_status_ping": {
+        "ru": "Проверяю соединение…",
+        "en": "Checking connection…",
+    },
     "settings_status": {"ru": "Статус:", "en": "Status:"},
     "settings_status_ready": {
         "ru": "Провайдер готов к работе",
@@ -531,7 +582,7 @@ _STRINGS = {
     "tab_triggers": {"ru": "Триггеры", "en": "Triggers"},
     "tab_resources": {"ru": "Ресурсы", "en": "Resources"},
     "tab_maps": {"ru": "Карты", "en": "Maps"},
-    "tab_save_editor": {"ru": "Save Editor", "en": "Save Editor"},
+    "tab_save_editor": {"ru": "Редактор сейвов", "en": "Save Editor"},
 
     # ── Map triggers ──
     "map_trigger_0": {"ru": "Кнопка", "en": "Button"},
@@ -701,7 +752,10 @@ _STRINGS = {
         "ru": "Анализ требует AI-провайдера. Настройте его в Настройках (провайдер AI).",
         "en": "Analysis requires an AI provider. Configure it in Settings (AI provider).",
     },
-    "glossary_analyze_running": {"ru": "Анализ…", "en": "Analyzing…"},
+    "glossary_analyze_running": {
+        "ru": "ИИ анализирует текст…",
+        "en": "AI analyzing text…",
+    },
     "glossary_analyze_fail": {
         "ru": "Не удалось выполнить анализ: {}",
         "en": "Analysis failed: {}",
@@ -821,6 +875,17 @@ _STRINGS = {
         "ru": "Выбрать .save вручную",
         "en": "Pick a .save manually",
     },
+    "sv_search_ph": {"ru": "имя или значение…", "en": "name or value…"},
+    "sv_open_title": {"ru": "Выберите .save", "en": "Pick a .save file"},
+    "sv_params": {
+        "ru": "{name} — {n} параметров",
+        "en": "{name} — {n} variables",
+    },
+    "sv_unsaved": {
+        "ru": "{name} = {value} (не сохранено)",
+        "en": "{name} = {value} (not saved)",
+    },
+    "sv_save_err": {"ru": "Ошибка сохранения", "en": "Save error"},
 
     # ── Resource tab (H2) ──
     "res_select": {
