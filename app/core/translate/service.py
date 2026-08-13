@@ -83,6 +83,10 @@ class Translator:
         # вылезать из кеша
         if is_single_letter(text):
             return text
+        # только цифры/знаки (без букв): единицы, пунктуация, символы —
+        # движок может их исказить (LLM), переводить нечего
+        if not re.search(r"[^\W\d_]", text):
+            return text
 
         cached = self.tm.get(text, src_lang, tgt_lang) if self.tm else None
         if cached:
@@ -142,6 +146,79 @@ class Translator:
             self.tm.put(text, result, src_lang, tgt_lang)
         return result
 
+    # ---------- пакет простых строк (имена и т.п.) ----------
+    def translate_texts(self, texts: list[str], src_lang: str,
+                        tgt_lang: str) -> list[str]:
+        """Переводит список простых строк одним батчем на язык.
+
+        Для имён переменных/предметов: сотни отдельных translate_text()
+        превращаются в десятки запросов к движку. Строки, которым
+        перевод не нужен (уже на целевом языке, цифры/знаки, коды),
+        возвращаются как есть.
+        """
+        out: list[str] = [""] * len(texts)
+        # (index, text, detected_src, masked, codes, lead, trail)
+        jobs: list[tuple] = []
+        for i, text in enumerate(texts):
+            if not text.strip():
+                out[i] = text
+                continue
+            src = src_lang
+            if src_lang == "auto":
+                detected = detect_lang(text)
+                if not detected or detected == tgt_lang:
+                    out[i] = text
+                    continue
+                src = detected
+            if is_single_letter(text):
+                out[i] = text
+                continue
+            if not re.search(r"[^\W\d_]", text):
+                out[i] = text
+                continue
+            cached = self.tm.get(text, src, tgt_lang) if self.tm else None
+            if cached:
+                out[i] = cached
+                continue
+            lead, mid, trail = split_edge_codes(text)
+            masked, codes = mask(mid)
+            if is_code_only(masked):
+                out[i] = "".join(lead) + mid + "".join(trail)
+                continue
+            jobs.append((i, text, src, masked, codes, lead, trail))
+
+        by_src: dict[str, list[tuple]] = {}
+        for job in jobs:
+            by_src.setdefault(job[2], []).append(job)
+        for src, group in by_src.items():
+            for start in range(0, len(group), MAX_BATCH_LINES):
+                chunk = group[start:start + MAX_BATCH_LINES]
+                batch = [j[3] for j in chunk]
+                try:
+                    translated = self.engine.translate(batch, src, tgt_lang)
+                except Exception:  # noqa: BLE001 — движок упал, вернём как есть
+                    translated = [""] * len(batch)
+                tm_pairs: list[tuple[str, str]] = []
+                for (i, text, _src, masked, codes, lead, trail), res in \
+                        zip(chunk, translated):
+                    if not res or not res.strip():
+                        out[i] = text
+                        continue
+                    restored = (unmask(res, codes)
+                                if validate(res, codes)
+                                or tokens_present(res)
+                                else res)
+                    orig_codes = unmask(masked, codes) if codes else masked
+                    restored = apply_fixers(restored, src, tgt_lang,
+                                            orig_codes.strip())
+                    result = _reattach(restored, lead, trail)
+                    out[i] = result
+                    if result != text and result.strip():
+                        tm_pairs.append((text, result))
+                if self.tm and tm_pairs:
+                    self.tm.put_many(tm_pairs, src, tgt_lang)
+        return out
+
     # ---------- записи проекта ----------
     def translate_entries(
         self,
@@ -154,7 +231,8 @@ class Translator:
         """Переводит записи на месте. Возвращает число переведённых строк."""
         targets = [
             e for e in entries
-            if e.status != "skip" and (overwrite or not e.translation.strip())
+            if (overwrite or not e.translation.strip())
+            and (overwrite or e.status != "skip")
         ]
         total = len(targets)
         done = [0]  # общий счётчик для прогресса
@@ -169,7 +247,11 @@ class Translator:
             for e in targets:
                 lang = detect_lang(e.original)
                 if not lang or lang == tgt_lang:
+                    # строка уже на целевом языке (или без букв) —
+                    # переводить нечего; помечаем, чтобы было видно
                     skipped += 1
+                    if e.status not in ("manual", "corrected", "translated"):
+                        e.status = "skip"
                     continue
                 groups.setdefault(lang, []).append(e)
             done[0] += skipped

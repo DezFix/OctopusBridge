@@ -163,7 +163,10 @@ print("   OK")
 
 print("7) Ключи i18n для новых функций...")
 for key in ("settings_corr_tab", "settings_glossary_box",
-            "settings_glossary_ai", "welcome_open_folder"):
+            "settings_glossary_ai", "welcome_open_folder",
+            "glossary_search", "glossary_count", "glossary_lang_ja",
+            "update_title", "update_found", "update_open_release",
+            "tr_translate_done", "tr_translate_done_skipped"):
     assert TR(key), key
 print("   OK")
 

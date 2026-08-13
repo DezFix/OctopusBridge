@@ -46,18 +46,26 @@ class NamesWorker(QThread):
     def run(self):
         v, s, it, st = {}, {}, {}, {}
         try:
-            for i, name in self.var_names.items():
-                v[i] = self.translator.translate_text(name, "auto", self.tgt)
-            for i, name in self.switch_names.items():
-                s[i] = self.translator.translate_text(name, "auto", self.tgt)
-            for key, name in self.item_names.items():
-                it[key] = self.translator.translate_text(
-                    name, "auto", self.tgt)
-            for i, name in self.state_names.items():
-                st[i] = self.translator.translate_text(
-                    name, "auto", self.tgt)
-        except Exception:  # noqa: BLE001
-            pass
+            v = dict(zip(
+                self.var_names.keys(),
+                self.translator.translate_texts(
+                    list(self.var_names.values()), "auto", self.tgt)))
+            s = dict(zip(
+                self.switch_names.keys(),
+                self.translator.translate_texts(
+                    list(self.switch_names.values()), "auto", self.tgt)))
+            it = dict(zip(
+                self.item_names.keys(),
+                self.translator.translate_texts(
+                    list(self.item_names.values()), "auto", self.tgt)))
+            st = dict(zip(
+                self.state_names.keys(),
+                self.translator.translate_texts(
+                    list(self.state_names.values()), "auto", self.tgt)))
+        except Exception as e:  # noqa: BLE001
+            print(f"[cheat] names translation failed: {e}")
+        if self.isInterruptionRequested():
+            return
         self.done.emit(v, s, it, st)
 
 PARAM_NAMES = ["MHP", "MMP", "ATK", "DEF", "MAT", "MDF", "AGI", "LUK"]

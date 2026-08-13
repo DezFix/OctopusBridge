@@ -42,6 +42,8 @@ def main():
     window = MainWindow()
     window.show()
     sys.excepthook = _excepthook
+    from app.ui.updates import check_for_updates
+    check_for_updates(window)
     sys.exit(app.exec())
 
 

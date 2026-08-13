@@ -121,23 +121,6 @@ _STRINGS = {
     "dash_stop": {"ru": "Остановить игру", "en": "Stop game"},
     "dash_launching": {"ru": "Запускаю игру…", "en": "Launching game…"},
     "project_opening": {"ru": "Открываю проект…", "en": "Opening project…"},
-    "lang_dialog_title": {
-        "ru": "Многоязычная игра",
-        "en": "Multilingual game",
-    },
-    "lang_dialog_text": {
-        "ru": "В игре несколько языков перевода (tl/): {langs}.\n"
-              "Выберите ОДИН язык — иначе текст продублируется по числу "
-              "языков (13 тыс. строк × 5 языков = 65 тыс.).",
-        "en": "The game has several translation languages (tl/): {langs}.\n"
-              "Pick ONE language — otherwise the text duplicates per "
-              "language (13k lines × 5 languages = 65k).",
-    },
-    "lang_dialog_all": {
-        "ru": "Все языки (как раньше — долго и с дублями)",
-        "en": "All languages (legacy — slow, duplicated)",
-    },
-    "lang_dialog_pick": {"ru": "Язык для перевода", "en": "Language to translate"},
     "dash_session_idle": {"ru": "Игра не запущена", "en": "Game not running"},
     "dash_session_connected": {
         "ru": "Игра запущена и подключена",
@@ -220,8 +203,12 @@ _STRINGS = {
         "en": "Extracted: {count}\nRestored translations: {restored}",
     },
     "tr_translate_done": {
-        "ru": "Переведено строк: {n}",
-        "en": "Translated lines: {n}",
+        "ru": "Переведено строк: {n}{skipped}{skipped_note}",
+        "en": "Translated lines: {n}{skipped}{skipped_note}",
+    },
+    "tr_translate_done_skipped": {
+        "ru": "\nСтрок на целевом языке (не требуют перевода): {skipped}",
+        "en": "\nLines already in target language (skipped): {skipped}",
     },
     "tr_cancelling": {"ru": "Отмена…", "en": "Cancelling…"},
     "tr_cancelled": {
@@ -683,6 +670,15 @@ _STRINGS = {
     # ── Glossary ──
     "glossary_title": {"ru": "Глоссарий", "en": "Glossary"},
     "glossary_pair": {"ru": "Пара языков:", "en": "Language pair:"},
+    "glossary_search": {"ru": "Поиск по терминам…", "en": "Search terms…"},
+    "glossary_count": {
+        "ru": "Показано: {shown} из {total}",
+        "en": "Showing {shown} of {total}",
+    },
+    "glossary_lang_ja": {"ru": "Японский", "en": "Japanese"},
+    "glossary_lang_zh": {"ru": "Китайский", "en": "Chinese"},
+    "glossary_lang_en": {"ru": "Английский", "en": "English"},
+    "glossary_lang_ru": {"ru": "Русский", "en": "Russian"},
     "glossary_add": {"ru": "Добавить строку", "en": "Add row"},
     "glossary_del": {"ru": "Удалить выбранную", "en": "Delete selected"},
     "glossary_save": {"ru": "Сохранить", "en": "Save"},
@@ -938,6 +934,17 @@ _STRINGS = {
     "about_kofi": {"ru": "Поддержать проект на Ko-fi", "en": "Support the project on Ko-fi"},
     "about_changelog": {"ru": "Что нового", "en": "Changelog"},
     "about_close": {"ru": "Закрыть", "en": "Close"},
+    "update_title": {"ru": "Доступна новая версия", "en": "Update available"},
+    "update_found": {
+        "ru": "Вышла новая версия OctopusBridge — {v}!",
+        "en": "A new version of OctopusBridge is available — {v}!",
+    },
+    "update_open_release": {
+        "ru": "Скачать можно на странице релиза GitHub.",
+        "en": "Download it from the GitHub release page.",
+    },
+    "update_open": {"ru": "Открыть страницу", "en": "Open release page"},
+    "update_later": {"ru": "Позже", "en": "Later"},
 }
 
 

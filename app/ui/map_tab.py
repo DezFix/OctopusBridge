@@ -86,6 +86,22 @@ class _LayerPainter:
             return
         if sx + t > img.width() or sy + t > img.height():
             return
+        if page in (maprender.PAGE_A4, maprender.PAGE_A3) \
+                and sx + 2 * t <= img.width() \
+                and sy + 2 * t <= img.height():
+            # стены A4 (2x3) и A3 (2x2): левая колонка блока — «бок»
+            # (тёмная грань к соседу), правая — фасад. В превью рисуем
+            # фасад: у A4 козырёк (ряд 0) сверху + тело (ряд 1) снизу;
+            # у A3 — правую колонку целиком.
+            if page == maprender.PAGE_A4:
+                cap = 18
+                painter.drawImage(dx, dy, img, sx + t, sy, t, cap)
+                painter.drawImage(dx, dy + cap, img, sx + t, sy + t,
+                                  t, t - cap)
+            else:
+                painter.drawImage(dx, dy, img, sx + t, sy, t, t)
+                painter.drawImage(dx, dy + t, img, sx + t, sy + t, t, t)
+            return
         painter.drawImage(dx, dy, img, sx, sy, t, t)
 
     def char_image(self, name: str) -> QImage | None:

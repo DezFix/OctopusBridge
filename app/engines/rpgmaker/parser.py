@@ -6,9 +6,11 @@
 - Команды событий: диалоги, комментарии, выбор, плагин-команды
 - Имена карт, общих событий, групп врагов
 - Системные строки (термины, сообщения, название игры)
-- Заметки событий (note field) — если содержат переводимый текст
 - Поля message1..message4 в Skills/States
 - Все плагин-команда (MZ: cmd 357/657, MV: cmd 356) с параметрами
+
+Заметки (note) не извлекаются: это конфигурация плагинов (теги <...>),
+перевод ломает их работу и выдаёт ошибки в игре.
 """
 from __future__ import annotations
 
@@ -240,28 +242,6 @@ class _Extractor:
                 self.add(file, f"[{idx}].name",
                          "map name (list)", obj["name"])
 
-    def note_field(self, file: str, path_prefix: str, note: str,
-                   context: str):
-        """Извлекаем переводимые строки из заметок (note).
-
-        Заметки в RPG Maker — многострочные строки. Если они содержат
-        переводимый текст (а не XML/JSON-теги плагинов), извлекаем
-        построчно.
-        """
-        if not note or not isinstance(note, str):
-            return
-        lines = note.split("\n")
-        for j, line in enumerate(lines):
-            s = line.strip()
-            if not s:
-                continue
-            # пропускаем XML/теги плагинов <tag> и JSON
-            if s.startswith("<") or s.startswith("{"):
-                continue
-            self.add(file, f"{path_prefix}[{j}]",
-                     f"{context} / note", s)
-
-
 def _read_json(path: str):
     with open(path, encoding="utf-8") as f:
         return json.load(f)
@@ -291,13 +271,6 @@ def extract(game_dir: str, data_dir: str | None = None,
             continue
         if fname in DB_FIELDS:
             ex.db_file(rel, data, DB_FIELDS[fname])
-            # извлечение note для БД-объектов
-            for idx, obj in enumerate(data):
-                if isinstance(obj, dict) and obj.get("note"):
-                    name = obj.get("name") or f"#{idx}"
-                    ex.note_field(rel, f"[{idx}].note",
-                                  obj["note"],
-                                  f"{fname[:-5]} '{name}'")
         elif fname.startswith("Map") and fname != "MapInfos.json":
             ex.map_file(rel, data)
         elif fname == "CommonEvents.json":

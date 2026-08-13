@@ -95,7 +95,7 @@ class ExtractWorker(QThread):
 
 class TranslateWorker(QThread):
     progressed = Signal(int, int)
-    done = Signal(int)
+    done = Signal(int, int)     # (переведено, на целевом языке — пропущено)
     failed = Signal(str)
 
     def __init__(self, translator: Translator, entries, src, tgt,
@@ -118,8 +118,11 @@ class TranslateWorker(QThread):
                 self.entries, self.src, self.tgt,
                 progress=progress_check,
                 overwrite=self.overwrite)
+            skipped = sum(
+                1 for e in self.entries
+                if e.status == "skip" and not e.translation.strip())
             if not self.isInterruptionRequested():
-                self.done.emit(n)
+                self.done.emit(n, skipped)
         except InterruptedError:
             pass
         except Exception as e:  # noqa: BLE001
@@ -1292,15 +1295,19 @@ class TranslateTab(QWidget):
         self.lbl_status.setText(text)
         self.main.loading.set_text(text)
 
-    def _on_translated(self, n):
+    def _on_translated(self, n, skipped=0):
         if self._cancelling:
             return
         self._finish_translate()
         self.main.save_project()
         self._rebuild_file_list()
         self.fill_table()
-        QMessageBox.information(self, TR("done"),
-                                TR("tr_translate_done", n=n))
+        skipped_note = TR("tr_translate_done_skipped", skipped=skipped) \
+            if skipped else ""
+        QMessageBox.information(
+            self, TR("done"),
+            TR("tr_translate_done", n=n, skipped=skipped,
+               skipped_note=skipped_note))
 
     def _on_translate_failed(self, msg):
         if self._cancelling:
@@ -1543,6 +1550,16 @@ class TermsDialog(QDialog):
 class GlossaryDialog(QDialog):
     PAIRS = ["ja->ru", "zh->ru", "en->ru", "ja->en", "zh->en", "ru->en"]
 
+    # читаемые названия для предустановленных пар (code -> метка)
+    _PAIR_LABELS = {
+        "ja->ru": ("glossary_lang_ja", "glossary_lang_ru"),
+        "zh->ru": ("glossary_lang_zh", "glossary_lang_ru"),
+        "en->ru": ("glossary_lang_en", "glossary_lang_ru"),
+        "ja->en": ("glossary_lang_ja", "glossary_lang_en"),
+        "zh->en": ("glossary_lang_zh", "glossary_lang_en"),
+        "ru->en": ("glossary_lang_ru", "glossary_lang_en"),
+    }
+
     def __init__(self, glossary, settings, parent=None,
                  texts: list[str] | None = None, engine=None):
         super().__init__(parent)
@@ -1551,22 +1568,51 @@ class GlossaryDialog(QDialog):
         self.engine = engine
         self.analyze_worker: AnalyzeWorker | None = None
         self.setWindowTitle(TR("glossary_title"))
-        self.resize(600, 450)
+        self.setWindowIcon(icon("book-bookmark", 18, C_TEXT_SECONDARY))
+        self.resize(720, 560)
+        self.setMinimumSize(560, 400)
         lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 14, 14, 10)
+        lay.setSpacing(8)
 
+        # ── верх: пара языков + счётчик ──
         top = QHBoxLayout()
         top.addWidget(QLabel(TR("glossary_pair")))
         self.pair = QComboBox()
         self.pair.setEditable(True)
-        self.pair.addItems(self.PAIRS)
+        self.pair.setInsertPolicy(QComboBox.NoInsert)
+        for code, (k1, k2) in self._PAIR_LABELS.items():
+            self.pair.addItem(
+                f"{TR(k1)} → {TR(k2)}",
+                userData=code)
+        self.pair.setCurrentIndex(-1)
         src = settings.value("source_lang", "auto")
         src = "ja" if src == "auto" else src
-        self.pair.setCurrentText(
-            f"{src}->{settings.value('target_lang', 'ru')}")
-        self.pair.currentTextChanged.connect(self._fill)
+        tgt = settings.value("target_lang", "ru")
+        for i in range(self.pair.count()):
+            if self.pair.itemData(i) == f"{src}->{tgt}":
+                self.pair.setCurrentIndex(i)
+                break
+        else:
+            self.pair.setCurrentText(f"{src}->{tgt}")
+        self.pair.currentIndexChanged.connect(self._on_pair_changed)
+        self.pair.lineEdit().editingFinished.connect(self._fill)
         top.addWidget(self.pair, 1)
+        self.count_label = QLabel("")
+        self.count_label.setStyleSheet(f"color: {C_TEXT_SECONDARY};")
+        top.addWidget(self.count_label)
         lay.addLayout(top)
 
+        # ── поиск по терминам ──
+        self.search = QLineEdit()
+        self.search.setPlaceholderText(TR("glossary_search"))
+        self.search.setClearButtonEnabled(True)
+        self.search.addAction(icon("magnifying-glass", 15, C_TEXT_SECONDARY),
+                              QLineEdit.LeadingPosition)
+        self.search.textChanged.connect(self._fill)
+        lay.addWidget(self.search)
+
+        # ── таблица ──
         self.table = QTableWidget(0, 2)
         self.table.setHorizontalHeaderLabels(
             [TR("glossary_col_orig"), TR("glossary_col_tr")])
@@ -1574,18 +1620,27 @@ class GlossaryDialog(QDialog):
             0, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.Stretch)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(30)
         lay.addWidget(self.table, 1)
 
+        # ── кнопки ──
         row = QHBoxLayout()
         btn_add = QPushButton(TR("glossary_add"))
-        btn_add.clicked.connect(
-            lambda: self.table.insertRow(self.table.rowCount()))
+        btn_add.setIcon(icon("plus", 15, C_TEXT))
+        btn_add.clicked.connect(self._add_row)
         btn_del = QPushButton(TR("glossary_del"))
+        btn_del.setIcon(icon("trash", 15, C_TEXT))
         btn_del.clicked.connect(self._del)
         btn_analyze = QPushButton(TR("glossary_analyze"))
+        btn_analyze.setIcon(icon("sparkles", 15, C_TEXT))
         btn_analyze.clicked.connect(self._analyze)
         btn_save = QPushButton(TR("glossary_save"))
+        btn_save.setIcon(icon("floppy-disk", 15, C_TEXT))
         btn_save.clicked.connect(self._save)
+        btn_save.setDefault(True)
         row.addWidget(btn_add)
         row.addWidget(btn_del)
         row.addStretch(1)
@@ -1595,21 +1650,50 @@ class GlossaryDialog(QDialog):
 
         hint = QLabel(TR("glossary_hint"))
         hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {C_TEXT_SECONDARY};")
         lay.addWidget(hint)
         self._fill()
 
+    def _pair_label(self, code: str) -> str:
+        """"ja->ru" -> "Японский → Русский" (для кастомных кодов — as-is)."""
+        labels = self._PAIR_LABELS.get(code)
+        if not labels:
+            return code.replace("->", " → ")
+        return f"{TR(labels[0])} → {TR(labels[1])}"
+
     def _current_pair(self) -> tuple[str, str]:
-        parts = self.pair.currentText().split("->")
+        data = self.pair.currentData()
+        code = data if isinstance(data, str) and data else self.pair.currentText()
+        parts = code.split("->")
         return (parts[0].strip(), parts[1].strip()) \
             if len(parts) == 2 else ("ja", "ru")
+
+    def _on_pair_changed(self, index: int):
+        self._fill()
 
     def _fill(self):
         src, tgt = self._current_pair()
         terms = self.glossary.terms(src, tgt)
+        query = self.search.text().strip().lower()
+        if query:
+            terms = {k: v for k, v in terms.items()
+                     if query in k.lower() or query in v.lower()}
         self.table.setRowCount(len(terms))
         for r, (k, v) in enumerate(sorted(terms.items())):
             self.table.setItem(r, 0, QTableWidgetItem(k))
             self.table.setItem(r, 1, QTableWidgetItem(v))
+        shown = len(terms)
+        total = len(self.glossary.terms(src, tgt))
+        self.count_label.setText(
+            TR("glossary_count", shown=shown, total=total))
+
+    def _add_row(self):
+        r = self.table.rowCount()
+        self.table.insertRow(r)
+        self.table.setItem(r, 0, QTableWidgetItem(""))
+        self.table.setItem(r, 1, QTableWidgetItem(""))
+        self.table.setCurrentCell(r, 0)
+        self.table.editItem(self.table.item(r, 0))
 
     def _del(self):
         rows = sorted({i.row() for i in self.table.selectedIndexes()},
@@ -1664,13 +1748,24 @@ class GlossaryDialog(QDialog):
         QMessageBox.critical(
             self, TR("err"), TR("glossary_analyze_fail", msg=err))
 
-    def _save(self):
-        src, tgt = self._current_pair()
+    def _collect_terms(self) -> dict:
         terms = {}
         for r in range(self.table.rowCount()):
             k = self.table.item(r, 0)
             v = self.table.item(r, 1)
             if k and k.text().strip():
                 terms[k.text().strip()] = v.text().strip() if v else ""
-        self.glossary.set_terms(src, tgt, terms)
-        self.accept()
+        return terms
+
+    def _save(self):
+        src, tgt = self._current_pair()
+        self.glossary.set_terms(src, tgt, self._collect_terms())
+
+    def closeEvent(self, event):
+        # Даём воркеру-анализатору штатно завершиться, иначе Qt упадёт
+        # с «QThread: Destroyed while thread ... is still running».
+        if self.analyze_worker and self.analyze_worker.isRunning():
+            self.analyze_worker.requestInterruption()
+            self.analyze_worker.wait(15000)
+        self._save()  # автосохранение при закрытии
+        super().closeEvent(event)

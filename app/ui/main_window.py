@@ -279,7 +279,6 @@ class MainWindow(QMainWindow):
         else:
             self.project = Project(game_dir=game_dir, engine=engine)
 
-        self._ask_extract_lang(module)
         self.refresh_all()
 
         self._add_recent(game_dir, engine)
@@ -418,25 +417,6 @@ class MainWindow(QMainWindow):
             return None
 
     # ---------- фоновое извлечение текста ----------
-    def _ask_extract_lang(self, module) -> None:
-        """Многоязычная игра (Ren'Py tl/<lang>): предупредить и дать
-        выбрать ОДИН язык, чтобы не переводить дубли по всем языкам."""
-        p = self.project
-        getter = getattr(module, "list_languages", None)
-        if not getter or not p:
-            return
-        try:
-            langs = getter(p.game_dir)
-        except Exception:  # noqa: BLE001
-            return
-        if len(langs) < 2:
-            return
-        from app.ui.lang_dialog import LangPickDialog
-        dlg = LangPickDialog(langs, p.extract_lang, self)
-        if dlg.exec() == dlg.Accepted:
-            p.extract_lang = dlg.selected_lang
-            self.save_project()
-
     def start_extraction(self, on_done) -> bool:
         """Извлечение в фоне (GUI не морозит).
         on_done(restored: int, error: str)."""
