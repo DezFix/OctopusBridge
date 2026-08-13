@@ -2,15 +2,17 @@
 """Диалог настроек: три вкладки — Основные, Файлы, AI-корректор."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import QThread, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFormLayout,
                                 QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-                                QPushButton, QSlider, QSpinBox, QTabWidget,
+                                QPushButton, QSpinBox, QTabWidget,
                                 QVBoxLayout, QWidget)
 
 from app.core import cache as app_cache
 from app.core.translate.engines import PROVIDERS, AI_PROVIDERS
 from app.ui.i18n import TR, provider_name
+from app.ui.icons import icon
 from app.ui.loading_overlay import BusyLabel
 
 PRESETS = {
@@ -260,8 +262,13 @@ class SettingsDialog(QDialog):
 
         btn_row = QHBoxLayout()
         self.btn_clean_cache = QPushButton(TR("settings_cache_clean"))
+        self.btn_clean_cache.setIcon(icon("trash", 16))
         self.btn_clean_cache.clicked.connect(self._clean_cache)
         btn_row.addWidget(self.btn_clean_cache)
+        self.btn_open_cache = QPushButton(TR("settings_cache_open"))
+        self.btn_open_cache.setIcon(icon("folder-open", 16))
+        self.btn_open_cache.clicked.connect(self._open_cache_dir)
+        btn_row.addWidget(self.btn_open_cache)
         btn_row.addStretch(1)
         form.addRow(btn_row)
 
@@ -273,22 +280,13 @@ class SettingsDialog(QDialog):
         spin_row = QWidget()
         spin_lay = QHBoxLayout(spin_row)
         spin_lay.setContentsMargins(0, 0, 0, 0)
-        self.cache_limit_slider = QSlider()
-        self.cache_limit_slider.setOrientation(Qt.Orientation.Horizontal)
-        self.cache_limit_slider.setRange(10, 2000)
-        self.cache_limit_slider.setSingleStep(10)
-        self.cache_limit_slider.setValue(
-            s.value("cache_auto_clean_mb", 200, type=int))
         self.cache_limit_spin = QSpinBox()
         self.cache_limit_spin.setRange(10, 2000)
-        self.cache_limit_spin.setValue(self.cache_limit_slider.value())
+        self.cache_limit_spin.setValue(
+            s.value("cache_auto_clean_mb", 200, type=int))
         self.cache_limit_spin.setSuffix(" " + TR("settings_cache_mb"))
-        self.cache_limit_slider.valueChanged.connect(
-            self.cache_limit_spin.setValue)
-        self.cache_limit_spin.valueChanged.connect(
-            self.cache_limit_slider.setValue)
-        spin_lay.addWidget(self.cache_limit_slider, 1)
         spin_lay.addWidget(self.cache_limit_spin)
+        spin_lay.addStretch(1)
         form.addRow(TR("settings_cache_limit"), spin_row)
 
         self.cache_status = QLabel("")
@@ -323,6 +321,9 @@ class SettingsDialog(QDialog):
                    size=app_cache.format_size(freed, self._cache_lang())))
         else:
             self.cache_status.setText(TR("settings_cache_nothing"))
+
+    def _open_cache_dir(self):
+        QDesktopServices.openUrl(QUrl.fromLocalFile(app_cache.projects_dir()))
 
     # ── Provider visibility ──
     def _update_provider_visibility(self, eng: dict):

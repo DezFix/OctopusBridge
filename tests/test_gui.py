@@ -132,7 +132,8 @@ assert hasattr(d, "glossary_use_ai")
 assert d.glossary_use_ai.isChecked()
 assert hasattr(d, "cache_size_label") and d.cache_size_label.text()
 assert hasattr(d, "btn_clean_cache") and hasattr(d, "auto_clean")
-assert d.cache_limit_slider.value() == d.cache_limit_spin.value()
+assert hasattr(d, "btn_open_cache") and d.btn_open_cache.icon().isNull() is False
+assert d.cache_limit_spin.value() == w.settings.value("cache_auto_clean_mb", 200, type=int)
 old_lang = w.settings.value("ui_lang", "en")
 was_auto = d.auto_clean.isChecked()
 d._save_and_close()
@@ -189,7 +190,8 @@ for key in ("settings_corr_tab", "settings_glossary_box",
             "settings_system_tab", "settings_cache_box",
             "settings_cache_size", "settings_cache_clean",
             "settings_cache_auto", "settings_cache_limit",
-            "settings_cache_cleaned", "settings_cache_nothing"):
+            "settings_cache_cleaned", "settings_cache_nothing",
+            "settings_cache_open"):
     assert TR(key), key
 print("   OK")
 

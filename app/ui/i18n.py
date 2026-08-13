@@ -465,6 +465,7 @@ _STRINGS = {
         "en": "{size} ({files} files)",
     },
     "settings_cache_clean": {"ru": "Очистить кеш", "en": "Clear cache"},
+    "settings_cache_open": {"ru": "Открыть папку", "en": "Open folder"},
     "settings_cache_auto": {
         "ru": "Автоочистка: удалять временные проекты при запуске, "
              "если кеш превысит",

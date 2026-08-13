@@ -6,11 +6,15 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QPropertyAnimation, QEasingCurve
+import os
+
+from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QUrl
 from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtWidgets import (QApplication,
                                 QLabel,
                                 QWidget)
+
+from app import bundle_dir
 
 # ======================================================================
 #  Design tokens
@@ -74,6 +78,17 @@ C_GROUP_BORDER = "#2e3243"
 # ======================================================================
 #  QSS
 # ======================================================================
+
+
+def _asset_url(name: str) -> str:
+    """file:// URL иконки из assets/ (рядом с exe/репозиторием)."""
+    path = os.path.join(bundle_dir(), "assets", name)
+    return QUrl.fromLocalFile(path).toString()
+
+
+_COMBO_ARROW = _asset_url("chevron-down.png")
+_SPIN_UP = _asset_url("chevron-up.png")
+_SPIN_DOWN = _asset_url("chevron-down.png")
 
 _QSS = f"""
 * {{
@@ -335,10 +350,9 @@ QComboBox::drop-down {{
     width: 24px;
 }}
 QComboBox::down-arrow {{
-    image: none;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid {C_TEXT_SECONDARY};
+    image: url("{_COMBO_ARROW}");
+    width: 12px;
+    height: 12px;
     margin-right: 4px;
 }}
 QComboBox QAbstractItemView {{
@@ -365,16 +379,14 @@ QSpinBox::up-button, QSpinBox::down-button {{
     width: 18px;
 }}
 QSpinBox::up-arrow {{
-    image: none;
-    border-left: 3px solid transparent;
-    border-right: 3px solid transparent;
-    border-bottom: 4px solid {C_TEXT_SECONDARY};
+    image: url("{_SPIN_UP}");
+    width: 10px;
+    height: 10px;
 }}
 QSpinBox::down-arrow {{
-    image: none;
-    border-left: 3px solid transparent;
-    border-right: 3px solid transparent;
-    border-top: 4px solid {C_TEXT_SECONDARY};
+    image: url("{_SPIN_DOWN}");
+    width: 10px;
+    height: 10px;
 }}
 
 /* ── Lists / trees ── */
