@@ -11,58 +11,58 @@
 </p>
 
 <p align="center">
-  Перевод и модификация игр на ПК.<br>
-  Поддерживаются <b>RPG Maker MV/MZ</b> (включая Electron-сборки), <b>Ren'Py</b>, <b>Twine</b> и <b>TyranoScript</b>.<br>
-  Перевод <b>пакетный</b>: текст извлекается из файлов игры, переводится и внедряется обратно до запуска игры.
+  Translate and mod PC games.<br>
+  Supported: <b>RPG Maker MV/MZ</b> (including Electron builds), <b>Ren'Py</b>, <b>Twine</b> and <b>TyranoScript</b>.<br>
+  Translation is <b>batch-based</b>: text is extracted from the game files, translated and written back before the game is launched.
 </p>
 
 <p align="center">
-  <a href="README.en.md">English</a>
+  <a href="README.ru.md">Русская версия</a>
 </p>
 
-## Возможности
+## Features
 
-- **Пакетный перевод** — извлечение текста из игры, перевод, внедрение обратно, экспорт/импорт CSV. При повторном извлечении старые переводы восстанавливаются.
-- **Быстрый перевод** — пакеты до 100 строк, несколько пакетов параллельно (~28 600 строк/мин на бесплатных движках Google).
-- **Без ключей и регистрации** — бесплатные endpoints Google (каскад из трёх — со встроенной защитой от rate-limit) и Bing; для больших объёмов подключается AI-провайдер (OpenAI-совместимый API).
-- **AI-корректор** — правка перевода с учётом глоссария и контекста, диффы перед применением.
-- **Читы и инструменты** — зависят от движка: переменные, золото, телепорт, редактор карт, редактор сейвов, просмотр ресурсов, патч шрифта.
-- **Глоссарий и память переводов** — общая база на все проекты (SQLite), маскирование игровых кодов (`\C[8]`, `<center>` и т. п.).
-- **Единый кэш переводов** — все движки пишут один файл `octopus_cache.json` в папке игры; старые кэши переносятся автоматически.
-- **Удобный интерфейс** — тёмная тема, русский/английский, системный трей, drag-and-drop игр, «О программе» с чейнджлогом.
+- **Batch translation** — extract game text, translate, write it back, CSV import/export. Old translations are restored on re-extraction.
+- **Fast translation** — batches of up to 100 lines, several batches in parallel (~28,600 lines/min on Google's free endpoints).
+- **No keys, no sign-up** — free Google endpoints (a cascade of three, with built-in rate-limit protection) and Bing; for heavy workloads connect an AI provider (OpenAI-compatible API).
+- **AI corrector** — polish translations with glossary and context, review diffs before applying.
+- **Cheats & tools** — per engine: variables, gold, teleport, map editor, save editor, resource browser, font patch.
+- **Glossary & translation memory** — shared database across all projects (SQLite), game-code masking (`\C[8]`, `<center>`, …).
+- **Unified translation cache** — all engines write one `octopus_cache.json` in the game folder; legacy caches are migrated automatically.
+- **Nice UI** — dark theme, Russian/English, system tray, drag-and-drop, About dialog with a changelog.
 
-## Движки
+## Engines
 
-| Движок | Статус |
+| Engine | Status |
 |---|---|
-| RPG Maker MV / MZ | стабильно (в т. ч. Electron-сборки с `app.asar`) |
-| Ren'Py | стабильно |
-| TyranoScript / TyranoBuilder | поддерживается |
-| Twine (SugarCube) | экспериментально |
+| RPG Maker MV / MZ | stable (incl. Electron builds with `app.asar`) |
+| Ren'Py | stable |
+| TyranoScript / TyranoBuilder | supported |
+| Twine (SugarCube) | experimental |
 
-## Требования
+## Requirements
 
-- Windows 10/11 (64-бит).
-- ~500 МБ на диске.
+- Windows 10/11 (64-bit).
+- ~500 MB of disk space.
 
-## Установка
+## Installation
 
-1. Скачайте `OctopusBridge.exe` из релизов и запустите.
+1. Download `OctopusBridge.exe` from the releases and run it.
 
-> EXE не подписан — Windows SmartScreen может показать предупреждение («Подробнее → Выполнить в любом случае»).
+> The EXE is unsigned — Windows SmartScreen may show a warning («More info → Run anyway»).
 
-## Быстрый старт
+## Quick start
 
-1. **Откройте игру** — перетащите папку игры или `Game.exe` в окно приложения (или в список на вкладке «Проекты»).
-2. **Перевод** — вкладка «Перевод файлов»: извлеките текст, нажмите «Перевод», затем «Применить», чтобы внедрить перевод в игру.
-3. **Читы / карты / сейвы** — появляются во вкладках движка после открытия проекта: читы и карты работают с запущенной игрой, редактор сейвов — с файлами напрямую.
+1. **Open a game** — drag the game folder or `Game.exe` into the app window (or into the list on the "Projects" tab).
+2. **Translate** — "File translation" tab: extract the text, press "Translate", then "Apply" to write the translation back into the game.
+3. **Cheats / maps / saves** — appear in the engine tabs after opening a project: cheats and maps work with a running game, the save editor works with files directly.
 
-## Примечания
+## Notes
 
-- Google/Bing — неофициальные бесплатные endpoints: без ключей, но могут ограничивать объём. Для больших проектов подключите AI-провайдера в настройках.
-- Инъекции изменяют процесс игры в памяти — используйте инструмент только на играх, которые вам принадлежат или которые вам разрешено модифицировать.
-- История изменений — [CHANGELOG.md](CHANGELOG.md).
+- Google/Bing are unofficial free endpoints: no keys, but they may limit volume. For big projects, connect an AI provider in the settings.
+- Injections modify the game process in memory — use the tool only on games you own or are allowed to modify.
+- Changelog — [CHANGELOG.md](CHANGELOG.md).
 
-## Лицензия
+## License
 
-GPL-3.0 — см. [LICENSE](LICENSE). Проекты, которые вы создаёте в приложении, остаются вашими.
+GPL-3.0 — see [LICENSE](LICENSE). Projects you create in the app remain yours.
