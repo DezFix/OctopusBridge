@@ -2,11 +2,13 @@
 """Диалог настроек: три вкладки — Основные, Файлы, AI-корректор."""
 from __future__ import annotations
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFormLayout,
                                 QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-                                QPushButton, QTabWidget, QVBoxLayout, QWidget)
+                                QPushButton, QSlider, QSpinBox, QTabWidget,
+                                QVBoxLayout, QWidget)
 
+from app.core import cache as app_cache
 from app.core.translate.engines import PROVIDERS, AI_PROVIDERS
 from app.ui.i18n import TR, provider_name
 from app.ui.loading_overlay import BusyLabel
@@ -53,6 +55,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._build_general_tab(s), TR("settings_general"))
         tabs.addTab(self._build_files_tab(s), TR("settings_files"))
         tabs.addTab(self._build_ai_tab(s), TR("settings_corr_tab"))
+        tabs.addTab(self._build_system_tab(s), TR("settings_system_tab"))
         lay.addWidget(tabs, 1)
 
         bottom = QHBoxLayout()
@@ -243,6 +246,84 @@ class SettingsDialog(QDialog):
         lay.addStretch(1)
         return w
 
+    # ── Tab 5: System (cache size + auto-clean) ──
+    def _build_system_tab(self, s) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+
+        cache_box = QGroupBox(TR("settings_cache_box"))
+        form = QFormLayout(cache_box)
+
+        self.cache_size_label = QLabel()
+        self.cache_size_label.setWordWrap(True)
+        form.addRow(TR("settings_cache_size_lbl"), self.cache_size_label)
+
+        btn_row = QHBoxLayout()
+        self.btn_clean_cache = QPushButton(TR("settings_cache_clean"))
+        self.btn_clean_cache.clicked.connect(self._clean_cache)
+        btn_row.addWidget(self.btn_clean_cache)
+        btn_row.addStretch(1)
+        form.addRow(btn_row)
+
+        self.auto_clean = QCheckBox(TR("settings_cache_auto"))
+        self.auto_clean.setChecked(s.value("cache_auto_clean", False,
+                                           type=bool))
+        form.addRow(self.auto_clean)
+
+        spin_row = QWidget()
+        spin_lay = QHBoxLayout(spin_row)
+        spin_lay.setContentsMargins(0, 0, 0, 0)
+        self.cache_limit_slider = QSlider()
+        self.cache_limit_slider.setOrientation(Qt.Orientation.Horizontal)
+        self.cache_limit_slider.setRange(10, 2000)
+        self.cache_limit_slider.setSingleStep(10)
+        self.cache_limit_slider.setValue(
+            s.value("cache_auto_clean_mb", 200, type=int))
+        self.cache_limit_spin = QSpinBox()
+        self.cache_limit_spin.setRange(10, 2000)
+        self.cache_limit_spin.setValue(self.cache_limit_slider.value())
+        self.cache_limit_spin.setSuffix(" " + TR("settings_cache_mb"))
+        self.cache_limit_slider.valueChanged.connect(
+            self.cache_limit_spin.setValue)
+        self.cache_limit_spin.valueChanged.connect(
+            self.cache_limit_slider.setValue)
+        spin_lay.addWidget(self.cache_limit_slider, 1)
+        spin_lay.addWidget(self.cache_limit_spin)
+        form.addRow(TR("settings_cache_limit"), spin_row)
+
+        self.cache_status = QLabel("")
+        self.cache_status.setWordWrap(True)
+        form.addRow(self.cache_status)
+
+        lay.addWidget(cache_box)
+
+        info = QLabel(TR("settings_cache_info"))
+        info.setWordWrap(True)
+        lay.addWidget(info)
+        lay.addStretch(1)
+        self._refresh_cache_size()
+        return w
+
+    def _cache_lang(self) -> str:
+        return "ru" if self.ui_lang.currentIndex() == 0 else "en"
+
+    def _refresh_cache_size(self):
+        total, files = app_cache.projects_size()
+        self.cache_size_label.setText(
+            TR("settings_cache_size",
+               size=app_cache.format_size(total, self._cache_lang()),
+               files=files))
+
+    def _clean_cache(self):
+        freed = app_cache.clean_cache()
+        self._refresh_cache_size()
+        if freed > 0:
+            self.cache_status.setText(
+                TR("settings_cache_cleaned",
+                   size=app_cache.format_size(freed, self._cache_lang())))
+        else:
+            self.cache_status.setText(TR("settings_cache_nothing"))
+
     # ── Provider visibility ──
     def _update_provider_visibility(self, eng: dict):
         key = eng["engine"].currentData()
@@ -344,6 +425,8 @@ class SettingsDialog(QDialog):
         s.setValue("file_overwrite_mode", self.overwrite_mode.currentIndex())
         s.setValue("auto_backup", self.auto_backup.isChecked())
         s.setValue("glossary_use_ai", self.glossary_use_ai.isChecked())
+        s.setValue("cache_auto_clean", self.auto_clean.isChecked())
+        s.setValue("cache_auto_clean_mb", self.cache_limit_spin.value())
         old_lang = s.value("ui_lang", "ru")
         new_lang = "ru" if self.ui_lang.currentIndex() == 0 else "en"
         s.setValue("ui_lang", new_lang)

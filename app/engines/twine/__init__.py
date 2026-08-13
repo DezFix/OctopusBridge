@@ -64,8 +64,7 @@ class TwineModule(EngineModule):
 
     def apply(self, game_dir: str, entries: list, **kwargs) -> dict:
         from app.core.twine import parser
-        return parser.apply(game_dir, entries,
-                            target_lang=kwargs.get("target_lang", "ru"))
+        return parser.apply(game_dir, entries)
 
     def ui_tabs(self, main_window) -> list[tuple]:
         from app.ui.save_editor_tab import SaveEditorTab

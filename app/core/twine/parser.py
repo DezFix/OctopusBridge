@@ -33,6 +33,37 @@ RE_COMMENT = re.compile(r"^\s*(/%%|%%/|<!--)")
 RE_PURE_LINK = re.compile(r"^\s*\[\[[^\]]*\]\]\s*$")
 RE_PURE_TAG = re.compile(r"^\s*<[^>]*>\s*$")
 
+# коды внутри переводимой строки: SugarCube-макросы <<..>>, ссылки
+# [[..]], переменные $var и HTML-теги <..> — маскируются токенами
+# <xN/>, чтобы переводчик (LLM/Honyaku) не изменил их и игра не
+# упала («cannot find a closing tag for macro <<widget>>» и т.п.)
+RE_TWINE_CODE = re.compile(
+    r"<<[^>]{1,200}>>"
+    r"|\[\[[^\]\n]{1,300}\]\]"
+    r"|\$[A-Za-z_][A-Za-z0-9_]{0,60}"
+    r"|</?[A-Za-z][^>]{0,80}>")
+_TOKEN_RE = re.compile(r"</?x(\d+)\s*/?>")
+# любой макрос в строке (для детекта «выполняющего кода»)
+RE_MACRO_ANY = re.compile(r"<<[^>]*>>")
+
+
+def _dangerous_macro(line: str) -> bool:
+    """Есть ли в строке макрос, ВЫПОЛНЯЮЩИЙ код (set/run/if/вызов
+    виджета и т.п.). Безопасны только печатающие: <<= expr>>,
+    <<$var>> (старый синтаксис), <<print ...>>.
+
+    Такие строки не переводим вообще: даже с маской токена
+    переводчик может переставить макрос относительно текста
+    или слить два макроса — логика игры сломается.
+    """
+    for m in RE_MACRO_ANY.finditer(line):
+        body = m.group(0)[2:-2].lstrip()
+        if (body.startswith("=") or body.startswith("$")
+                or body.lower().startswith("print")):
+            continue
+        return True
+    return False
+
 
 def _has_letters(text: str) -> bool:
     return any(ch.isalpha() for ch in text)
@@ -80,7 +111,42 @@ def is_translatable_line(line: str) -> bool:
         return False
     if RE_PURE_LINK.match(line) or RE_PURE_TAG.match(line):
         return False
+    if re.search(r"<script\b|</script", line, re.I):
+        return False
+    if _dangerous_macro(line):
+        return False
     return True
+
+
+def mask_codes(text: str) -> tuple[str, list[str]]:
+    """Заменяет Twine-коды (<<..>>, [[..]], $var, HTML-теги) на <xN/>.
+
+    Возвращает (замаскированный текст, список кодов) — порядок
+    и число кодов детерминированы: одинаковый вход → одинаковые
+    токены, поэтому маску можно пересчитывать в apply.
+    """
+    codes: list[str] = []
+
+    def repl(m: re.Match) -> str:
+        codes.append(m.group(0))
+        return f"<x{len(codes) - 1}/>"
+
+    return RE_TWINE_CODE.sub(repl, text), codes
+
+
+def unmask_codes(text: str, codes: list[str]) -> str:
+    """Восстанавливает коды на места токенов <xN/>."""
+    def repl(m: re.Match) -> str:
+        i = int(m.group(1))
+        return codes[i] if i < len(codes) else m.group(0)
+
+    return _TOKEN_RE.sub(repl, text)
+
+
+def codes_intact(text: str, n: int) -> bool:
+    """True, если в text все токены <x0/>..<x{n-1}/> на месте по порядку."""
+    found = sorted(int(m.group(1)) for m in _TOKEN_RE.finditer(text))
+    return found == list(range(n))
 
 
 def extract(game_dir: str) -> list[TranslationEntry]:
@@ -93,19 +159,31 @@ def extract(game_dir: str) -> list[TranslationEntry]:
         text = f.read()
     entries: list[TranslationEntry] = []
     next_id = 1
+    in_script = False
     for m in RE_PASSAGE.finditer(text):
         attrs = _attrs(m.group(1))
         pid = attrs.get("pid", "?")
         name = html_mod.unescape(attrs.get("name", ""))
         for n, line in enumerate(m.group(2).split("\n")):
+            low = line.lower()
+            # JS-код внутри <script>...</script>: строки похожи на
+            # текст, LLM их «переводит» и ломает логику игры
+            if "<script" in low:
+                in_script = "</script" not in low  # inline-блок — без флага
+                continue
+            if in_script:
+                if "</script" in low:
+                    in_script = False
+                continue
             if not is_translatable_line(line):
                 continue
             original = html_mod.unescape(line.strip())
+            masked, _ = mask_codes(original)
             entries.append(TranslationEntry(
                 id=next_id, file=rel,
                 json_path=f"passage[{pid}].line[{n}]",
                 context=f"{name} (pid {pid})",
-                original=original))
+                original=masked))
             next_id += 1
     return entries
 
@@ -116,13 +194,14 @@ def apply(game_dir: str, entries: list[TranslationEntry],
     story = find_story(game_dir)
     if not story:
         return {"files": 0, "strings": 0, "backups": []}
-    by_pid: dict[str, dict[int, str]] = {}
+    by_pid: dict[str, dict[int, tuple[str, str]]] = {}
     for e in entries:
         if not e.translation.strip() or e.status == "skip":
             continue
         m = re.match(r"passage\[(\d+)\]\.line\[(\d+)\]", e.json_path)
         if m:
-            by_pid.setdefault(m.group(1), {})[int(m.group(2))] = e.translation
+            by_pid.setdefault(m.group(1), {})[int(m.group(2))] = (
+                e.original, e.translation)
 
     with open(story, encoding="utf-8", errors="ignore") as f:
         text = f.read()
@@ -145,11 +224,28 @@ def apply(game_dir: str, entries: list[TranslationEntry],
         if not lines_map:
             return m.group(0)
         lines = m.group(2).split("\n")
-        for idx, translation in lines_map.items():
+        for idx, (orig, translation) in lines_map.items():
             if 0 <= idx < len(lines):
                 lead = lines[idx][:len(lines[idx])
                                      - len(lines[idx].lstrip())]
-                lines[idx] = lead + html_mod.escape(translation, quote=False)
+                cur = lines[idx]
+                # Строки, содержащие выполняющий код (<<set>>, <<run>>,
+                # вызовы виджетов и т.п.) или JS-код внутри <script>,
+                # не трогаем ни при каких условиях — даже перевод из
+                # старого проекта не внедряем, чтобы не сломать игру.
+                if _dangerous_macro(cur) \
+                        or re.search(r"<script\b|</script", cur, re.I):
+                    continue
+                # Новые извлечения хранят оригинал с токенами <xN/>:
+                # пересчитываем маску по текущей строке и восстанавливаем
+                # коды в переводе. Если переводчик потерял токен —
+                # строку не трогаем, чтобы не сломать игру.
+                _, codes = mask_codes(html_mod.unescape(cur))
+                if codes and _TOKEN_RE.search(orig) \
+                        and not codes_intact(translation, len(codes)):
+                    continue
+                text = unmask_codes(translation, codes)
+                lines[idx] = lead + html_mod.escape(text, quote=False)
                 written += 1
         return f"<tw-passagedata{m.group(1)}>" + "\n".join(lines) + \
             "</tw-passagedata>"

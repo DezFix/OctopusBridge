@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (QMainWindow, QTabWidget, QSystemTrayIcon,
                                QMenu)
 
 import app as app_paths
+from app.core import cache as app_cache
 from app.core.session import GameSession
 from app.core.tentacles import create_tentacle
 from app.core.models import Project
@@ -164,6 +165,7 @@ class MainWindow(QMainWindow):
         self.bridge_client.connect(self._on_sb_client)
         self.refresh_status_bar()
         self.refresh_project_stats()
+        app_cache.maybe_auto_clean(self.settings)
 
     def resizeEvent(self, event):
         if getattr(self, "loading", None):

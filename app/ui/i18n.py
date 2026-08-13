@@ -341,6 +341,12 @@ _STRINGS = {
     "tr_col_original": {"ru": "Оригинал", "en": "Original"},
     "tr_col_translation": {"ru": "Перевод", "en": "Translation"},
     "tr_col_status": {"ru": "Статус", "en": "Status"},
+    "tr_copy_original": {"ru": "Копировать оригинал", "en": "Copy original"},
+    "tr_copy_translation": {
+        "ru": "Копировать перевод",
+        "en": "Copy translation",
+    },
+    "tr_copy_row": {"ru": "Копировать строку", "en": "Copy row"},
     "sb_done": {"ru": "переведено", "en": "translated"},
     "sb_draft": {"ru": "черновиков", "en": "drafts"},
     "sb_empty": {"ru": "пусто", "en": "empty"},
@@ -448,6 +454,44 @@ _STRINGS = {
     "settings_languages": {"ru": "Языки перевода", "en": "Translation Languages"},
     "settings_files": {"ru": "Файлы", "en": "Files"},
     "settings_corr_tab": {"ru": "ИИ корректор", "en": "AI Corrector"},
+    "settings_system_tab": {"ru": "Система", "en": "System"},
+    "settings_cache_box": {"ru": "Кеш", "en": "Cache"},
+    "settings_cache_size_lbl": {
+        "ru": "Папка проектов:",
+        "en": "Projects folder:",
+    },
+    "settings_cache_size": {
+        "ru": "{size} ({files} файлов)",
+        "en": "{size} ({files} files)",
+    },
+    "settings_cache_clean": {"ru": "Очистить кеш", "en": "Clear cache"},
+    "settings_cache_auto": {
+        "ru": "Автоочистка: удалять временные проекты при запуске, "
+             "если кеш превысит",
+        "en": "Auto-clean: remove temp projects on start when cache "
+             "exceeds",
+    },
+    "settings_cache_limit": {
+        "ru": "Порог (когда чистить):",
+        "en": "Limit (when to clean):",
+    },
+    "settings_cache_mb": {"ru": "МБ", "en": "MB"},
+    "settings_cache_cleaned": {
+        "ru": "Очищено: {size}",
+        "en": "Cleaned: {size}",
+    },
+    "settings_cache_nothing": {
+        "ru": "Кеш пуст — удалять нечего",
+        "en": "Cache is empty — nothing to clean",
+    },
+    "settings_cache_info": {
+        "ru": "Кеш — это временные проекты (tmp*.ob.json), "
+             "оставшиеся от прерванных сессий. Проекты игр и база "
+             "переводов не удаляются.",
+        "en": "Cache means temporary projects (tmp*.ob.json) left "
+             "after interrupted sessions. Game projects and the "
+             "translation memory are never removed.",
+    },
     "settings_provider": {"ru": "Провайдер перевода", "en": "Translation Provider"},
     "settings_files_provider": {
         "ru": "Провайдер для перевода файлов",

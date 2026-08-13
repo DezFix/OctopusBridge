@@ -121,17 +121,23 @@ with tempfile.TemporaryDirectory() as td:
     assert "cheats" not in w.engine_module.features
 print("   OK")
 
-print("4) Настройки: 3 вкладки (Основные/Файлы/ИИ корректор)...")
+print("4) Настройки: 4 вкладки (Основные/Файлы/ИИ корректор/Система)...")
 from app.ui.settings_tab import SettingsDialog
 d = SettingsDialog(w)
 tabs = [d.tabs.tabText(i) for i in range(d.tabs.count())]
-assert len(tabs) == 3, tabs
+assert len(tabs) == 4, tabs
 assert "ИИ корректор" in tabs or "AI Corrector" in tabs
+assert "Система" in tabs or "System" in tabs
 assert hasattr(d, "glossary_use_ai")
 assert d.glossary_use_ai.isChecked()
+assert hasattr(d, "cache_size_label") and d.cache_size_label.text()
+assert hasattr(d, "btn_clean_cache") and hasattr(d, "auto_clean")
+assert d.cache_limit_slider.value() == d.cache_limit_spin.value()
 old_lang = w.settings.value("ui_lang", "en")
+was_auto = d.auto_clean.isChecked()
 d._save_and_close()
 assert w.settings.value("glossary_use_ai", True, type=bool)
+assert w.settings.value("cache_auto_clean", False, type=bool) == was_auto
 w.settings.setValue("ui_lang", old_lang)
 print("   OK:", tabs)
 
@@ -178,7 +184,12 @@ for key in ("settings_corr_tab", "settings_glossary_box",
             "party_col_mp", "party_col_exp", "party_col_inparty",
             "sv_search_ph", "sv_open_title", "sv_params", "sv_unsaved",
             "sv_save_err", "settings_status_ping",
-            "cheat_names_translating"):
+            "cheat_names_translating", "tr_copy_original",
+            "tr_copy_translation", "tr_copy_row",
+            "settings_system_tab", "settings_cache_box",
+            "settings_cache_size", "settings_cache_clean",
+            "settings_cache_auto", "settings_cache_limit",
+            "settings_cache_cleaned", "settings_cache_nothing"):
     assert TR(key), key
 print("   OK")
 

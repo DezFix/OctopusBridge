@@ -126,7 +126,13 @@ STORY_HTML = """<!DOCTYPE html>
   hidestoryicons=""><tw-passagedata pid="1" name="Start" tags="">You wake up in a forest.
 <<set $gold to 100>>
 [[Go deeper|forest2]]
-Your gold: $gold.</tw-passagedata><tw-passagedata pid="2" name="forest2"
+You grab <<$item_name>> from the shelf.
+Clock: <<set $now to new Date()>> starts now.
+Your gold: $gold.
+<script>
+window.CLOCK = new Date();
+window.CLOCK.setMinutes(0);
+</script></tw-passagedata><tw-passagedata pid="2" name="forest2"
   tags="">&lt;b&gt;You are lost.&lt;/b&gt;
 A wolf appears!</tw-passagedata></tw-storydata></body></html>
 """
@@ -147,8 +153,16 @@ with tempfile.TemporaryDirectory() as td:
     entries = twine.extract(td)
     originals = [e.original for e in entries]
     assert "You wake up in a forest." in originals
-    assert "<b>You are lost.</b>" in originals
+    assert "<x0/>You are lost.<x1/>" in originals
     assert not any("<<set" in o or "[[Go" in o for o in originals)
+    # макрос внутри строки маскируется токеном, в файл не лезет
+    shelf = next(e for e in entries
+                 if e.original.startswith("You grab <x0/> from"))
+    assert shelf.original == "You grab <x0/> from the shelf.", shelf.original
+    # строка с выполняющим кодом (<<set>>) вообще не извлекается
+    assert not any("Clock" in o for o in originals)
+    # JS-код внутри <script> не извлекается
+    assert not any("window" in o or "CLOCK" in o for o in originals)
     print("   OK:", len(entries), "строк")
 
 print("4) Twine: внедрение — макросы и ссылки целы, бэкап...")
@@ -164,8 +178,40 @@ with tempfile.TemporaryDirectory() as td:
     assert "<<set $gold to 100>>" in text
     assert "[[Go deeper|forest2]]" in text
     assert "RU:&lt;b&gt;You are lost.&lt;/b&gt;" in text
+    # макросы/теги внутри строки восстановлены после перевода
+    assert "RU:You grab &lt;&lt;$item_name&gt;&gt; from the shelf." in text, text
+    assert "RU:Your gold: $gold." in text
+    # переводчик потерял токен макроса — строка не внедряется,
+    # иначе игра упадёт («cannot find a closing tag for macro ...»)
+    for e in entries:
+        if e.original.startswith("You grab <x0/>"):
+            e.translation = "RU:You grab item from the shelf."
+    stats = twine.apply(td, entries)
+    text = open(story, encoding="utf-8").read()
+    assert "You grab &lt;&lt;$item_name&gt;&gt; from the shelf." in text
+    assert stats["strings"] == len(entries) - 1, stats
     assert stats["backups"]
+    # строка с выполняющим кодом: перевод из старого проекта не внедряем
+    old = [TranslationEntry(id=99, file=story, json_path="passage[1].line[4]",
+                            context="", original="Clock: <<set $now to new Date()>> starts now.",
+                            translation="RU:Часы: <<set $now to new Date()>> запущены.")]
+    stats = twine.apply(td, entries + old)
+    text = open(story, encoding="utf-8").read()
+    assert "Clock: <<set $now to new Date()>> starts now." in text, text
+    assert stats["strings"] == len(entries) - 1, stats
+    # JS-код в <script>: перевод из старого проекта не внедряем
+    old = [TranslationEntry(id=100, file=story, json_path="passage[1].line[6]",
+                            context="", original="window.CLOCK.setMinutes(0);",
+                            translation="RU:окно.ЧАСЫ.установитьМинуты(0);")]
+    stats = twine.apply(td, entries + old)
+    text = open(story, encoding="utf-8").read()
+    assert "window.CLOCK.setMinutes(0);" in text, text
+    assert stats["strings"] == len(entries) - 1, stats
     twine.apply(td, entries)  # повторное внедрение не портит файл
+    from app.engines.twine import TwineModule
+    mod = TwineModule(td)
+    stats = mod.apply(td, entries, target_lang="ru")  # как зовёт UI
+    assert stats["strings"] == len(entries) - 1  # строка без токена скипнута
 print("   OK")
 
 print("5) Twine: LZ-сейвы (round-trip + delta)...")

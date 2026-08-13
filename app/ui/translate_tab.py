@@ -7,14 +7,16 @@ from __future__ import annotations
 from PySide6.QtCore import (QEvent, QPointF, QRectF, QSize, Qt, QThread,
                             QTimer, Signal)
 from PySide6.QtGui import (QAction, QActionGroup, QColor, QFont, QIcon,
-                           QLinearGradient, QPainter, QPainterPath, QPen,
-                           QPixmap)
+                           QKeySequence, QLinearGradient, QPainter,
+                           QPainterPath, QPen, QPixmap, QShortcut)
 from PySide6.QtWidgets import (QAbstractItemDelegate, QAbstractItemView,
-                               QButtonGroup, QCheckBox, QComboBox, QDialog,
+                               QApplication, QButtonGroup, QCheckBox,
+                               QComboBox, QDialog,
                                QFileDialog, QFrame, QHBoxLayout, QHeaderView,
                                QLabel, QLineEdit, QMenu, QMessageBox,
                                QPlainTextEdit, QProgressBar, QPushButton,
-                               QRadioButton, QScrollArea, QSplitter,
+                               QRadioButton, QScrollArea,
+                               QSplitter,
                                QStackedWidget, QStyledItemDelegate,
                                QTableWidget, QTableWidgetItem, QToolButton,
                                QVBoxLayout, QWidget)
@@ -894,6 +896,11 @@ class TranslateTab(QWidget):
             | QAbstractItemView.EditKeyPressed
             | QAbstractItemView.SelectedClicked)
         self.table.itemChanged.connect(self._on_item_changed)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._table_menu)
+        self._copy_shortcut = QShortcut(
+            QKeySequence.StandardKey.Copy, self.table,
+            activated=self._copy_cell)
         self._trans_delegate = _TransDelegate(self.table)
         self.table.setItemDelegateForColumn(COL_TRANS, self._trans_delegate)
         self._status_delegate = _StatusDelegate(self.table)
@@ -1226,6 +1233,46 @@ class TranslateTab(QWidget):
         self._update_steps()
         self.table.viewport().update()
         self._flash_saved()
+
+    # ── копирование текста из таблицы ──
+
+    def _row_texts(self, row: int) -> tuple[str, str]:
+        """(оригинал, перевод) для строки таблицы."""
+        orig = self.table.item(row, COL_ORIG)
+        trans = self.table.item(row, COL_TRANS)
+        return (orig.text() if orig else "",
+                trans.text() if trans else "")
+
+    def _copy_text(self, text: str):
+        if text:
+            QApplication.clipboard().setText(text)
+
+    def _copy_cell(self):
+        item = self.table.currentItem()
+        if item:
+            self._copy_text(item.text())
+
+    def _table_menu(self, pos):
+        index = self.table.indexAt(pos)
+        if not index.isValid():
+            return
+        row = index.row()
+        orig, trans = self._row_texts(row)
+        menu = QMenu(self.table)
+        act_orig = menu.addAction(TR("tr_copy_original"))
+        act_orig.setEnabled(bool(orig))
+        act_trans = menu.addAction(TR("tr_copy_translation"))
+        act_trans.setEnabled(bool(trans))
+        menu.addSeparator()
+        act_row = menu.addAction(TR("tr_copy_row"))
+        act_row.setEnabled(bool(orig) or bool(trans))
+        chosen = menu.exec(self.table.viewport().mapToGlobal(pos))
+        if chosen is act_orig:
+            self._copy_text(orig)
+        elif chosen is act_trans:
+            self._copy_text(trans)
+        elif chosen is act_row:
+            self._copy_text(f"{orig}\n\n{trans}" if trans else orig)
 
     # ── статус-пилюля: клик циклически меняет статус ──
 

@@ -123,5 +123,43 @@ assert entries[2].status == "new"
 corrector.cancel()
 print("   OK")
 
+print("7) Кеш проектов (размер/очистка/автоочистка)...")
+import app.core.cache as app_cache
+with tempfile.TemporaryDirectory() as td:
+    app_cache.projects_dir = lambda: td
+    for name in ("tmp_1.ob.json", "tmp_2.ob.json", "game.ob.json"):
+        with open(os.path.join(td, name), "w", encoding="utf-8") as f:
+            f.write("x" * 512)
+    total, files = app_cache.projects_size()
+    assert total == 512 * 3 and files == 3
+    assert app_cache.is_tmp_project("tmp_x.ob.json")
+    assert not app_cache.is_tmp_project("game.ob.json")
+    freed = app_cache.clean_cache()
+    assert freed == 1024
+    total, files = app_cache.projects_size()
+    assert total == 512 and files == 1  # настоящий проект цел
+    # автоочистка: порог 1 МБ, кеш 512 байт — не чистим
+    class S:
+        @staticmethod
+        def value(key, default=None, type=None):
+            if key == "cache_auto_clean":
+                return True
+            if key == "cache_auto_clean_mb":
+                return 1
+            return default
+    assert app_cache.maybe_auto_clean(S) is False
+    # порог 0 — чистим
+    class S2(S):
+        @staticmethod
+        def value(key, default=None, type=None):
+            if key == "cache_auto_clean_mb":
+                return 0
+            return True
+    assert app_cache.maybe_auto_clean(S2) is False  # tmp уже удалены
+    assert app_cache.format_size(1536, "ru") == "0.0 МБ"
+    assert app_cache.format_size(1024 ** 2 * 3, "ru") == "3.0 МБ"
+    assert app_cache.format_size(1024 ** 3, "en") == "1.00 GB"
+print("   OK")
+
 print()
 print("ВСЕ ТЕСТЫ ЯДРА ПРОШЛИ")
