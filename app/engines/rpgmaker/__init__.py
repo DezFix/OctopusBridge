@@ -120,15 +120,23 @@ class RpgMakerModule(EngineModule):
             # какие файлы реально изменились — только их и правим в архиве
             ar = asarcore.AsarArchive(asarlib.asar_path(game_dir))
             patches: dict[str, bytes] = {}
-            for root, _dirs, files in os.walk(os.path.join(proj, "data")):
-                for fn in files:
-                    rel = os.path.relpath(os.path.join(root, fn), proj) \
-                        .replace(os.sep, "/")
-                    with open(os.path.join(root, fn), "rb") as f:
-                        blob = f.read()
-                    old = ar.read_file(f"{asarlib.PROJECT_PREFIX}/{rel}")
-                    if old is not None and blob != old:
-                        patches[f"{asarlib.PROJECT_PREFIX}/{rel}"] = blob
+            roots = [os.path.join(proj, "data")]
+            plugins_dir = os.path.join(proj, "js", "plugins")
+            if os.path.isdir(plugins_dir):
+                roots.append(plugins_dir)
+            for root in roots:
+                for _r, _dirs, files in os.walk(root):
+                    for fn in files:
+                        path = os.path.join(_r, fn)
+                        rel = os.path.relpath(path, proj) \
+                            .replace(os.sep, "/")
+                        with open(path, "rb") as f:
+                            blob = f.read()
+                        old = ar.read_file(
+                            f"{asarlib.PROJECT_PREFIX}/{rel}")
+                        if old is not None and blob != old:
+                            patches[
+                                f"{asarlib.PROJECT_PREFIX}/{rel}"] = blob
         if patches:
             astats = asarcore.apply_patches(
                 asarlib.asar_path(game_dir), patches, backup_dir=backup_root)

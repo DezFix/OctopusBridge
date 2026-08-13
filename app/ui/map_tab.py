@@ -74,7 +74,8 @@ class _LayerPainter:
         self.pages[page] = img if not img.isNull() else None
         return self.pages[page]
 
-    def draw_tile(self, painter: QPainter, tile_id: int, dx: int, dy: int):
+    def draw_tile(self, painter: QPainter, tile_id: int, dx: int, dy: int,
+                  up_wall: bool = False, up_earth: bool = False):
         src = maprender.tile_source(tile_id)
         if not src:
             return
@@ -90,17 +91,28 @@ class _LayerPainter:
                 and sx + 2 * t <= img.width() \
                 and sy + 2 * t <= img.height():
             # стены A4 (2x3) и A3 (2x2): левая колонка блока — «бок»
-            # (тёмная грань к соседу), правая — фасад. В превью рисуем
-            # фасад: у A4 козырёк (ряд 0) сверху + тело (ряд 1) снизу;
-            # у A3 — правую колонку целиком.
+            # (тёмная грань к соседу), правая — фасад. У A4 стены под
+            # соседом-стеной рисуются телом без козырька — стены
+            # соединяются в сплошную вертикаль.
             if page == maprender.PAGE_A4:
-                cap = 18
-                painter.drawImage(dx, dy, img, sx + t, sy, t, cap)
-                painter.drawImage(dx, dy + cap, img, sx + t, sy + t,
-                                  t, t - cap)
+                if up_wall:
+                    painter.drawImage(dx, dy, img, sx + t, sy + t, t, t)
+                else:
+                    cap = 18
+                    painter.drawImage(dx, dy, img, sx + t, sy, t, cap)
+                    painter.drawImage(dx, dy + cap, img, sx + t, sy + t,
+                                      t, t - cap)
             else:
                 painter.drawImage(dx, dy, img, sx + t, sy, t, t)
                 painter.drawImage(dx, dy + t, img, sx + t, sy + t, t, t)
+            return
+        if page == maprender.PAGE_A2 \
+                and sy + 3 * t <= img.height() \
+                and sx + 2 * t <= img.width():
+            # земля A2 (2x3): с соседом-землёй сверху — сплошной паттерн
+            # (нижний ряд блока), иначе — верхняя грань участка (ряд 0).
+            row = 2 * t if up_earth else 0
+            painter.drawImage(dx, dy, img, sx, sy + row, t, t)
             return
         painter.drawImage(dx, dy, img, sx, sy, t, t)
 
@@ -186,6 +198,15 @@ class _MapRenderThread(QThread):
         if scale != 1.0:
             painter.scale(scale, scale)
         gl, ol = len(self._ground), len(self._overlay)
+        # индексы автотайлов стен/земли — для соединения по соседям
+        a4_ids = {i for i, tid in enumerate(self._ground)
+                  if maprender.TILE_ID_A4 <= tid < 4352 + 48 * 80}
+        a4_ids.update(i for i, tid in enumerate(self._overlay)
+                      if maprender.TILE_ID_A4 <= tid < 4352 + 48 * 80)
+        a2_ids = {i for i, tid in enumerate(self._ground)
+                  if maprender.TILE_ID_A2 <= tid < 3072}
+        a2_ids.update(i for i, tid in enumerate(self._overlay)
+                      if maprender.TILE_ID_A2 <= tid < 3072)
         for cy in range(h):
             if self.isInterruptionRequested():
                 painter.end()
@@ -194,9 +215,13 @@ class _MapRenderThread(QThread):
             for cx in range(w):
                 i = row + cx
                 if i < gl:
-                    self._lp.draw_tile(painter, self._ground[i], cx * t, cy * t)
+                    self._lp.draw_tile(painter, self._ground[i], cx * t,
+                                       cy * t, up_wall=(i - w) in a4_ids,
+                                       up_earth=(i - w) in a2_ids)
                 if i < ol:
-                    self._lp.draw_tile(painter, self._overlay[i], cx * t, cy * t)
+                    self._lp.draw_tile(painter, self._overlay[i], cx * t,
+                                       cy * t, up_wall=(i - w) in a4_ids,
+                                       up_earth=(i - w) in a2_ids)
         painter.setPen(Qt.NoPen)
         sl = len(self._shadow)
         if sl:

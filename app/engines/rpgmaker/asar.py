@@ -35,11 +35,20 @@ def detect_variant(game_dir: str) -> str:
 
 @contextlib.contextmanager
 def _temp_project(game_dir: str):
-    """Временный проект с data/*.json, распакованными из asar."""
+    """Временный проект: data/*.json и js/plugins из asar."""
     with tempfile.TemporaryDirectory(prefix="ob_asar_") as td:
         ar = asar.AsarArchive(asar_path(game_dir))
         proj = os.path.join(td, PROJECT_PREFIX)
         data_dir = os.path.join(proj, "data")
         os.makedirs(data_dir)
         ar.extract_prefix(f"{PROJECT_PREFIX}/data", data_dir)
+        # js-плагины: список включённых (plugins.js) и сами файлы
+        js_dir = os.path.join(proj, "js")
+        os.makedirs(js_dir, exist_ok=True)
+        blob = ar.read_file(f"{PROJECT_PREFIX}/js/plugins.js")
+        if blob is not None:
+            with open(os.path.join(js_dir, "plugins.js"), "wb") as f:
+                f.write(blob)
+        ar.extract_prefix(f"{PROJECT_PREFIX}/js/plugins",
+                          os.path.join(js_dir, "plugins"))
         yield proj
