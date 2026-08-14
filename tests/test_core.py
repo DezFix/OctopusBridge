@@ -127,6 +127,8 @@ print("7) Кеш проектов (размер/очистка/автоочис�
 import app.core.cache as app_cache
 with tempfile.TemporaryDirectory() as td:
     app_cache.projects_dir = lambda: td
+    app_cache.temp_dir = lambda: os.path.join(td, "temp")
+    os.makedirs(app_cache.temp_dir(), exist_ok=True)
     for name in ("tmp_1.ob.json", "tmp_2.ob.json", "game.ob.json"):
         with open(os.path.join(td, name), "w", encoding="utf-8") as f:
             f.write("x" * 512)
@@ -134,11 +136,15 @@ with tempfile.TemporaryDirectory() as td:
     assert total == 512 * 3 and files == 3
     assert app_cache.is_tmp_project("tmp_x.ob.json")
     assert not app_cache.is_tmp_project("game.ob.json")
+    # кеш живёт в temp-папке
+    with open(os.path.join(app_cache.temp_dir(), "tmp_t.ob.json"),
+              "w", encoding="utf-8") as f:
+        f.write("x" * 1024)
+    assert app_cache.temp_size() == (1024, 1)
     freed = app_cache.clean_cache()
     assert freed == 1024
-    total, files = app_cache.projects_size()
-    assert total == 512 and files == 1  # настоящий проект цел
-    # автоочистка: порог 1 МБ, кеш 512 байт — не чистим
+    assert app_cache.temp_size() == (0, 0)
+    # автоочистка: порог 1 МБ, кеш пуст — не чистим
     class S:
         @staticmethod
         def value(key, default=None, type=None):
@@ -148,17 +154,41 @@ with tempfile.TemporaryDirectory() as td:
                 return 1
             return default
     assert app_cache.maybe_auto_clean(S) is False
-    # порог 0 — чистим
-    class S2(S):
-        @staticmethod
-        def value(key, default=None, type=None):
-            if key == "cache_auto_clean_mb":
-                return 0
-            return True
-    assert app_cache.maybe_auto_clean(S2) is False  # tmp уже удалены
+    # tmp-файлы в projects — старый формат, кнопкой не удаляются,
+    # только миграцией при старте
     assert app_cache.format_size(1536, "ru") == "0.0 МБ"
     assert app_cache.format_size(1024 ** 2 * 3, "ru") == "3.0 МБ"
     assert app_cache.format_size(1024 ** 3, "en") == "1.00 GB"
+print("   OK")
+
+print("8) Миграция структуры APPDATA (temp/glossary)...")
+import app as app_paths
+with tempfile.TemporaryDirectory() as td:
+    old = os.environ.get("APPDATA")
+    os.environ["APPDATA"] = td
+    try:
+        root = app_paths.user_data_dir()
+        os.makedirs(os.path.join(root, "projects"), exist_ok=True)
+        for p in (os.path.join(root, "glossary.json"),
+                  os.path.join(root, "projects", "tmp_old.ob.json"),
+                  os.path.join(root, "projects", "game.ob.json")):
+            with open(p, "w", encoding="utf-8") as f:
+                f.write("{}")
+        app_paths.migrate_appdata()
+        assert os.path.isfile(os.path.join(root, "glossary",
+                                           "glossary.json"))
+        assert not os.path.isfile(os.path.join(root, "glossary.json"))
+        assert os.path.isfile(os.path.join(root, "temp",
+                                           "tmp_old.ob.json"))
+        assert os.path.isfile(os.path.join(root, "projects",
+                                           "game.ob.json"))
+        assert not os.path.isfile(os.path.join(root, "projects",
+                                               "tmp_old.ob.json"))
+    finally:
+        if old is None:
+            os.environ.pop("APPDATA", None)
+        else:
+            os.environ["APPDATA"] = old
 print("   OK")
 
 print()

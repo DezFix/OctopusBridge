@@ -77,6 +77,8 @@ RE_CHOICE = re.compile(r'^\s*' + _STR + r'\s*:\s*$')
 RE_TR_FN = re.compile(r'_\(\s*' + _STR + r'\s*\)')
 RE_OLD = re.compile(r'^\s*old\s+' + _STR)
 RE_COMMENT = re.compile(r'^\s*#')
+# начало строки-диалога: необязательный говорящий + открывающая кавычка
+RE_QUOTE_START = re.compile(r'^\s*(?:[a-zA-Z_][\w.]*\s+)?\"')
 
 _DLG_SKIP_RE = re.compile(
     r'^(?:def|default|define|label|screen|transform|style|image|'
@@ -173,6 +175,22 @@ def _unpickle_rpyc(rpyc_data: bytes):
         pos += 12
     return None
 
+def _string_parts(text) -> list[str]:
+    """Строковые части what/who/пункта меню.
+
+    Ren'Py хранит интерполированный текст списком — например
+    Say(what=["Привет, ", <var>, "!"]) — это части реплики вокруг
+    вставок переменных. Переводим строковые элементы по отдельности:
+    рантайм-хук ob_dict подменяет каждый элемент списка своим переводом
+    (см. _ACTIVATE_TEMPLATE, ветку isinstance(text, list)).
+    """
+    if isinstance(text, str):
+        return [text] if text else []
+    if isinstance(text, (list, tuple)):
+        return [t for t in text if isinstance(t, str) and t]
+    return []
+
+
 def _walk_ast(stmts) -> list[tuple[str, str]]:
     """Walk Ren'Py AST, extracting (kind, text) pairs."""
     result = []
@@ -191,25 +209,26 @@ def _walk_ast(stmts) -> list[tuple[str, str]]:
         if nt == "Say":
             what = getattr(nodes, "what", None)
             who = getattr(nodes, "who", None)
-            if what and isinstance(what, str):
-                result.append(("dialogue", what))
-            if who and isinstance(who, str):
-                result.append(("speaker", who))
+            for part in _string_parts(what):
+                result.append(("dialogue", part))
+            for part in _string_parts(who):
+                result.append(("speaker", part))
 
         elif nt == "TranslateSay":
             what = getattr(nodes, "what", None)
-            if what and isinstance(what, str):
-                result.append(("dialogue", what))
+            for part in _string_parts(what):
+                result.append(("dialogue", part))
             who = getattr(nodes, "who", None)
-            if who and isinstance(who, str):
-                result.append(("speaker", who))
+            for part in _string_parts(who):
+                result.append(("speaker", part))
 
         elif nt == "Menu":
             items = getattr(nodes, "items", [])
             for item in items:
                 label = item[0] if isinstance(item, (list, tuple)) else None
-                if label and isinstance(label, str) and len(label) >= 2:
-                    result.append(("choice", label))
+                for part in _string_parts(label):
+                    if len(part) >= 2:
+                        result.append(("choice", part))
                 if isinstance(item, (list, tuple)) and len(item) > 2:
                     walk(item[2])
 
@@ -421,12 +440,52 @@ def extract(game_dir: str, extract_lang: str | None = None
             try:
                 with open(path, encoding="utf-8") as f:
                     lines = f.readlines()
-                for n, line in enumerate(lines, start=1):
-                    _extract_line(rel, n, line, add)
+                i = 0
+                n_lines = len(lines)
+                while i < n_lines:
+                    line = lines[i]
+                    # Многострочная строка-диалог (кавычка не закрыта на
+                    # строке): склеиваем физические строки в логическую,
+                    # пока нечётное число неэкранированных кавычек не
+                    # станет чётным. Только для строк, похожих на диалог/
+                    # old-блок — код (python: и т.п.) не склеиваем.
+                    if _unescaped_quotes(line) % 2 == 1 \
+                            and (RE_QUOTE_START.match(line)
+                                 or RE_OLD.match(line)):
+                        start = i
+                        buf = [line]
+                        odd = True
+                        guard = 0
+                        while i + 1 < n_lines and odd and guard < 200:
+                            i += 1
+                            guard += 1
+                            nxt = lines[i]
+                            buf.append(nxt)
+                            if _unescaped_quotes(nxt) % 2 == 1:
+                                odd = False
+                        _extract_line(rel, start + 1, "".join(buf), add)
+                    else:
+                        _extract_line(rel, i + 1, line, add)
+                    i += 1
             except (OSError, UnicodeDecodeError):
                 pass
 
     return entries
+
+
+def _unescaped_quotes(line: str) -> int:
+    """Число неэкранированных двойных кавычек в строке (чётность решает,
+    закрыта ли строка-литерал на этой физической строке)."""
+    count = 0
+    i, n = 0, len(line)
+    while i < n:
+        if line[i] == "\\":
+            i += 2
+            continue
+        if line[i] == '"':
+            count += 1
+        i += 1
+    return count
 
 
 def _extract_line(rel: str, n: int, line: str, add) -> None:

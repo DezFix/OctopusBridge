@@ -31,6 +31,24 @@ def _estimate_tokens(text: str) -> int:
     return max(len(text) // 4, 1)
 
 
+def _is_code_token(text: str) -> bool:
+    """Строка — код/данные, а не текст для игрока: путь к файлу, URL,
+    hex-цвет. Один токен без пробелов, только ASCII-символы — иначе
+    зацепим японские/русские слова и настоящие фразы."""
+    s = text.strip()
+    if not s or re.search(r"\s", s):
+        return False
+    if re.match(r"^https?://", s):
+        return True
+    if re.match(r"^#[0-9a-fA-F]{3,8}$", s):
+        return True
+    if re.search(r"[\\/]", s) and re.search(r"\.[A-Za-z0-9]{1,5}$", s) \
+            and re.fullmatch(r"[\w.\\/\-@!#$%^&*()\[\]{}<>:;,?+=~`|']+", s) \
+            and not re.search(r"[^\x00-\x7F]", s):
+        return True
+    return False
+
+
 def _reattach(text: str, lead: list[str], trail: list[str]) -> str:
     """Приклеивает краевые коды, если переводчик их не сохранил.
 
@@ -70,7 +88,8 @@ class Translator:
         self.cancelled = True
 
     # ---------- одна строка ----------
-    def translate_text(self, text: str, src_lang: str, tgt_lang: str) -> str:
+    def translate_text(self, text: str, src_lang: str, tgt_lang: str,
+                       overwrite: bool = False) -> str:
         """Переводит одну строку: TM -> глоссарий-сегменты -> движок."""
         if src_lang == "auto":
             detected = detect_lang(text)
@@ -87,8 +106,13 @@ class Translator:
         # движок может их исказить (LLM), переводить нечего
         if not re.search(r"[^\W\d_]", text):
             return text
+        # пути к файлам/URL/hex-цвета — код, не текст для игрока
+        if _is_code_token(text):
+            return text
 
-        cached = self.tm.get(text, src_lang, tgt_lang) if self.tm else None
+        cached = None
+        if self.tm and not overwrite:
+            cached = self.tm.get(text, src_lang, tgt_lang)
         if cached:
             return cached
 
@@ -176,6 +200,9 @@ class Translator:
             if not re.search(r"[^\W\d_]", text):
                 out[i] = text
                 continue
+            if _is_code_token(text):
+                out[i] = text
+                continue
             cached = self.tm.get(text, src, tgt_lang) if self.tm else None
             if cached:
                 out[i] = cached
@@ -259,15 +286,18 @@ class Translator:
             for lang, group in groups.items():
                 if self.cancelled:
                     break
-                self._translate_group(group, lang, tgt_lang, done, report)
+                self._translate_group(group, lang, tgt_lang, done, report,
+                                      overwrite)
             return done[0] - skipped
 
-        self._translate_group(targets, src_lang, tgt_lang, done, report)
+        self._translate_group(targets, src_lang, tgt_lang, done, report,
+                              overwrite)
         return done[0]
 
     def _translate_group(self, targets: list[TranslationEntry],
                          src_lang: str, tgt_lang: str,
-                         done: list[int], report: Callable[[], None]):
+                         done: list[int], report: Callable[[], None],
+                         overwrite: bool = False):
         # дедупликация: одинаковые оригиналы переводим один раз
         unique: dict[str, list[TranslationEntry]] = {}
         for e in targets:
@@ -332,7 +362,12 @@ class Translator:
         for idx, (original, holders) in enumerate(unique.items()):
             if self.cancelled:
                 break
-            cached = self.tm.get(original, src_lang, tgt_lang) if self.tm else None
+            # В режиме «Перевести всё заново» память переводов не
+            # консультируем: иначе записи с уже готовым переводом
+            # замыкаются на старый кэш и не пересоздаются.
+            cached = None
+            if self.tm and not overwrite:
+                cached = self.tm.get(original, src_lang, tgt_lang)
             if cached:
                 for e in holders:
                     e.translation = cached
@@ -342,7 +377,8 @@ class Translator:
             # строки с терминами из глоссария — поштучно, чтобы сегментировать
             if self.glossary and any(
                     t in original for t in self.glossary.terms(src_lang, tgt_lang)):
-                text = self.translate_text(original, src_lang, tgt_lang)
+                text = self.translate_text(original, src_lang, tgt_lang,
+                                           overwrite=overwrite)
                 for e in holders:
                     e.translation = text
                     e.status = "translated"
@@ -353,6 +389,15 @@ class Translator:
             masked, codes = mask(mid)
             if is_code_only(masked):
                 # TextPreserve check: строка только из кодов — без движка
+                for e in holders:
+                    e.translation = original
+                    e.status = "translated"
+                    done[0] += 1
+                continue
+            # только цифры/знаки (без букв) и код-токены (пути/URL/hex) —
+            # без движка: LLM их искажает или ломает пути к ресурсам
+            if not re.search(r"[^\W\d_]", original) \
+                    or _is_code_token(masked):
                 for e in holders:
                     e.translation = original
                     e.status = "translated"

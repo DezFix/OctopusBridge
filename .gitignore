@@ -26,3 +26,7 @@ crash.log
 *.swp
 .DS_Store
 Thumbs.db
+
+# ── Тесты на реальных играх: только локальные, не в репозиторий ──
+tests/real/
+tests/*/real/

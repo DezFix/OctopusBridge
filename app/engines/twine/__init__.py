@@ -66,6 +66,10 @@ class TwineModule(EngineModule):
         from app.core.twine import parser
         return parser.apply(game_dir, entries)
 
+    def restore_original(self, game_dir: str) -> dict:
+        from app.core.twine import parser
+        return parser.restore_original(game_dir)
+
     def ui_tabs(self, main_window) -> list[tuple]:
         from app.ui.save_editor_tab import SaveEditorTab
         translate = main_window.translate_tab

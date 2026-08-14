@@ -104,6 +104,62 @@ class RpgMakerModule(EngineModule):
         return parser.apply(game_dir, entries,
                             target_lang=kwargs.get("target_lang", "ru"))
 
+    def restore_original(self, game_dir: str) -> dict:
+        if self._asar:
+            return self._restore_asar(game_dir)
+        from . import parser
+        return parser.restore_original(game_dir)
+
+    def _restore_asar(self, game_dir: str) -> dict:
+        """Восстанавливает asar из backup/ (самая ранняя папка) либо из
+        <архив>.ob.bak, если архив пересобирался целиком."""
+        import shutil
+        from . import asar as asarlib
+        from app.core import asar as asarcore
+        ar_path = asarlib.asar_path(game_dir)
+        full_bak = ar_path + ".ob.bak"
+        if os.path.isfile(full_bak):
+            shutil.copy2(full_bak, ar_path)
+            return {"restored": 1}
+        root = os.path.join(game_dir, "backup")
+        if not os.path.isdir(root):
+            return {"restored": 0}
+        blobs: dict[str, bytes] = {}
+        try:
+            entries = sorted(os.listdir(root))
+        except OSError:
+            entries = []
+        for d in entries:
+            if not re.match(r"^\d{8}_\d{6}$", d):
+                continue
+            base = os.path.join(root, d)
+            if not os.path.isdir(base):
+                continue
+            if blobs:
+                break  # самая ранняя папка = оригинал до переводов
+            for _r, _dirs, files in os.walk(base):
+                for f in files:
+                    if f.endswith(".ob.bak") or f.endswith(".ob.new"):
+                        continue
+                    try:
+                        with open(os.path.join(_r, f), "rb") as fh:
+                            blobs[f] = fh.read()
+                    except OSError:
+                        pass
+        if not blobs:
+            return {"restored": 0}
+        ar = asarcore.AsarArchive(ar_path)
+        rel_by_base: dict[str, str] = {}
+        for rel, _node in ar.iter_files():
+            base = os.path.basename(rel)
+            rel_by_base.setdefault(base, rel)
+        patches = {rel_by_base[b]: blob
+                   for b, blob in blobs.items() if b in rel_by_base}
+        if not patches:
+            return {"restored": 0}
+        astats = asarcore.apply_patches(ar_path, patches)
+        return {"restored": astats["files"]}
+
     def _apply_asar(self, game_dir: str, entries: list, **kwargs) -> dict:
         """Переводит data/*.json во временном проекте и правит asar."""
         from .asar import _temp_project

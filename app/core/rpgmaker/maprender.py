@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
 """Данные для превью карт RPG Maker MV/MZ (Qt-free).
 
-Геометрия тайлсетов (48px, как в rmmz_core/rpg_core):
-- страницы B/C/D/E: tileId 0..1023, page = tileId // 256,
-  номер = tileId % 256, сетка 16 тайлов в ряд;
-- A5 (обычные): tileId 1536..1663, сетка 16 в ряд;
-- автотайлы A1..A4: tileId >= 2048, 48 вариантов формы на автотайл;
-  для превью рисуем базовый субтайл блока (аппроксимация).
+Геометрия тайлсетов воспроизводит движок 1:1 (rmmz_core.js, Tilemap):
+- обычные тайлы B..E и A5: `_addNormalTile`;
+- автотайлы A1..A4: `_addAutotile` с таблицами форм FLOOR/WALL/WATERFALL
+  (каждый тайл рисуется из 2x2 четвертинок — соседи «соединяются»);
+- тени: 4 четверти тайла (данные слоя тени);
+- «столы» A2 (флаг 0x80): края нижней кромки через `_addTableEdge`.
 
-Слои data[] карты: ground, overlay, shadow-биты, region — по w*h каждый.
+Слои data[] карты (MZ, 6n): z0,z1,z2,z3 — тайлы, z4 — тени, z5 — регионы.
+MV-карты (4n): z0,z1 — тайлы, z2 — тени, z3 — регионы.
 """
 from __future__ import annotations
 
@@ -19,31 +20,151 @@ from .fileview import DiskFileView, FileView
 
 TILE = 48
 
-# страницы тайлсета: индекс в tilesetNames — [A1,A2,A3,A4,A5,B,C,D,E]
-# (по коду движка: автотайлы A1..A4 -> setNumber 0..3, A5 -> 4, B..E -> 5..8)
-PAGE_A1, PAGE_A2, PAGE_A3, PAGE_A4, PAGE_A5 = 0, 1, 2, 3, 4
-PAGE_B = 5
-
+# ── границы tileId (как в движке) ──
+TILE_ID_B = 0
+TILE_ID_C = 256
+TILE_ID_D = 512
+TILE_ID_E = 768
 TILE_ID_A5 = 1536
 TILE_ID_A1 = 2048
 TILE_ID_A2 = 2816
-TILE_ID_A3 = 3072
-TILE_ID_A4 = 4352
+TILE_ID_A3 = 4352
+TILE_ID_A4 = 5888
+TILE_ID_MAX = 8192
+
+PAGE_A1, PAGE_A2, PAGE_A3, PAGE_A4, PAGE_A5 = 0, 1, 2, 3, 4
+PAGE_B = 5
+
+# флаги тайлов (Tilesets.json "flags"): 0x10 — рисуется поверх
+# (upper layer), 0x80 — «стол» (A2)
+FLAG_UPPER = 0x10
+FLAG_TABLE = 0x80
+
+# ── таблицы форм автотайлов (rmmz_core.js) ──
+# shape 0..47 -> 4 части (четверти тайла): [qsx, qsy]
+FLOOR_AUTOTILE_TABLE = [
+    [[2, 4], [1, 4], [2, 3], [1, 3]],
+    [[2, 0], [1, 4], [2, 3], [1, 3]],
+    [[2, 4], [3, 0], [2, 3], [1, 3]],
+    [[2, 0], [3, 0], [2, 3], [1, 3]],
+    [[2, 4], [1, 4], [2, 3], [3, 1]],
+    [[2, 0], [1, 4], [2, 3], [3, 1]],
+    [[2, 4], [3, 0], [2, 3], [3, 1]],
+    [[2, 0], [3, 0], [2, 3], [3, 1]],
+    [[2, 4], [1, 4], [2, 1], [1, 3]],
+    [[2, 0], [1, 4], [2, 1], [1, 3]],
+    [[2, 4], [3, 0], [2, 1], [1, 3]],
+    [[2, 0], [3, 0], [2, 1], [1, 3]],
+    [[2, 4], [1, 4], [2, 1], [3, 1]],
+    [[2, 0], [1, 4], [2, 1], [3, 1]],
+    [[2, 4], [3, 0], [2, 1], [3, 1]],
+    [[2, 0], [3, 0], [2, 1], [3, 1]],
+    [[0, 4], [1, 4], [0, 3], [1, 3]],
+    [[0, 4], [3, 0], [0, 3], [1, 3]],
+    [[0, 4], [1, 4], [0, 3], [3, 1]],
+    [[0, 4], [3, 0], [0, 3], [3, 1]],
+    [[2, 2], [1, 2], [2, 3], [1, 3]],
+    [[2, 2], [1, 2], [2, 3], [3, 1]],
+    [[2, 2], [1, 2], [2, 1], [1, 3]],
+    [[2, 2], [1, 2], [2, 1], [3, 1]],
+    [[2, 4], [3, 4], [2, 3], [3, 3]],
+    [[2, 4], [3, 4], [2, 1], [3, 3]],
+    [[2, 0], [3, 4], [2, 3], [3, 3]],
+    [[2, 0], [3, 4], [2, 1], [3, 3]],
+    [[2, 4], [1, 4], [2, 5], [1, 5]],
+    [[2, 0], [1, 4], [2, 5], [1, 5]],
+    [[2, 4], [3, 0], [2, 5], [1, 5]],
+    [[2, 0], [3, 0], [2, 5], [1, 5]],
+    [[0, 4], [3, 4], [0, 3], [3, 3]],
+    [[2, 2], [1, 2], [2, 5], [1, 5]],
+    [[0, 2], [1, 2], [0, 3], [1, 3]],
+    [[0, 2], [1, 2], [0, 3], [3, 1]],
+    [[2, 2], [3, 2], [2, 3], [3, 3]],
+    [[2, 2], [3, 2], [2, 1], [3, 3]],
+    [[2, 4], [3, 4], [2, 5], [3, 5]],
+    [[2, 0], [3, 4], [2, 5], [3, 5]],
+    [[0, 4], [1, 4], [0, 5], [1, 5]],
+    [[0, 4], [3, 0], [0, 5], [1, 5]],
+    [[0, 2], [3, 2], [0, 3], [3, 3]],
+    [[0, 2], [1, 2], [0, 5], [1, 5]],
+    [[0, 4], [3, 4], [0, 5], [3, 5]],
+    [[2, 2], [3, 2], [2, 5], [3, 5]],
+    [[0, 2], [3, 2], [0, 5], [3, 5]],
+    [[0, 0], [1, 0], [0, 1], [1, 1]],
+]
+
+WALL_AUTOTILE_TABLE = [
+    [[2, 2], [1, 2], [2, 1], [1, 1]],
+    [[0, 2], [1, 2], [0, 1], [1, 1]],
+    [[2, 0], [1, 0], [2, 1], [1, 1]],
+    [[0, 0], [1, 0], [0, 1], [1, 1]],
+    [[2, 2], [3, 2], [2, 1], [3, 1]],
+    [[0, 2], [3, 2], [0, 1], [3, 1]],
+    [[2, 0], [3, 0], [2, 1], [3, 1]],
+    [[0, 0], [3, 0], [0, 1], [3, 1]],
+    [[2, 2], [1, 2], [2, 3], [1, 3]],
+    [[0, 2], [1, 2], [0, 3], [1, 3]],
+    [[2, 0], [1, 0], [2, 3], [1, 3]],
+    [[0, 0], [1, 0], [0, 3], [1, 3]],
+    [[2, 2], [3, 2], [2, 3], [3, 3]],
+    [[0, 2], [3, 2], [0, 3], [3, 3]],
+    [[2, 0], [3, 0], [2, 3], [3, 3]],
+    [[0, 0], [3, 0], [0, 3], [3, 3]],
+]
+
+WATERFALL_AUTOTILE_TABLE = [
+    [[2, 0], [1, 0], [2, 1], [1, 1]],
+    [[0, 0], [1, 0], [0, 1], [1, 1]],
+    [[2, 0], [3, 0], [2, 1], [3, 1]],
+    [[0, 0], [3, 0], [0, 1], [3, 1]],
+]
+
+
+def is_tile_a1(tile_id: int) -> bool:
+    return TILE_ID_A1 <= tile_id < TILE_ID_A2
+
+
+def is_tile_a2(tile_id: int) -> bool:
+    return TILE_ID_A2 <= tile_id < TILE_ID_A3
+
+
+def is_tile_a3(tile_id: int) -> bool:
+    return TILE_ID_A3 <= tile_id < TILE_ID_A4
+
+
+def is_tile_a4(tile_id: int) -> bool:
+    return TILE_ID_A4 <= tile_id < TILE_ID_MAX
+
+
+def is_autotile(tile_id: int) -> bool:
+    return tile_id >= TILE_ID_A1
+
+
+def is_shadowing_tile(tile_id: int) -> bool:
+    """A3/A4 — отбрасывают тень (условие края стола)."""
+    return is_tile_a3(tile_id) or is_tile_a4(tile_id)
+
+
+def autotile_kind(tile_id: int) -> int:
+    return (tile_id - TILE_ID_A1) // 48
+
+
+def autotile_shape(tile_id: int) -> int:
+    return (tile_id - TILE_ID_A1) % 48
 
 
 def _normal_tile_xy(num: int) -> tuple[int, int]:
-    """Позиция тайла 0..255 на листе 16x16 (левая/правая половины по 128)."""
-    sx = (num % 8) + (8 if num >= 128 else 0)
-    sy = (num // 8) % 16
+    """Позиция обычного тайла 0..255 на листе (16x16) — `_addNormalTile`."""
+    sx = ((num // 128) % 2) * 8 + (num % 8)
+    sy = ((num % 256) // 8) % 16
     return sx * TILE, sy * TILE
 
 
 def tile_source(tile_id: int) -> tuple[int, int, int] | None:
     """tileId -> (страница, px_x, px_y) базового субтайла 48x48 или None.
 
-    Обычные тайлы (B-E, A5) — точная геометрия движка; автотайлы A1-A4 —
-    аппроксимация базовым блоком (2x2 или 2x3, 8 в ряд), достаточная
-    для превью: точный выбор субтайла зависит от соседей клетки.
+    Для автотайлов — первая четверть (для совместимости/превью-значков);
+    полную геометрию даёт tile_parts().
     """
     if tile_id <= 0:
         return None
@@ -54,19 +175,110 @@ def tile_source(tile_id: int) -> tuple[int, int, int] | None:
     if tile_id < TILE_ID_A1:                       # A5: лист 8x16
         num = tile_id - TILE_ID_A5
         return PAGE_A5, (num % 8) * TILE, (num // 8) * TILE
-    if tile_id < TILE_ID_A2:                       # A1: блоки 2x3, 8 в ряд
-        idx = (tile_id - TILE_ID_A1) // 48
-        return PAGE_A1, (idx % 8) * 2 * TILE, (idx // 8) * 3 * TILE
-    if tile_id < TILE_ID_A3:                       # A2: fill — нижний ряд блока
-        idx = (tile_id - TILE_ID_A2) // 48
-        return PAGE_A2, (idx % 8) * 2 * TILE, (idx // 8) * 3 * TILE + 2 * TILE
-    if tile_id < TILE_ID_A4:                       # A3: блоки 2x2, 8 в ряд
-        idx = (tile_id - TILE_ID_A3) // 48
-        return PAGE_A3, (idx % 8) * 2 * TILE, (idx // 8) * 2 * TILE
-    if tile_id < TILE_ID_A4 + 48 * 80:             # A4: стены 2x3, 8 в ряд
-        idx = (tile_id - TILE_ID_A4) // 48
-        return PAGE_A4, (idx % 8) * 2 * TILE, (idx // 8) * 3 * TILE
-    return None
+    parts = tile_parts(tile_id)
+    if not parts:
+        return None
+    page, sx, sy, w, h, dx, dy = parts[0]
+    return page, sx, sy
+
+
+def tile_parts(tile_id: int, flags: list[int] | None = None,
+               frame: int = 0) -> list[tuple[int, int, int, int, int, int, int]]:
+    """Квадранты тайла по коду движка `_addNormalTile`/`_addAutotile`.
+
+    Возвращает части (setNumber, sx, sy, w, h, dx, dy) в пикселях —
+    как addRect в игре; рисуются в порядке списка.
+    """
+    if tile_id <= 0 or tile_id >= TILE_ID_MAX:
+        return []
+    if not is_autotile(tile_id):
+        if tile_id < TILE_ID_A5:                    # B/C/D/E
+            page = PAGE_B + tile_id // 256
+        else:                                       # A5
+            page = PAGE_A5
+        sx, sy = _normal_tile_xy(tile_id % 256) if tile_id < TILE_ID_A5 \
+            else ((tile_id - TILE_ID_A5) % 8 * TILE,
+                  (tile_id - TILE_ID_A5) // 8 * TILE)
+        return [(page, sx, sy, TILE, TILE, 0, 0)]
+
+    kind = autotile_kind(tile_id)
+    shape = autotile_shape(tile_id)
+    tx, ty = kind % 8, kind // 8
+    set_number = 0
+    bx = by = 0
+    table = FLOOR_AUTOTILE_TABLE
+    is_table = False
+    if is_tile_a1(tile_id):
+        water_surface = [0, 1, 2, 1][frame % 4]
+        if kind == 0:
+            bx, by = water_surface * 2, 0
+        elif kind == 1:
+            bx, by = water_surface * 2, 3
+        elif kind == 2:
+            bx, by = 6, 0
+        elif kind == 3:
+            bx, by = 6, 3
+        else:
+            bx = (tx // 4) * 8
+            by = ty * 6 + (tx // 2 % 2) * 3
+            if kind % 2 == 0:
+                bx += water_surface * 2
+            else:
+                bx += 6
+                table = WATERFALL_AUTOTILE_TABLE
+                by += frame % 3
+    elif is_tile_a2(tile_id):
+        set_number = 1
+        bx, by = tx * 2, (ty - 2) * 3
+        is_table = bool(flags) and (flags[tile_id] & FLAG_TABLE)
+    elif is_tile_a3(tile_id):
+        set_number = 2
+        bx, by = tx * 2, (ty - 6) * 2
+        table = WALL_AUTOTILE_TABLE
+    elif is_tile_a4(tile_id):
+        set_number = 3
+        bx = tx * 2
+        by = int((ty - 10) * 2.5 + (0.5 if ty % 2 == 1 else 0))
+        if ty % 2 == 1:
+            table = WALL_AUTOTILE_TABLE
+
+    w1, h1 = TILE // 2, TILE // 2
+    out: list[tuple[int, int, int, int, int, int, int]] = []
+    for i in range(4):
+        qsx, qsy = table[shape][i]
+        sx1 = (bx * 2 + qsx) * w1
+        sy1 = (by * 2 + qsy) * h1
+        dx1 = (i % 2) * w1
+        dy1 = (i // 2) * h1
+        if is_table and (qsy == 1 or qsy == 5):
+            qsx2 = (4 - qsx) % 4 if qsy == 1 else qsx
+            sy2 = (by * 2 + 3) * h1
+            out.append((set_number, (bx * 2 + qsx2) * w1, sy2,
+                        w1, h1, dx1, dy1))
+            out.append((set_number, sx1, sy1, w1, h1 // 2, dx1, dy1 + h1 // 2))
+        else:
+            out.append((set_number, sx1, sy1, w1, h1, dx1, dy1))
+    return out
+
+
+def table_edge_parts(tile_id: int) -> list[tuple[int, int, int, int, int, int, int]]:
+    """Нижняя кромка «стола» A2 — `_addTableEdge` (2 половины)."""
+    if not is_tile_a2(tile_id):
+        return []
+    kind = autotile_kind(tile_id)
+    shape = autotile_shape(tile_id)
+    tx, ty = kind % 8, kind // 8
+    bx, by = tx * 2, (ty - 2) * 3
+    w1, h1 = TILE // 2, TILE // 2
+    out = []
+    for i in range(2):
+        qsx, qsy = FLOOR_AUTOTILE_TABLE[shape][2 + i]
+        sx1 = (bx * 2 + qsx) * w1
+        sy1 = (by * 2 + qsy) * h1 + h1 // 2
+        dx1 = (i % 2) * w1
+        dy1 = (i // 2) * h1
+        out.append((1, sx1, sy1, w1, h1, dx1, dy1))
+    return out
 
 
 def data_root(game_dir: str, view: FileView | None = None) -> str:
@@ -100,16 +312,30 @@ def load_map(game_dir: str, map_id: int,
     return data if isinstance(data, dict) else None
 
 
-def map_layers(data: dict) -> tuple[int, int, list, list, list]:
-    """-> (width, height, ground, overlay, shadow)."""
+def map_layers(data: dict) -> tuple[int, int, list, list, list, list, list]:
+    """-> (width, height, lower, upper, shadow, region, is_mz).
+
+    Слои: lower = z0+z1 (нижние тайлы), upper = z2+z3 (верхние тайлы),
+    shadow = биты теней, region. MZ-карты (6n) — z4 тени/z5 регионы;
+    MV-карты (4n) — z2 тени/z3 регионы.
+    """
     w = int(data.get("width") or 0)
     h = int(data.get("height") or 0)
     flat = data.get("data") or []
     n = w * h
-    ground = flat[0:n]
-    overlay = flat[n:2 * n]
-    shadow = flat[2 * n:3 * n]
-    return w, h, ground, overlay, shadow
+    if n <= 0:
+        return 0, 0, [], [], [], [], False
+    layers = len(flat) // n
+    is_mz = layers >= 5
+    lower = flat[0:2 * n]
+    upper = flat[2 * n:4 * n]
+    if is_mz:
+        shadow = flat[4 * n:5 * n]
+        region = flat[5 * n:6 * n]
+    else:
+        shadow = flat[2 * n:3 * n]
+        region = flat[3 * n:4 * n]
+    return w, h, lower, upper, shadow, region, is_mz
 
 
 def load_tilesets(game_dir: str, view: FileView | None = None) -> list[dict]:
@@ -136,9 +362,11 @@ def tileset_for_map(tilesets: list[dict], tileset_id: int) -> dict | None:
 
 from app.ui.i18n import TR as _TR
 
-TRIGGER_NAMES = {0: _TR("map_trigger_0"), 1: _TR("map_trigger_1"),
-                 2: _TR("map_trigger_2"),
-                 3: _TR("map_trigger_3"), 4: _TR("map_trigger_4")}
+
+def trigger_name(code: int) -> str:
+    """Локализованное имя триггера (вычисляется на лету — язык может
+    смениться после импорта модуля)."""
+    return _TR(f"map_trigger_{int(code)}") if 0 <= int(code) <= 4 else "?"
 
 
 def event_summary(ev: dict) -> dict:
@@ -151,7 +379,7 @@ def event_summary(ev: dict) -> dict:
         "x": ev.get("x", 0),
         "y": ev.get("y", 0),
         "pages": len(pages),
-        "trigger": TRIGGER_NAMES.get((pages[0] or {}).get("trigger", 0), "?")
+        "trigger": trigger_name((pages[0] or {}).get("trigger", 0))
         if pages else "—",
         "image": img.get("characterName") or "",
         "tileId": img.get("tileId", 0),

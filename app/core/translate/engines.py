@@ -20,6 +20,14 @@ LANG_NAMES = {
 }
 
 
+_TOKEN_RE = re.compile(r"</?x\d+\s*/?>")
+
+
+def _tokens(text: str) -> list[str]:
+    """Все токены <xN/> в строке по порядку (для проверки целостности)."""
+    return _TOKEN_RE.findall(text)
+
+
 class EngineError(Exception):
     pass
 
@@ -31,6 +39,15 @@ class BaseEngine:
                   context_before: list[str] | None = None,
                   context_after: list[str] | None = None) -> list[str]:
         raise NotImplementedError
+
+    def _guard_tokens(self, texts: list[str],
+                      out: list[str]) -> list[str]:
+        """Страховка для любых движков (AI, Google, Bing): если перевод
+        потерял/переставил токены <xN/> (макросы, ссылки, коды), строка
+        возвращается непереведённой — иначе игра упадёт («cannot find a
+        closing tag for macro», битые ссылки и т.п.)."""
+        return [src_s if _tokens(src_s) != _tokens(tr_s) else tr_s
+                for src_s, tr_s in zip(texts, out)]
 
     def ping(self) -> bool:
         return False
@@ -147,16 +164,22 @@ class AIEngine(BaseEngine):
         prompt = (
             f"Translate the following JSON array of JRPG dialogue strings "
             f"from {src} to {tgt}. Rules: keep every placeholder like <x0/> "
-            f"exactly as-is and in the same order; keep the tone of an RPG; "
-            f"do not add comments. Answer with JSON lines — one object per "
+            f"exactly as-is and in the same order; do not add, remove or "
+            f"reorder any symbols — brackets, parentheses, quotes, "
+            f"apostrophes, dashes, digits, percent signs, backslashes, "
+            f"tags, variables and macros must stay unchanged, translate "
+            f"only words; keep the tone of an RPG; do not add comments. "
+            f"Answer with JSON lines — one object per "
             f"line: {{\"i\": index, \"t\": \"translation\"}}.{codes_hint}"
             f"{ctx}\n{payload}"
         )
         content = self.complete(prompt)
         out = self._parse_translate_response(content, len(batch))
-        if out is not None:
-            return out
-        raise EngineError("AI returned response of wrong length")
+        if out is None:
+            raise EngineError("AI returned response of wrong length")
+        # Страховка: строки, где модель потеряла/переставила токены
+        # <xN/>, остаются непереведёнными — иначе игра упадёт
+        return self._guard_tokens(batch, out)
 
     def translate(self, texts: list[str], source: str, target: str,
                   context_before: list[str] | None = None,
@@ -377,7 +400,8 @@ class GoogleFreeEngine(BaseEngine):
             return []
         src = "auto" if source == "auto" else source
         if len(texts) == 1:
-            return [self._translate_one(texts[0], src, target)]
+            return self._guard_tokens(
+                texts, [self._translate_one(texts[0], src, target)])
         chunks = [texts[i:i + self.BATCH_LINES]
                   for i in range(0, len(texts), self.BATCH_LINES)]
         results: list[list[str] | None] = [None] * len(chunks)
@@ -392,7 +416,8 @@ class GoogleFreeEngine(BaseEngine):
                 continue
             for j, t in enumerate(res):
                 out[i * self.BATCH_LINES + j] = t
-        return [o for o in out if o is not None]
+        out = [o for o in out if o is not None]
+        return self._guard_tokens(texts, out)
 
 
 class BingEngine(BaseEngine):
@@ -461,7 +486,7 @@ class BingEngine(BaseEngine):
         out = []
         for t in texts:
             out.append(self._translate_one(t, source, target))
-        return out
+        return self._guard_tokens(texts, out)
 
     def _translate_one(self, text: str, source: str, target: str) -> str:
         src = "auto-detect" if source == "auto" else source
@@ -546,7 +571,8 @@ class RotateEngine(BaseEngine):
                        for t in texts]
             for i, f in enumerate(futures):
                 out[i] = f.result()
-        return [o for o in out if o is not None]
+        out = [o for o in out if o is not None]
+        return self._guard_tokens(texts, out)
 
     def _translate_one(self, text: str, source: str, target: str) -> str:
         # если Google в кулдауне (429/капча) — не трогаем его вообще,

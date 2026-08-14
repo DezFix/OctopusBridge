@@ -33,6 +33,9 @@ class FakeLLM(BaseHTTPRequestHandler):
         items = json.loads(payload)
         if items and isinstance(items[0], dict):
             out = [it["d"] + " [fixed]" for it in items]  # коррекция
+        elif items and str(items[0]).startswith("LOSE:"):
+            # «плохая модель»: теряет токены <xN/> в каждой строке
+            out = [("RU:" + str(t)).replace("<x0/>", "") for t in items]
         else:
             out = ["RU:" + str(t) for t in items]
         resp = {"choices": [{"message": {
@@ -65,6 +68,10 @@ eng = AIEngine(base_url=url, api_key="test", model="fake")
 assert eng.ping()
 out = eng.translate(["Hello", "World"], "en", "ru")
 assert out == ["RU:Hello", "RU:World"], out
+# «плохая модель» потеряла токен <x0/> — строка остаётся непереведённой,
+# иначе игра упадёт («cannot find a closing tag for macro ...»)
+out = eng.translate(["LOSE:x", "<x0/>Hi"], "en", "ru")
+assert out == ["RU:LOSE:x", "<x0/>Hi"], out
 from app.core.models import TranslationEntry
 from app.core.translate.corrector import Corrector
 corrector = Corrector(eng)
@@ -136,6 +143,24 @@ assert n == 2 and entries[0].translation == "ホ" \
     and entries[1].translation == "МУСОР", (n, entries[0].translation,
                                            entries[1].translation)
 assert ce.calls == 1, "движок вызван только для настоящей строки"
+
+# знаки/цифры и код-токены (пути/URL/hex-цвета) не идут в движок
+# ни по одной, ни батчем, ни в записях — даже при явном языке
+from app.core.translate.service import _is_code_token
+assert _is_code_token("character_images/foo.png")
+assert _is_code_token("https://example.com/x")
+assert _is_code_token("#00000066")
+assert not _is_code_token("こんにちは")
+assert not _is_code_token("Дом милый дом")
+assert not _is_code_token("ホラ")
+for junk in ["――――――", "10", "#00000066",
+             "character_images/default_Face_1_stand2_white.png"]:
+    assert svc.translate_text(junk, "ja", "ru") == junk, junk
+junk_entries = [TranslationEntry(10, "f", "p", "c", junk, "", "new")
+                for junk in ["――――――", "character_images/x.png", "https://a.b/c"]]
+n = svc.translate_entries(junk_entries, "ja", "ru")
+assert n == 3 and all(e.translation == e.original for e in junk_entries)
+assert ce.calls == 1, "движок не вызывался для знаков и кода"
 print("   OK")
 
 print("6) Google: быстрый батч (translateHtml) — один запрос на пакет...")

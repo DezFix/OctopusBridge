@@ -302,10 +302,27 @@ def _nwjs_profile_dirs(game_dir: str) -> list[str]:
         base = os.path.join(local, "nwjs")
     for d in (base, os.path.join(base, "User Data"),
               os.path.join(local, "KADOKAWA", "RPGMV"),
-              os.path.join(local, "KADOKAWA", "RPGMV", "User Data")):
+              os.path.join(local, "KADOKAWA", "RPGMV", "User Data"),
+              os.path.join(local, "KADOKAWA", "RPGMZ"),
+              os.path.join(local, "KADOKAWA", "RPGMZ", "User Data")):
         if d not in dirs:
             dirs.append(d)
     return dirs
+
+
+def _is_stale_version(value) -> bool:
+    """user_data_version из Local State: число или числовая строка.
+
+    Chromium пишет ключ то числом, то строкой — принимаем оба варианта,
+    иначе «протухший» профиль остаётся незамеченным и ошибка вернётся.
+    """
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return True
+    if isinstance(value, str) and value.strip().isdigit():
+        return True
+    return False
 
 
 def _has_stale_profile(profile_dir: str) -> bool:
@@ -318,36 +335,57 @@ def _has_stale_profile(profile_dir: str) -> bool:
             data = json.load(f)
     except (OSError, ValueError):
         return False
-    return isinstance(data.get("user_data_version"), int)
+    return _is_stale_version(data.get("user_data_version"))
+
+
+def _rename_if_exists(path: str) -> bool:
+    """Переименовывает файл в path.bak с ретраями.
+
+    Запущенный NW.js-процесс держит файлы профиля залоченными — при
+    первом OSError пробуем ещё пару раз с паузой.
+    """
+    if not os.path.isfile(path):
+        return False
+    bak = path + ".bak"
+    for _ in range(3):
+        try:
+            if os.path.exists(bak):
+                os.remove(bak)
+            os.rename(path, bak)
+            return True
+        except OSError:
+            time.sleep(0.4)
+    return False
 
 
 def clean_nwjs_profile(game_dir: str) -> list[str]:
     """Чинит «Ваш профиль не может использоваться, поскольку он от более
     новой версии NW.js».
 
-    Причина: где-то в каталогах профиля NW.js остался файл Local State,
-    созданный более новой версией NW.js, чем движок игры — например,
-    в папке запускали более новую сборку, папку скопировали вместе с
-    профилем или профиль лежит в %LOCALAPPDATA% от другой игры/редактора.
-    Старую запись не удаляем, а переименовываем в Local State.bak —
-    NW.js создаст свежий профиль. Сейвы RPG Maker лежат в www/save,
-    профиль их не содержит.
+    Причина: где-то в каталогах профиля NW.js остались файлы, созданные
+    более новой версией NW.js, чем движок игры — например, в папке
+    запускали более новую сборку, папку скопировали вместе с профилем
+    или профиль лежит в %LOCALAPPDATA% от другой игры/редактора.
+    Старые записи не удаляем, а переименовываем в *.bak — NW.js создаст
+    свежий профиль. Сейвы RPG Maker лежат в www/save, профиль их не
+    содержит.
+
+    Помимо Local State (механизм Chromium) чистим Default/Web Data* и
+    Default/Preferences — известные по сообществу RPG Maker источники
+    той же ошибки (версия профиля «зашита» и в них).
 
     Возвращает список каталогов профилей, где Local State переименован.
     """
     renamed = []
     for d in _nwjs_profile_dirs(game_dir):
-        if not _has_stale_profile(d):
-            continue
-        ls = os.path.join(d, "Local State")
-        bak = ls + ".bak"
-        try:
-            if os.path.exists(bak):
-                os.remove(bak)
-            os.rename(ls, bak)
+        stale = _has_stale_profile(d)
+        if stale and _rename_if_exists(os.path.join(d, "Local State")):
             renamed.append(d)
-        except OSError:
-            pass
+        if stale:
+            default_dir = os.path.join(d, "Default")
+            if os.path.isdir(default_dir):
+                for name in ("Web Data", "Web Data-journal", "Preferences"):
+                    _rename_if_exists(os.path.join(default_dir, name))
     return renamed
 
 
@@ -396,6 +434,16 @@ class RpgMakerTentacle(CDPTentacle):
                 "--remote-debugging-port. Запустите её через OctopusBridge.")
             return False
         self._pid = pid
+        # Профиль NW.js чистим и при attach (best-effort): файлы может
+        # держать запущенная игра — переименования с ретраями упадут
+        # молча, зато следующий запуск будет без «профиль от более
+        # новой версии».
+        try:
+            exe_path = proc.exe_of(pid)
+            if exe_path:
+                clean_nwjs_profile(os.path.dirname(exe_path))
+        except Exception:  # noqa: BLE001
+            pass
         return self._connect_page(port, url_hint=".html", wait=5.0)
 
     def set_port_hint(self, port: int):

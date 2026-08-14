@@ -20,6 +20,8 @@
   <a href="README.ru.md">Русская версия</a>
 </p>
 
+> **⚠ Work in progress.** OctopusBridge is under active development. Bugs, crashes and corrupted translations are possible, especially for the **Twine** engine. Always keep a backup of your game before translating, and report any issues you find.
+
 ## Features
 
 - **Batch translation** — extract game text, translate, write it back, CSV import/export. Old translations are restored on re-extraction.

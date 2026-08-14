@@ -41,6 +41,10 @@ class TyranoModule(EngineModule):
         return parser.apply(game_dir, entries,
                             target_lang=kwargs.get("target_lang", "ru"))
 
+    def restore_original(self, game_dir: str) -> dict:
+        from app.core.tyrano import parser
+        return parser.restore_original(game_dir)
+
     def ui_tabs(self, main_window) -> list[tuple]:
         translate = main_window.translate_tab
         return [

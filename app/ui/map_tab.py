@@ -46,17 +46,20 @@ class _LayerPainter:
     """Рисование слоёв карты: работает и в фоновом потоке, и в GUI.
 
     QPainter на QImage безопасен вне GUI-потока; файловые чтения идут
-    через кэшируемый file_view (asar/диск).
+    через кэшируемый file_view (asar/диск). Геометрия тайлов — 1:1 с
+    движком (tile_parts: автотайлы из четвертин по таблицам форм).
     """
 
     def __init__(self, game_dir: str | None, view, tileset_names: list[str],
                  pages: dict[int, QImage | None],
-                 chars: dict[str, QImage | None]):
+                 chars: dict[str, QImage | None],
+                 flags: list[int] | None = None):
         self._game_dir = game_dir
         self._view = view
         self._names = tileset_names
         self.pages = pages
         self.chars = chars
+        self._flags = flags or []
 
     def page_image(self, page: int) -> QImage | None:
         if page in self.pages:
@@ -74,47 +77,46 @@ class _LayerPainter:
         self.pages[page] = img if not img.isNull() else None
         return self.pages[page]
 
-    def draw_tile(self, painter: QPainter, tile_id: int, dx: int, dy: int,
-                  up_wall: bool = False, up_earth: bool = False):
-        src = maprender.tile_source(tile_id)
-        if not src:
-            return
-        page, sx, sy = src
-        img = self.page_image(page)
+    def is_upper(self, tile_id: int) -> bool:
+        return bool(self._flags) and \
+            (self._flags[tile_id] & maprender.FLAG_UPPER)
+
+    def is_table(self, tile_id: int) -> bool:
+        return bool(self._flags) and \
+            (self._flags[tile_id] & maprender.FLAG_TABLE)
+
+    def draw_tile(self, painter: QPainter, tile_id: int, dx: int, dy: int):
         t = maprender.TILE
-        if img is None:
-            painter.fillRect(dx, dy, t, t, QColor(70, 40, 40, 160))
+        parts = maprender.tile_parts(tile_id, self._flags)
+        if not parts:
             return
-        if sx + t > img.width() or sy + t > img.height():
+        for page, sx, sy, w, h, qdx, qdy in parts:
+            img = self.page_image(page)
+            if img is None:
+                painter.fillRect(dx + qdx, dy + qdy, w, h,
+                                 QColor(70, 40, 40, 160))
+                continue
+            if sx + w > img.width() or sy + h > img.height():
+                continue
+            painter.drawImage(dx + qdx, dy + qdy, img, sx, sy, w, h)
+
+    def draw_table_edge(self, painter, tile_id: int, dx: int, dy: int):
+        for page, sx, sy, w, h, qdx, qdy in maprender.table_edge_parts(tile_id):
+            img = self.page_image(page)
+            if img is None or sx + w > img.width() or sy + h > img.height():
+                continue
+            painter.drawImage(dx + qdx, dy + qdy, img, sx, sy, w, h)
+
+    def draw_shadow(self, painter, bits: int, dx: int, dy: int):
+        """Тени: 4 четверти тайла, полупрозрачный чёрный (как в игре)."""
+        t = maprender.TILE
+        half = t // 2
+        if not bits:
             return
-        if page in (maprender.PAGE_A4, maprender.PAGE_A3) \
-                and sx + 2 * t <= img.width() \
-                and sy + 2 * t <= img.height():
-            # стены A4 (2x3) и A3 (2x2): левая колонка блока — «бок»
-            # (тёмная грань к соседу), правая — фасад. У A4 стены под
-            # соседом-стеной рисуются телом без козырька — стены
-            # соединяются в сплошную вертикаль.
-            if page == maprender.PAGE_A4:
-                if up_wall:
-                    painter.drawImage(dx, dy, img, sx + t, sy + t, t, t)
-                else:
-                    cap = 18
-                    painter.drawImage(dx, dy, img, sx + t, sy, t, cap)
-                    painter.drawImage(dx, dy + cap, img, sx + t, sy + t,
-                                      t, t - cap)
-            else:
-                painter.drawImage(dx, dy, img, sx + t, sy, t, t)
-                painter.drawImage(dx, dy + t, img, sx + t, sy + t, t, t)
-            return
-        if page == maprender.PAGE_A2 \
-                and sy + 3 * t <= img.height() \
-                and sx + 2 * t <= img.width():
-            # земля A2 (2x3): с соседом-землёй сверху — сплошной паттерн
-            # (нижний ряд блока), иначе — верхняя грань участка (ряд 0).
-            row = 2 * t if up_earth else 0
-            painter.drawImage(dx, dy, img, sx, sy + row, t, t)
-            return
-        painter.drawImage(dx, dy, img, sx, sy, t, t)
+        for i in range(4):
+            if bits & (1 << i):
+                painter.fillRect(dx + (i % 2) * half, dy + (i // 2) * half,
+                                 half, half, QColor(0, 0, 0, 115))
 
     def char_image(self, name: str) -> QImage | None:
         if name in self.chars:
@@ -173,23 +175,26 @@ class _LayerPainter:
 
 
 class _MapRenderThread(QThread):
-    """Фоновый рендер слоёв карты (тайлы+тени, маркеры событий)."""
+    """Фоновый рендер карты по слоям движка: нижний, тени, верхний."""
 
     result_ready = Signal(int, object, object, object, object, bool)
     # (token, base_img, ev_img, pages_cache, chars_cache, base_capped)
 
-    def __init__(self, token, game_dir, view, tileset_names, w, h,
-                 ground, overlay, shadow, events, pages, chars):
+    def __init__(self, token, game_dir, view, tileset_names, flags,
+                 lower, upper, shadow, events, pages, chars, w, h):
         super().__init__()
         self._token = token
         self._w, self._h = w, h
-        self._ground, self._overlay, self._shadow = ground, overlay, shadow
+        self._lower, self._upper, self._shadow = lower, upper, shadow
         self._events = events
-        self._lp = _LayerPainter(game_dir, view, tileset_names, pages, chars)
+        self._n = w * h
+        self._lp = _LayerPainter(game_dir, view, tileset_names, pages,
+                                 chars, flags)
 
     def run(self):
         t = maprender.TILE
         w, h = self._w, self._h
+        n = self._n
         scale = _layer_scale(w, h)
         bw, bh = max(1, int(w * t * scale)), max(1, int(h * t * scale))
         img = QImage(bw, bh, QImage.Format_ARGB32)
@@ -197,49 +202,44 @@ class _MapRenderThread(QThread):
         painter = QPainter(img)
         if scale != 1.0:
             painter.scale(scale, scale)
-        gl, ol = len(self._ground), len(self._overlay)
-        # индексы автотайлов стен/земли — для соединения по соседям
-        a4_ids = {i for i, tid in enumerate(self._ground)
-                  if maprender.TILE_ID_A4 <= tid < 4352 + 48 * 80}
-        a4_ids.update(i for i, tid in enumerate(self._overlay)
-                      if maprender.TILE_ID_A4 <= tid < 4352 + 48 * 80)
-        a2_ids = {i for i, tid in enumerate(self._ground)
-                  if maprender.TILE_ID_A2 <= tid < 3072}
-        a2_ids.update(i for i, tid in enumerate(self._overlay)
-                      if maprender.TILE_ID_A2 <= tid < 3072)
+
+        # ── нижний слой (z0..z3 не-верхние) + тени + края столов ──
         for cy in range(h):
             if self.isInterruptionRequested():
                 painter.end()
                 return
-            row = cy * w
             for cx in range(w):
-                i = row + cx
-                if i < gl:
-                    self._lp.draw_tile(painter, self._ground[i], cx * t,
-                                       cy * t, up_wall=(i - w) in a4_ids,
-                                       up_earth=(i - w) in a2_ids)
-                if i < ol:
-                    self._lp.draw_tile(painter, self._overlay[i], cx * t,
-                                       cy * t, up_wall=(i - w) in a4_ids,
-                                       up_earth=(i - w) in a2_ids)
-        painter.setPen(Qt.NoPen)
-        sl = len(self._shadow)
-        if sl:
-            half = t // 2
-            for cy in range(h):
-                if self.isInterruptionRequested():
-                    painter.end()
-                    return
-                for cx in range(w):
-                    i = cy * w + cx
-                    if i >= sl or not self._shadow[i]:
-                        continue
-                    v = self._shadow[i]
-                    for bit, (qx, qy) in ((1, (0, 0)), (2, (half, 0)),
-                                          (4, (0, half)), (8, (half, half))):
-                        if v & bit:
-                            painter.fillRect(cx * t + qx, cy * t + qy,
-                                             half, half, QColor(0, 0, 40, 90))
+                i = cy * w + cx
+                for tid in (self._lower[i], self._lower[n + i],
+                            self._upper[i] if i < len(self._upper) else 0,
+                            self._upper[n + i] if n + i < len(self._upper)
+                            else 0):
+                    if tid and not self._lp.is_upper(tid):
+                        self._lp.draw_tile(painter, tid, cx * t, cy * t)
+                if i < len(self._shadow):
+                    self._lp.draw_shadow(painter, self._shadow[i],
+                                         cx * t, cy * t)
+                # край «стола»: тайл сверху — стол, этот — нет, под ним
+                # не A3/A4 (отбрасывающие тень)
+                upper_prev = self._lower[n + i - w] if i >= w else 0
+                if self._lp.is_table(upper_prev) \
+                        and not self._lp.is_table(self._lower[n + i]) \
+                        and not maprender.is_shadowing_tile(self._lower[i]):
+                    self._lp.draw_table_edge(painter, upper_prev,
+                                             cx * t, cy * t)
+        # ── верхний слой (все higher-тайлы z0..z3) ──
+        for cy in range(h):
+            if self.isInterruptionRequested():
+                painter.end()
+                return
+            for cx in range(w):
+                i = cy * w + cx
+                for tid in (self._lower[i], self._lower[n + i],
+                            self._upper[i] if i < len(self._upper) else 0,
+                            self._upper[n + i] if n + i < len(self._upper)
+                            else 0):
+                    if tid and self._lp.is_upper(tid):
+                        self._lp.draw_tile(painter, tid, cx * t, cy * t)
         painter.end()
         if self.isInterruptionRequested():
             return
@@ -433,6 +433,7 @@ class MapTab(QWidget):
             tilesets, (self._map_data or {}).get("tilesetId", 1))
         self._tileset_names = list(tileset.get("tilesetNames") or []) \
             if tileset else []
+        self._tile_flags = list(tileset.get("flags") or []) if tileset else []
         self._render_canvas()
 
     def _render_canvas(self):
@@ -441,7 +442,8 @@ class MapTab(QWidget):
             self.canvas.setText(TR("map_none"))
             self.canvas.setPixmap(QPixmap())
             return
-        w, h, ground, overlay, shadow = maprender.map_layers(self._map_data)
+        w, h, lower, upper, shadow, region, is_mz = \
+            maprender.map_layers(self._map_data)
         events = copy.deepcopy(self._map_data.get("events") or [])
         self._render_seq += 1
         token = self._render_seq
@@ -451,8 +453,9 @@ class MapTab(QWidget):
         self.canvas.setPixmap(QPixmap())
         th = _MapRenderThread(
             token, self._game_dir(), self._view(),
-            list(self._tileset_names), w, h, ground, overlay, shadow,
-            events, dict(self._pages_img), dict(self._char_img))
+            list(self._tileset_names), list(self._tile_flags),
+            lower, upper, shadow, events,
+            dict(self._pages_img), dict(self._char_img), w, h)
         th.result_ready.connect(self._on_render_done)
         th.finished.connect(lambda: self._on_thread_finished(th))
         self._render_threads.add(th)
@@ -495,7 +498,7 @@ class MapTab(QWidget):
             painter.scale(scale, scale)
         lp = _LayerPainter(self._game_dir(), self._view(),
                            self._tileset_names, self._pages_img,
-                           self._char_img)
+                           self._char_img, self._tile_flags)
         lp.draw_events(painter, self._map_data.get("events") or [])
         painter.end()
         self._ev_img = ev
@@ -566,6 +569,14 @@ class MapTab(QWidget):
             act_edit = menu.addAction(TR("map_ctx_edit"))
             act_edit.triggered.connect(lambda: self._edit_event_dialog(ev))
 
+            act_dup = menu.addAction(TR("map_ctx_dup"))
+            act_dup.triggered.connect(
+                lambda: self._duplicate_event(ev))
+
+            act_del = menu.addAction(TR("map_ctx_del"))
+            act_del.triggered.connect(
+                lambda: self._delete_event(ev))
+
             pages = ev.get("pages") or []
             page = pages[0] if pages else {}
             cond = maprender.page_conditions(page)
@@ -579,6 +590,10 @@ class MapTab(QWidget):
             act_tp = menu.addAction(TR("map_ctx_teleport_here"))
             act_tp.triggered.connect(
                 lambda: self._send_teleport(self._map_id, x, y))
+
+            act_new = menu.addAction(TR("map_ctx_new_event"))
+            act_new.triggered.connect(
+                lambda: self._new_event(x, y))
 
         menu.exec(global_pos)
 
@@ -597,96 +612,65 @@ class MapTab(QWidget):
 
     # ── диалог редактирования события ──
     def _edit_event_dialog(self, ev: dict):
-        from PySide6.QtWidgets import QDialog, QDialogButtonBox
-        s = maprender.event_summary(ev)
-        dlg = QDialog(self)
-        dlg.setWindowTitle(f"EV{s['id']} — {s['name']}")
-        dlg.setMinimumWidth(380)
-        lay = QVBoxLayout(dlg)
-        form = QFormLayout()
-
-        ed_name = QLineEdit(s["name"])
-        form.addRow(TR("map_name"), ed_name)
-
-        pos_row = QWidget()
-        pl = QHBoxLayout(pos_row)
-        pl.setContentsMargins(0, 0, 0, 0)
-        sp_x = QSpinBox()
-        sp_x.setRange(0, 999)
-        sp_x.setValue(s["x"])
-        sp_y = QSpinBox()
-        sp_y.setRange(0, 999)
-        sp_y.setValue(s["y"])
-        pl.addWidget(QLabel("X:"))
-        pl.addWidget(sp_x)
-        pl.addWidget(QLabel("Y:"))
-        pl.addWidget(sp_y)
-        pl.addStretch(1)
-        form.addRow(TR("map_pos"), pos_row)
-
-        page_combo = QComboBox()
-        for i in range(s["pages"]):
-            page_combo.addItem(f"{i + 1}")
-        pages = ev.get("pages") or []
-        page = pages[0] if pages else {}
-        form.addRow(TR("map_page"), page_combo)
-
-        lbl_trigger = QLabel(
-            maprender.TRIGGER_NAMES.get(page.get("trigger", 0), "?"))
-        form.addRow(TR("map_trigger"), lbl_trigger)
-
-        c = maprender.page_conditions(page)
-        cb_sw1 = QCheckBox(TR("map_sw1"))
-        cb_sw1.setChecked(c["switch1_valid"])
-        sp_sw1 = QSpinBox()
-        sp_sw1.setRange(1, 9999)
-        sp_sw1.setValue(c["switch1_id"])
-        sw1_row = QWidget()
-        sw1_l = QHBoxLayout(sw1_row)
-        sw1_l.setContentsMargins(0, 0, 0, 0)
-        sw1_l.addWidget(cb_sw1)
-        sw1_l.addWidget(sp_sw1)
-        sw1_l.addStretch(1)
-        form.addRow(TR("map_visibility"), sw1_row)
-
-        cb_sw2 = QCheckBox(TR("map_sw2"))
-        cb_sw2.setChecked(c["switch2_valid"])
-        sp_sw2 = QSpinBox()
-        sp_sw2.setRange(1, 9999)
-        sp_sw2.setValue(c["switch2_id"])
-        sw2_row = QWidget()
-        sw2_l = QHBoxLayout(sw2_row)
-        sw2_l.setContentsMargins(0, 0, 0, 0)
-        sw2_l.addWidget(cb_sw2)
-        sw2_l.addWidget(sp_sw2)
-        sw2_l.addStretch(1)
-        form.addRow("", sw2_row)
-
-        lbl_vis = QLabel(maprender.visibility_text(page))
-        lbl_vis.setWordWrap(True)
-        form.addRow(lbl_vis)
-
-        lay.addLayout(form)
-
-        btns = QDialogButtonBox(
-            QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        btns.accepted.connect(dlg.accept)
-        btns.rejected.connect(dlg.reject)
-        lay.addWidget(btns)
-
-        if dlg.exec() != QDialog.Accepted:
-            return
-
-        ev["name"] = ed_name.text()
-        ev["x"] = sp_x.value()
-        ev["y"] = sp_y.value()
-        if pages:
-            c2 = pages[page_combo.currentIndex()].setdefault("conditions", {})
-            c2["switch1Valid"] = cb_sw1.isChecked()
-            c2["switch1Id"] = sp_sw1.value()
-            c2["switch2Valid"] = cb_sw2.isChecked()
-            c2["switch2Id"] = sp_sw2.value()
+        from app.ui.event_editor import EventEditorDialog
+        dlg = EventEditorDialog(self, self._game_dir(), self._view(), ev)
+        dlg.exec()
         # изменились только события — перерисовываем лёгкий слой
+        self._redraw_events()
+        self._compose()
+
+    def _new_event(self, x: int, y: int):
+        """Новое событие на пустой клетке."""
+        events = self._map_data.setdefault("events", [])
+        ev_id = max([e.get("id", 0) for e in events if isinstance(e, dict)],
+                    default=0) + 1
+        ev = {
+            "id": ev_id,
+            "name": TR("ev_new_name").format(id=ev_id),
+            "x": x,
+            "y": y,
+            "note": "",
+            "pages": [{
+                "conditions": {},
+                "directionFix": False,
+                "image": {},
+                "list": [],
+                "moveFrequency": 3,
+                "moveRoute": {"list": [], "repeat": True,
+                              "skippable": False, "wait": False},
+                "moveSpeed": 3,
+                "moveType": 0,
+                "priorityType": 0,
+                "stepAnime": False,
+                "through": False,
+                "trigger": 0,
+                "walkAnime": True,
+            }],
+        }
+        events.append(ev)
+        self._edit_event_dialog(ev)
+
+    def _duplicate_event(self, ev: dict):
+        import copy
+        events = self._map_data.setdefault("events", [])
+        new = copy.deepcopy(ev)
+        new["id"] = max([e.get("id", 0) for e in events
+                         if isinstance(e, dict)], default=0) + 1
+        new["name"] = f"{ev.get('name', '')} #2"
+        events.append(new)
+        self._redraw_events()
+        self._compose()
+
+    def _delete_event(self, ev: dict):
+        events = self._map_data.get("events") or []
+        if ev not in events:
+            return
+        ret = QMessageBox.question(
+            self, TR("map_ctx_del"),
+            TR("map_ctx_del_q", name=ev.get("name", "")))
+        if ret != QMessageBox.Yes:
+            return
+        events.remove(ev)
         self._redraw_events()
         self._compose()
 

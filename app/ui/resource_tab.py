@@ -895,13 +895,7 @@ class ResourceTab(QWidget):
         self.image_scroll.setVisible(False)
         self._audio_widget.setVisible(True)
         self._video_widget.setVisible(False)
-        path = data[1]
-        if isinstance(path, tuple):
-            arch = self._archives.get(path[0])
-            size_bytes = (arch._index.get(path[1], (0, 0))[1]
-                          if arch else 0)
-        else:
-            size_bytes = os.path.getsize(path)
+        size_bytes = self._item_size(data[1])
         size_kb = size_bytes / 1024
         self.audio_title.setText(f"{self._current_item_name} — {size_kb:.0f} KB")
         self.lbl_info.setText(self._current_item_name)
@@ -919,9 +913,9 @@ class ResourceTab(QWidget):
 
     def _play_audio(self):
         data = self._current_item_data
-        if not data or data[0] != "audio":
+        if not data or data[0] not in ("audio", "archive_audio"):
             return
-        if not _FFMPEG:
+        if self._get_audio_ext(data[1]) != ".wav" and not _FFMPEG:
             QMessageBox.warning(self, TR("err"), TR("res_no_ffmpeg"))
             return
         wav = self._prepare_wav(data)

@@ -298,6 +298,22 @@ _STRINGS = {
         "ru": "Папка: {path}",
         "en": "Folder: {path}",
     },
+    "tr_restore": {
+        "ru": "Восстановить оригинал",
+        "en": "Restore original",
+    },
+    "tr_restore_title": {
+        "ru": "Восстановление оригинала",
+        "en": "Restore original",
+    },
+    "tr_restore_msg": {
+        "ru": "Вернуть файлы игры из бэкапа (сбросить переводы)?",
+        "en": "Restore game files from backup (discard translations)?",
+    },
+    "tr_restore_done": {
+        "ru": "Восстановлено файлов: {n}",
+        "en": "Files restored: {n}",
+    },
     "tr_progress": {
         "ru": "Переведено {done}/{total}",
         "en": "Translated {done}/{total}",
@@ -461,8 +477,8 @@ _STRINGS = {
         "en": "Projects folder:",
     },
     "settings_cache_size": {
-        "ru": "{size} ({files} файлов)",
-        "en": "{size} ({files} files)",
+        "ru": "{size} ({files} файлов) · Кеш: {tmp}",
+        "en": "{size} ({files} files) · Cache: {tmp}",
     },
     "settings_cache_clean": {"ru": "Очистить кеш", "en": "Clear cache"},
     "settings_cache_open": {"ru": "Открыть папку", "en": "Open folder"},
@@ -574,6 +590,8 @@ _STRINGS = {
         "ru": "Язык интерфейса:",
         "en": "UI Language:",
     },
+    "settings_ui_ru": {"ru": "Русский", "en": "Russian"},
+    "settings_ui_en": {"ru": "Английский", "en": "English"},
     "settings_restart_hint": {
         "ru": "Язык изменится после перезапуска приложения.",
         "en": "Language will change after restarting the app.",
@@ -635,6 +653,53 @@ _STRINGS = {
     "map_trigger_2": {"ru": "Касание события", "en": "Event touch"},
     "map_trigger_3": {"ru": "Автозапуск", "en": "Auto-start"},
     "map_trigger_4": {"ru": "Параллельно", "en": "Parallel"},
+    "ev_none": {"ru": "(нет)", "en": "(none)"},
+    "ev_dir_down": {"ru": "Вниз", "en": "Down"},
+    "ev_dir_left": {"ru": "Влево", "en": "Left"},
+    "ev_dir_right": {"ru": "Вправо", "en": "Right"},
+    "ev_dir_up": {"ru": "Вверх", "en": "Up"},
+    "ev_priority_0": {"ru": "Под игроком", "en": "Below player"},
+    "ev_priority_1": {"ru": "На уровне игрока", "en": "Same as player"},
+    "ev_priority_2": {"ru": "Над игроком", "en": "Above player"},
+    "ev_move_0": {"ru": "Стоит", "en": "Fixed"},
+    "ev_move_1": {"ru": "Случайно", "en": "Random"},
+    "ev_move_2": {"ru": "Подход к игроку", "en": "Approach"},
+    "ev_move_3": {"ru": "Свой маршрут", "en": "Custom"},
+    "ev_choice": {"ru": "Выбор {n}", "en": "Choice {n}"},
+    "ev_param": {"ru": "Параметр {n}", "en": "Parameter {n}"},
+    "ev_cmd_map": {
+        "ru": "{name}: карта {mid} ({x},{y})",
+        "en": "{name}: map {mid} ({x},{y})",
+    },
+    "ev_cond_switch": {"ru": "переключатель {id}=ВКЛ", "en": "switch {id}=ON"},
+    "ev_cond_var": {
+        "ru": "переменная {id} {op} {v}", "en": "variable {id} {op} {v}"},
+    "ev_cond_self": {
+        "ru": "self-переключатель {id}=ВКЛ", "en": "self switch {id}=ON"},
+    "ev_cond_timer": {"ru": "таймер {s}", "en": "timer {s}"},
+    "ev_cond_actor": {"ru": "актёр {id}", "en": "actor {id}"},
+    "ev_cond_char": {"ru": "персонаж {id}", "en": "character {id}"},
+    "ev_cond_gold": {"ru": "золото {v}", "en": "gold {v}"},
+    "ev_cond_item": {"ru": "предмет {v}", "en": "item {v}"},
+    "ev_cond_button": {"ru": "кнопка {id}", "en": "button {id}"},
+    "ev_cond_script": {"ru": "скрипт: {s}", "en": "script: {s}"},
+    "ev_cond_type": {"ru": "тип {t}", "en": "type {t}"},
+    "cmd_text_ph": {"ru": "Текст…", "en": "Text…"},
+    "cmd_choice_1": {"ru": "Вариант 1", "en": "Choice 1"},
+    "cmd_cond_script": {"ru": "Скрипт:", "en": "Script:"},
+    "ev_cond_t_switch": {"ru": "Переключатель", "en": "Switch"},
+    "ev_cond_t_var": {"ru": "Переменная", "en": "Variable"},
+    "ev_cond_t_self": {"ru": "Self-переключатель", "en": "Self switch"},
+    "ev_cond_t_timer": {"ru": "Таймер", "en": "Timer"},
+    "ev_cond_t_actor": {"ru": "Актёр", "en": "Actor"},
+    "ev_cond_t_enemy": {"ru": "Враг", "en": "Enemy"},
+    "ev_cond_t_char": {"ru": "Персонаж", "en": "Character"},
+    "ev_cond_t_gold": {"ru": "Золото", "en": "Gold"},
+    "ev_cond_t_item": {"ru": "Предмет", "en": "Item"},
+    "ev_cond_t_weapon": {"ru": "Оружие", "en": "Weapon"},
+    "ev_cond_t_armor": {"ru": "Броня", "en": "Armor"},
+    "ev_cond_t_button": {"ru": "Кнопка", "en": "Button"},
+    "ev_cond_t_script": {"ru": "Скрипт", "en": "Script"},
     "map_vis_always": {"ru": "всегда виден", "en": "always visible"},
 
     # ── Parser context ──
@@ -773,7 +838,8 @@ _STRINGS = {
 
     # ── Glossary ──
     "glossary_title": {"ru": "Глоссарий", "en": "Glossary"},
-    "glossary_pair": {"ru": "Пара языков:", "en": "Language pair:"},
+    "glossary_src": {"ru": "Источник:", "en": "Source:"},
+    "glossary_tgt": {"ru": "Перевод:", "en": "Target:"},
     "glossary_search": {"ru": "Поиск по терминам…", "en": "Search terms…"},
     "glossary_count": {
         "ru": "Показано: {shown} из {total}",
@@ -783,15 +849,30 @@ _STRINGS = {
     "glossary_lang_zh": {"ru": "Китайский", "en": "Chinese"},
     "glossary_lang_en": {"ru": "Английский", "en": "English"},
     "glossary_lang_ru": {"ru": "Русский", "en": "Russian"},
-    "glossary_add": {"ru": "Добавить строку", "en": "Add row"},
-    "glossary_del": {"ru": "Удалить выбранную", "en": "Delete selected"},
+    "glossary_add": {"ru": "Добавить", "en": "Add"},
+    "glossary_edit": {"ru": "Изменить", "en": "Edit"},
+    "glossary_del": {"ru": "Удалить", "en": "Delete"},
     "glossary_save": {"ru": "Сохранить", "en": "Save"},
     "glossary_hint": {
-        "ru": "Термины подставляются в перевод как есть — имена не будут искажаться.",
-        "en": "Terms are inserted verbatim — names won't be distorted.",
+        "ru": "Термины подставляются в перевод как есть — имена не будут искажаться. "
+             "Двойной клик по строке открывает редактирование.",
+        "en": "Terms are inserted verbatim — names won't be distorted. "
+             "Double-click a row to edit it.",
     },
-    "glossary_col_orig": {"ru": "Термин (оригинал)", "en": "Term (original)"},
+    "glossary_col_orig": {"ru": "Термин", "en": "Term"},
     "glossary_col_tr": {"ru": "Перевод", "en": "Translation"},
+    "glossary_col_group": {"ru": "Категория", "en": "Category"},
+    "glossary_group_all": {"ru": "Все категории", "en": "All categories"},
+    "glossary_group_none": {"ru": "(без категории)", "en": "(no category)"},
+    "glossary_edit_title": {"ru": "Термин глоссария", "en": "Glossary term"},
+    "glossary_term": {"ru": "Термин:", "en": "Term:"},
+    "glossary_term_tr": {"ru": "Перевод:", "en": "Translation:"},
+    "glossary_term_group": {"ru": "Категория:", "en": "Category:"},
+    "tr_gloss_bar": {"ru": "Глоссарий:", "en": "Glossary:"},
+    "tr_gloss_chip_tip": {
+        "ru": "Вставить перевод термина в ячейку перевода",
+        "en": "Insert the term's translation into the translation cell",
+    },
     "glossary_analyze": {"ru": "Анализ терминов (AI)…", "en": "Analyze terms (AI)…"},
     "glossary_analyze_need_ai": {
         "ru": "Анализ требует AI-провайдера. Настройте его в Настройках (провайдер AI).",
@@ -884,6 +965,78 @@ _STRINGS = {
         "ru": "Включить переключатель #{id}",
         "en": "Turn on switch #{id}",
     },
+    "map_ctx_dup": {
+        "ru": "Дублировать событие",
+        "en": "Duplicate event",
+    },
+    "map_ctx_del": {
+        "ru": "Удалить событие",
+        "en": "Delete event",
+    },
+    "map_ctx_del_q": {
+        "ru": "Удалить событие «{name}»?",
+        "en": "Delete event \"{name}\"?",
+    },
+    "map_ctx_new_event": {
+        "ru": "Новое событие",
+        "en": "New event",
+    },
+    "ev_new_name": {
+        "ru": "Событие #{id}",
+        "en": "Event #{id}",
+    },
+    "ev_pages": {"ru": "Страницы:", "en": "Pages:"},
+    "ev_add_page": {"ru": "+ Страница", "en": "+ Page"},
+    "ev_dup_page": {"ru": "Дублировать", "en": "Duplicate"},
+    "ev_del_page": {"ru": "Удалить", "en": "Delete"},
+    "ev_no_del": {
+        "ru": "Нельзя удалить единственную страницу",
+        "en": "Cannot delete the only page",
+    },
+    "ev_image": {"ru": "Изображение:", "en": "Image:"},
+    "ev_image_opt": {"ru": "Вариант/напр./паттерн:", "en": "Index/dir/pattern:"},
+    "ev_tile": {"ru": "Тайл события (ID):", "en": "Event tile (ID):"},
+    "ev_trigger": {"ru": "Триггер:", "en": "Trigger:"},
+    "ev_priority": {"ru": "Приоритет:", "en": "Priority:"},
+    "ev_move": {"ru": "Движение:", "en": "Movement:"},
+    "ev_speed": {"ru": "Скорость:", "en": "Speed:"},
+    "ev_freq": {"ru": "Частота:", "en": "Frequency:"},
+    "ev_options": {"ru": "Опции:", "en": "Options:"},
+    "ev_walk_anime": {"ru": "Анимация ходьбы", "en": "Walk animation"},
+    "ev_step_anime": {"ru": "Анимация шага", "en": "Step animation"},
+    "ev_dir_fix": {"ru": "Фикс. направление", "en": "Direction fix"},
+    "ev_through": {"ru": "Сквозной", "en": "Through"},
+    "ev_conditions": {"ru": "Условия видимости:", "en": "Visibility:"},
+    "ev_sw1": {"ru": "Переключатель 1:", "en": "Switch 1:"},
+    "ev_sw2": {"ru": "Переключатель 2:", "en": "Switch 2:"},
+    "ev_var": {"ru": "Переменная:", "en": "Variable:"},
+    "ev_self": {"ru": "Self-переключатель:", "en": "Self switch:"},
+    "cmd_add": {"ru": "Добавить", "en": "Add"},
+    "cmd_edit": {"ru": "Изменить", "en": "Edit"},
+    "cmd_del": {"ru": "Удалить", "en": "Delete"},
+    "cmd_up": {"ru": "Вверх", "en": "Up"},
+    "cmd_down": {"ru": "Вниз", "en": "Down"},
+    "cmd_no_params": {
+        "ru": "У этой команды нет параметров.",
+        "en": "This command has no parameters.",
+    },
+    "cmd_text": {"ru": "Текст сообщения", "en": "Message text"},
+    "cmd_choices": {"ru": "Варианты выбора", "en": "Choices"},
+    "cmd_cancel": {"ru": "Отмена → (0-4, 4=запретить):", "en": "Cancel (0-4, 4=forbid):"},
+    "cmd_default": {"ru": "Выбор по умолчанию:", "en": "Default choice:"},
+    "cmd_choice_new": {"ru": "Вариант", "en": "Choice"},
+    "cmd_cond": {"ru": "Условие", "en": "Condition"},
+    "cmd_cond_type": {"ru": "Тип:", "en": "Type:"},
+    "cmd_cond_p1": {"ru": "Параметр 1:", "en": "Parameter 1:"},
+    "cmd_cond_op": {"ru": "Операция:", "en": "Operation:"},
+    "cmd_cond_p2": {"ru": "Параметр 2:", "en": "Parameter 2:"},
+    "cmd_route": {"ru": "Маршрут движения", "en": "Movement route"},
+    "cmd_route_char": {"ru": "Персонаж (0=это, 1=игрок):", "en": "Character (0=this, 1=player):"},
+    "cmd_new_page_comment": {
+        "ru": "// Новая страница",
+        "en": "// New page",
+    },
+
     "vars_from_save": {"ru": "Из .save файла…", "en": "From .save file…"},
     "vars_save_loaded": {
         "ru": "Сейв {path}: {n} переменных (правки пишутся в файл)",
@@ -1050,7 +1203,6 @@ _STRINGS = {
     },
     "about_engines": {"ru": "Поддерживаемые движки", "en": "Supported engines"},
     "about_kofi": {"ru": "Поддержать проект на Ko-fi", "en": "Support the project on Ko-fi"},
-    "about_changelog": {"ru": "Что нового", "en": "Changelog"},
     "about_close": {"ru": "Закрыть", "en": "Close"},
     "update_title": {"ru": "Доступна новая версия", "en": "Update available"},
     "update_found": {
@@ -1069,6 +1221,11 @@ _STRINGS = {
 def set_language(lang: str):
     global _lang
     _lang = lang
+
+
+def current_lang() -> str:
+    """Текущий язык интерфейса ("ru" | "en")."""
+    return _lang
 
 
 def TR(key: str, **fmt) -> str:

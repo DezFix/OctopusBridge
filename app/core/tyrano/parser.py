@@ -25,7 +25,6 @@ from __future__ import annotations
 import os
 import re
 import shutil
-from datetime import datetime
 
 from app.core.models import TranslationEntry
 
@@ -303,8 +302,7 @@ def apply(game_dir: str, entries: list[TranslationEntry],
     target_lang принимается для единого контракта движков.
     """
     if backup_root is None:
-        backup_root = os.path.join(game_dir, "backup",
-                                   datetime.now().strftime("%Y%m%d_%H%M%S"))
+        backup_root = os.path.join(game_dir, "backup")
     by_file: dict[str, list[TranslationEntry]] = {}
     for e in entries:
         if e.translation.strip() and e.status != "skip":
@@ -367,6 +365,62 @@ def apply(game_dir: str, entries: list[TranslationEntry],
         stats["files"] += 1 if written else 0
         stats["strings"] += written
     return stats
+
+
+# имя старых таймстамп-папок бэкапа: YYYYmmdd_HHMMSS
+_TS_RE = re.compile(r"^\d{8}_\d{6}$")
+
+
+def restore_original(game_dir: str) -> dict:
+    """Восстанавливает оригинальные .ks из backup/ (одноразовый бэкап
+    до первого перевода: backup/<rel> либо старые backup/<ts>/<rel>).
+    Возвращает статистику."""
+    root = os.path.join(game_dir, "backup")
+    if not os.path.isdir(root):
+        return {"restored": 0}
+    restored = 0
+    done: set[str] = set()
+    # Плоский формат: backup/<rel> — приоритет (канонический оригинал)
+    for _r, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if not _TS_RE.match(d)]
+        for f in files:
+            src = os.path.join(_r, f)
+            rel = os.path.relpath(src, root).replace(os.sep, "/")
+            if rel in done:
+                continue
+            dst = os.path.join(game_dir, *rel.split("/"))
+            try:
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copy2(src, dst)
+                done.add(rel)
+                restored += 1
+            except OSError:
+                pass
+    # Старые таймстамп-папки сортируются хронологически: первая
+    # копия = оригинал до переводов.
+    try:
+        legacy = sorted(d for d in os.listdir(root)
+                        if _TS_RE.match(d)
+                        and os.path.isdir(os.path.join(root, d)))
+    except OSError:
+        legacy = []
+    for d in legacy:
+        base = os.path.join(root, d)
+        for _r, _dirs, files in os.walk(base):
+            for f in files:
+                src = os.path.join(_r, f)
+                rel = os.path.relpath(src, base).replace(os.sep, "/")
+                if rel in done:
+                    continue
+                dst = os.path.join(game_dir, *rel.split("/"))
+                try:
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    shutil.copy2(src, dst)
+                    done.add(rel)
+                    restored += 1
+                except OSError:
+                    pass
+    return {"restored": restored}
 
 
 def _replace_seg(line: str, seg_idx: int, original: str,

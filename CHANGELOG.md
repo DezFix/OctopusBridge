@@ -2,6 +2,29 @@
 
 All notable changes to the project. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning follows [SemVer](https://semver.org/).
 
+## [0.6.5] — 2026-08-14
+
+### Added
+- **RPG Maker maps now render 1:1 with the engine** (pixel-exact). The tilemap algorithm was copied from `rmmz_core.js`: autotile tables (floor/wall/waterfall), upper-tile flag (0x10) and table flag (0x80) from `Tilesets.json`, shadows from the dedicated shadow layer (z4 in MZ, z2 in MV), table edges drawn from the two halves. Both MZ (6-layer) and MV (4-layer) maps are supported. Previously the approximation produced broken textures and unreadable maps.
+- **Full RPG Maker event editor** — everything that can be changed about an event is now editable:
+  - event name and X/Y position; pages: add / duplicate / delete;
+  - page: character image (picked from the game's `img/characters`, with a 48×64 preview via the decryption layer), event tile ID, trigger, priority, movement type/speed/frequency, walk/step animation, direction fix, through, visibility conditions (switches, variable, self-switch);
+  - command list editor: add commands from the full RPG Maker MV/MZ catalog grouped by category, edit parameters (numbers / strings / choices), auto-inserted continuators (101→401, 102→402+404, 111→411+412, 205→505), dedicated editors for message text, choices, conditional branches (all 13 types) and movement routes (all 46 route commands); both MZ (`{code, indent, parameters}`) and MV (`[code, indent, …]`) command formats are supported.
+- **Glossary redesigned**:
+  - clear language pickers (Source / Target combos) instead of the editable `ja->ru` code box;
+  - per-row edit dialog (term / translation / category) with explicit confirmation — no more error-prone inline cell editing;
+  - category column, click-to-sort on every column, category filter, search across term/translation/category;
+  - **glossary applied right in the translation table**: for the selected row a chip bar shows matched terms (`「アイラ」 → Айра`), clicking a chip inserts the translation into the translation cell;
+  - glossary file format extended with categories while keeping old files compatible (plain string values still work; categories survive re-saving).
+- **Full RU/EN localization sweep**: the RPG Maker command catalog (names, groups, parameter labels, route commands) is now bilingual and follows the interface language live; triggers, priorities, movement types, directions, condition briefs, default choice names and the UI language picker are translated too. A checker verifies that every `TR(...)` key in the code exists in both languages.
+
+### Fixed
+- Twine: backing up a single-`start_game.html` game failed with `NotADirectoryError` — the backup directory is now created next to the file (`_backup_dir` helper used in load/apply/restore).
+- Resource tab: "Audio" info dialog crashed on relative RPG Maker paths (e.g. encrypted `audio/me/Curse2.ogg_`) — size is now resolved through the item's own storage lookup.
+- Event editor: MZ movement-route commands are stored as `{"code": N}` dicts (not bare ints) — the catalog now accepts both formats.
+- Glossary hint bar: the layout stretch item could not be removed, causing an infinite loop when rebuilding chips — chips are now removed by index with the stretch kept in place.
+- Event direction order is now stable (down/left/right/up) — previously a Python `set` ordering made the editor occasionally write the wrong facing.
+
 ## [0.6.1] — 2026-08-12
 
 ### Added

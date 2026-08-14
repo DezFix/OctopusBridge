@@ -156,7 +156,7 @@ class SettingsDialog(QDialog):
         ui_box = QGroupBox(TR("settings_ui_lang"))
         ui_form = QFormLayout(ui_box)
         self.ui_lang = QComboBox()
-        self.ui_lang.addItems(["Русский", "English"])
+        self.ui_lang.addItems([TR("settings_ui_ru"), TR("settings_ui_en")])
         self.ui_lang.setCurrentIndex(0 if s.value("ui_lang", "ru") == "ru" else 1)
         ui_form.addRow(TR("settings_ui_lang"), self.ui_lang)
         lay.addWidget(ui_box)
@@ -307,10 +307,13 @@ class SettingsDialog(QDialog):
 
     def _refresh_cache_size(self):
         total, files = app_cache.projects_size()
+        tmp_total, tmp_files = app_cache.temp_size()
         self.cache_size_label.setText(
             TR("settings_cache_size",
                size=app_cache.format_size(total, self._cache_lang()),
-               files=files))
+               files=files,
+               tmp=app_cache.format_size(tmp_total, self._cache_lang()),
+               tmp_files=tmp_files))
 
     def _clean_cache(self):
         freed = app_cache.clean_cache()
@@ -323,7 +326,7 @@ class SettingsDialog(QDialog):
             self.cache_status.setText(TR("settings_cache_nothing"))
 
     def _open_cache_dir(self):
-        QDesktopServices.openUrl(QUrl.fromLocalFile(app_cache.projects_dir()))
+        QDesktopServices.openUrl(QUrl.fromLocalFile(app_cache.temp_dir()))
 
     # ── Provider visibility ──
     def _update_provider_visibility(self, eng: dict):

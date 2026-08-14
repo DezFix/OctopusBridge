@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Кеш проектов: размер папки %APPDATA%\\OctopusBridge\\projects,
+"""Кеш проектов: размер папки %APPDATA%\\OctopusBridge\\temp,
 очистка временных проектов (tmp*.ob.json), автоочистка по порогу."""
 from __future__ import annotations
 
 import os
 
-from app import projects_dir
+from app import projects_dir, temp_dir
 
 
 def projects_size() -> tuple[int, int]:
@@ -31,9 +31,28 @@ def is_tmp_project(name: str) -> bool:
     return name.startswith("tmp") and name.endswith(".ob.json")
 
 
+def temp_size() -> tuple[int, int]:
+    """Суммарный размер папки temp (кеш) в байтах и число файлов."""
+    root = temp_dir()
+    total = 0
+    files = 0
+    if not os.path.isdir(root):
+        return 0, 0
+    for name in os.listdir(root):
+        p = os.path.join(root, name)
+        if os.path.isfile(p):
+            try:
+                total += os.path.getsize(p)
+            except OSError:
+                continue
+            files += 1
+    return total, files
+
+
 def clean_cache() -> int:
-    """Удаляет временные проекты tmp*.ob.json. Возвращает байты."""
-    root = projects_dir()
+    """Удаляет содержимое папки temp (временные проекты tmp*.ob.json).
+    Возвращает освобождённые байты."""
+    root = temp_dir()
     freed = 0
     if not os.path.isdir(root):
         return 0
@@ -50,12 +69,21 @@ def clean_cache() -> int:
 
 
 def maybe_auto_clean(settings) -> bool:
-    """Автоочистка при старте: если размер кеша превысил порог (МБ)
+    """Автоочистка при старте: если размер temp-папки превысил порог (МБ)
     и автоочистка включена — удаляет временные проекты."""
     if not settings.value("cache_auto_clean", False, type=bool):
         return False
     limit_mb = settings.value("cache_auto_clean_mb", 200, type=int)
-    total, _ = projects_size()
+    total = 0
+    root = temp_dir()
+    if os.path.isdir(root):
+        for name in os.listdir(root):
+            p = os.path.join(root, name)
+            if os.path.isfile(p):
+                try:
+                    total += os.path.getsize(p)
+                except OSError:
+                    continue
     if total <= limit_mb * 1024 * 1024:
         return False
     return clean_cache() > 0

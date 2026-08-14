@@ -112,9 +112,11 @@ class MainWindow(QMainWindow):
 
         os.makedirs(PROJECTS_DIR, exist_ok=True)
         _migrate_project_files()
+        app_paths.migrate_appdata()
         self._dedup_recent()
         self.tm = TranslationMemory(os.path.join(PROJECTS_DIR, "tm.sqlite"))
-        self.glossary = Glossary(os.path.join(PROJECTS_DIR, "glossary.json"))
+        self.glossary = Glossary(os.path.join(app_paths.glossary_dir(),
+                                              "glossary.json"))
         self.project: Project | None = None
         self.session = GameSession(self)
         # ретрансляция сигналов щупальца в сигналы главного окна
