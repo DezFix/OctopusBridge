@@ -251,6 +251,26 @@ class WelcomeTab(QWidget):
         self.font_box.setVisible(False)
         lay.addWidget(self.font_box)
 
+        # font size (RPG Maker MV/MZ, Ren'Py): уменьшить/увеличить
+        self.size_box = QGroupBox(TR("dash_font_size"))
+        size_lay = QHBoxLayout(self.size_box)
+        self.btn_font_smaller = QPushButton("A−")
+        self.btn_font_smaller.setToolTip(TR("dash_font_smaller"))
+        self.btn_font_smaller.clicked.connect(
+            lambda: self._font_size_change(-2))
+        size_lay.addWidget(self.btn_font_smaller)
+        self.lbl_font_size = QLabel("—")
+        self.lbl_font_size.setAlignment(Qt.AlignCenter)
+        self.lbl_font_size.setToolTip(TR("dash_font_size_hint"))
+        size_lay.addWidget(self.lbl_font_size, 1)
+        self.btn_font_bigger = QPushButton("A+")
+        self.btn_font_bigger.setToolTip(TR("dash_font_bigger"))
+        self.btn_font_bigger.clicked.connect(
+            lambda: self._font_size_change(+2))
+        size_lay.addWidget(self.btn_font_bigger)
+        self.size_box.setVisible(False)
+        lay.addWidget(self.size_box)
+
         lay.addStretch(1)
         return w
 
@@ -278,7 +298,45 @@ class WelcomeTab(QWidget):
             self.btn_font_restore.setVisible(
                 fontpatch.is_patched(p.game_dir))
 
+        self._refresh_font_size()
         self._refresh_stats()
+
+    def _font_size_engine(self) -> str:
+        mod = self.main.engine_module
+        if mod.key == "rpgmaker":
+            return mod.variant
+        return mod.key
+
+    def _refresh_font_size(self):
+        p = self.main.project
+        mod = self.main.engine_module
+        if not p or not mod:
+            self.size_box.setVisible(False)
+            return
+        from app.core import fontsize
+        cur = fontsize.get_font_size(p.game_dir,
+                                     self._font_size_engine())
+        if cur is None:
+            self.size_box.setVisible(False)
+            return
+        self.size_box.setVisible(True)
+        self.lbl_font_size.setText(f"{cur} px")
+
+    def _font_size_change(self, delta: int):
+        p = self.main.project
+        mod = self.main.engine_module
+        if not p or not mod:
+            return
+        from app.core import fontsize
+        try:
+            engine = self._font_size_engine()
+            cur = fontsize.get_font_size(p.game_dir, engine) or 28
+            new = max(fontsize.MIN_SIZE,
+                      min(fontsize.MAX_SIZE, cur + delta))
+            fontsize.set_font_size(p.game_dir, engine, new)
+            self.lbl_font_size.setText(f"{new} px")
+        except (OSError, RuntimeError, FileNotFoundError) as e:
+            QMessageBox.critical(self, TR("dash_font_size"), str(e))
 
     def _refresh_stats(self):
         p = self.main.project

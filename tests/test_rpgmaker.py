@@ -211,5 +211,80 @@ with tempfile.TemporaryDirectory() as fake_local:
             os.environ["LOCALAPPDATA"] = old_env
 print("   OK")
 
+print("11) launch: игра уже запущена с отладкой — подключаемся, "
+      "не запуская второй экземпляр...")
+from app.engines.rpgmaker.tentacle import RpgMakerTentacle
+import app.engines.rpgmaker.tentacle as tentacle_mod
+
+
+class FakePopen:
+    def __init__(self, *a, **k):
+        self.pid = 9999
+        self.args = a[0]
+        self.cwd = k.get("cwd")
+
+    def poll(self):
+        return None
+
+
+with tempfile.TemporaryDirectory() as td:
+    make_project(td, "mz")
+    game_exe = os.path.join(td, "Game.exe")
+    open(game_exe, "w").close()
+    t = RpgMakerTentacle()
+    t._connect_page = lambda port, url_hint="", wait=20.0: True
+    tentacle_mod.proc.find_game_processes = lambda *a, **k: [{
+        "pid": 4242, "name": "Game.exe", "exe": game_exe, "port": 9222}]
+    assert t.launch(td) is True
+    assert t._pid == 4242
+    assert t._proc is None
+print("   OK")
+
+print("12) launch: игра запущена без отладки — закрываем "
+      "и перезапускаем с портом...")
+with tempfile.TemporaryDirectory() as td:
+    make_project(td, "mz")
+    game_exe = os.path.join(td, "Game.exe")
+    open(game_exe, "w").close()
+    t = RpgMakerTentacle()
+    killed = []
+    tentacle_mod.proc.find_game_processes = lambda *a, **k: [{
+        "pid": 4242, "name": "Game.exe", "exe": game_exe, "port": 0}]
+    tentacle_mod.proc.terminate = lambda pid, timeout=3.0: (
+        killed.append(pid) or True)
+    tentacle_mod.browser.free_port = lambda: 7777
+    tentacle_mod.subprocess.Popen = FakePopen
+    t._connect_page = lambda port, url_hint="", wait=20.0: True
+    assert t.launch(td) is True
+    assert killed == [4242]
+    assert t._proc is not None and t._proc.pid == 9999
+    assert t._proc.args[-1] == "--remote-debugging-port=7777"
+print("   OK")
+
+print("13) launch: старый процесс не закрылся — понятная ошибка...")
+with tempfile.TemporaryDirectory() as td:
+    make_project(td, "mz")
+    game_exe = os.path.join(td, "Game.exe")
+    open(game_exe, "w").close()
+    t = RpgMakerTentacle()
+    errs = []
+    t.error.connect(lambda s: errs.append(s))
+    tentacle_mod.proc.find_game_processes = lambda *a, **k: [{
+        "pid": 4242, "name": "Game.exe", "exe": game_exe, "port": 0}]
+    tentacle_mod.proc.terminate = lambda pid, timeout=3.0: False
+    assert t.launch(td) is False
+    assert errs
+print("   OK")
+
+print("14) reload_map: перечитывает MapXXX.json и пересоздаёт карту...")
+expr = RpgMakerTentacle._cheat_expr("reload_map")
+assert expr is not None
+assert "$gameMap.setup(mapId)" in expr
+assert "reserveTransfer" in expr
+assert "('00' + mapId).slice(-3)" in expr
+assert "Decrypter.decrypt" in expr
+assert RpgMakerTentacle._cheat_expr("reload_map_unknown") is None
+print("   OK")
+
 print()
 print("ВСЕ ТЕСТЫ RPG MAKER ПРОШЛИ")

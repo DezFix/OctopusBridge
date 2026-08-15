@@ -140,7 +140,84 @@ with tempfile.TemporaryDirectory() as td:
     assert 'old "Первая строка\\n        вторая строка"' in content, content
 print("   OK")
 
-print("2e) Ren'Py: .rpyc — тексты-списки (интерполяция) разбиваются на части...")
+print("2d2) Ren'Py: осиротевшие ob_*.rpy от старых билдов удаляются...")
+with tempfile.TemporaryDirectory() as td:
+    make_renpy(td)
+    entries = renpy.extract(td)
+    for e in entries:
+        e.translation = "TR:" + e.original
+    stats = renpy.apply(td, entries, "ru")
+    tl_dir = stats["out_dir"]
+    stale = os.path.join(tl_dir, "ob_tl__english__Code__Old.rpy")
+    with open(stale, "w", encoding="utf-8") as f:
+        f.write("translate russian strings:\n"
+                '    old "Старая строка\n'
+                '        с переносом"\n'
+                '    new "Устаревший перевод"\n')
+    stats2 = renpy.apply(td, entries, "ru")
+    assert not os.path.exists(stale), "осиротевший ob_*.rpy не удалён"
+    assert stats2["removed_orphans"] == 1, stats2
+    remaining = [f for f in os.listdir(tl_dir)
+                 if f.startswith("ob_") and f.endswith(".rpy")]
+    assert "ob_activate.rpy" in remaining and "ob_game__script.rpy" in remaining
+    for f in remaining:
+        content = open(os.path.join(tl_dir, f), encoding="utf-8").read()
+        for line in content.splitlines():
+            if 'old "' in line or 'new "' in line:
+                assert line.rstrip().endswith('"'), \
+                    f"строка old/new не однострочная в {f}: {line!r}"
+print("   OK")
+
+print("2d3) Ren'Py: наши ob_* артефакты не извлекаются как текст игры...")
+with tempfile.TemporaryDirectory() as td:
+    make_renpy(td)
+    tl_dir = os.path.join(td, "game", "tl", "russian")
+    os.makedirs(tl_dir, exist_ok=True)
+    with open(os.path.join(tl_dir, "ob_Code__Old.rpy"), "w",
+              encoding="utf-8") as f:
+        f.write("translate russian strings:\n"
+                '    old "Старый артефакт"\n'
+                '    new "Старый перевод"\n')
+    with open(os.path.join(td, "game", "ob_dict.json"), "w",
+              encoding="utf-8") as f:
+        f.write('{"x": "y"}')
+    with open(os.path.join(td, "game", "ob_activate.rpy"), "w",
+              encoding="utf-8") as f:
+        f.write("translate russian strings:\n"
+                '    old "Активатор"\n')
+    entries = renpy.extract(td)
+    texts = [e.original for e in entries]
+    assert "Старый артефакт" not in texts, texts
+    assert "Активатор" not in texts, texts
+    assert "Привет, я ведьма." in texts
+print("   OK")
+
+print("2d4) Ren'Py: одинаковые old из разных скриптов пишутся один раз...")
+with tempfile.TemporaryDirectory() as td:
+    make_renpy(td)
+    os.makedirs(os.path.join(td, "game", "tl"))
+    for e in renpy.extract(td):
+        e.translation = "TR:" + e.original
+    entries = [TranslationEntry(1, "game/script.rpy", "", "",
+                                "Общая реплика.", "TR:Общая реплика.",
+                                "translated"),
+               TranslationEntry(2, "game/other.rpy", "", "",
+                                "Общая реплика.", "TR:Общая реплика.",
+                                "translated"),
+               TranslationEntry(3, "game/other.rpy", "", "",
+                                "Уникальная реплика.",
+                                "TR:Уникальная реплика.", "translated")]
+    stats = renpy.apply(td, entries, "ru")
+    tl_dir = stats["out_dir"]
+    c1 = open(os.path.join(tl_dir, "ob_game__script.rpy"),
+              encoding="utf-8").read()
+    c2 = open(os.path.join(tl_dir, "ob_game__other.rpy"),
+              encoding="utf-8").read()
+    assert c1.count('old "Общая реплика."') == 1, c1
+    assert 'old "Общая реплика."' not in c2, c2
+    assert c2.count('old "Уникальная реплика."') == 1, c2
+    assert stats["dup_skipped"] == 1, stats
+print("   OK")
 from app.core.renpy import parser as _renpy
 
 

@@ -334,12 +334,18 @@ def _iter_rpy(game_dir: str, extract_lang: str | None = None):
     архивах), остальные языки пропускаем. None = весь текст игры,
     включая все официальные переводы tl/* (раньше tl/ на диске
     пропускалась целиком — «весь текст» не был всем текстом).
+
+    Файлы OctopusBridge (ob_*.rpy, ob_dict.json — в game/ и tl/) НЕ
+    извлекаются: иначе свои же артефакты попадают в выгрузку как
+    текст игры и порождают дубликаты old-строк в tl/<lang>/, из-за
+    которых Ren'Py падает («A translation ... already exists»).
     """
     game_sub = os.path.join(game_dir, "game")
     if os.path.isdir(game_sub):
         for root, dirs, files in os.walk(game_sub):
             def keep(d: str) -> bool:
-                if d in ("renpy", "__pycache__"):
+                if d in ("renpy", "__pycache__", "ob_fonts",
+                         "ob_fonts_orig"):
                     return False
                 if extract_lang is not None and os.path.basename(root) == "tl":
                     return d == extract_lang
@@ -347,6 +353,8 @@ def _iter_rpy(game_dir: str, extract_lang: str | None = None):
             dirs[:] = [d for d in dirs if keep(d)]
             for f in sorted(files):
                 if f.endswith(".rpy") or f.endswith(".rpyc"):
+                    if _is_ob_artifact(f):
+                        continue
                     path = os.path.join(root, f)
                     rel = os.path.relpath(path, game_dir).replace(os.sep, "/")
                     yield path, rel
@@ -361,6 +369,8 @@ def _iter_rpy(game_dir: str, extract_lang: str | None = None):
                 continue
             for fname in arc.files:
                 if not (fname.endswith(".rpy") or fname.endswith(".rpyc")):
+                    continue
+                if _is_ob_artifact(fname.rsplit("/", 1)[-1]):
                     continue
                 if extract_lang and fname.startswith("tl/"):
                     head = fname[len("tl/"):].split("/", 1)[0]
@@ -517,6 +527,15 @@ def _extract_line(rel: str, n: int, line: str, add) -> None:
             add(rel, f"{rel}:{n}:{kind}", text)
 
 
+def _is_ob_artifact(fname: str) -> bool:
+    """True для файлов, создаваемых OctopusBridge: ob_*.rpy/rpyc и
+    ob_dict.json. Их нельзя извлекать как текст игры (см. _iter_rpy)."""
+    base = fname.rsplit("/", 1)[-1].lower()
+    return base.startswith("ob_") and (
+        base.endswith(".rpy") or base.endswith(".rpyc")
+        or base.endswith(".json"))
+
+
 def _escape(text: str) -> str:
     """Экранирование для записи в .rpy внутри двойных кавычек.
 
@@ -575,22 +594,33 @@ def apply(game_dir: str, entries: list[TranslationEntry],
                 continue
             by_file.setdefault(e.file, []).append(e)
 
+    tl_dir = os.path.join(game_dir, "game", "tl", lang)
     stats = {"files": 0, "strings": 0, "new_strings": 0, "out_dir": "",
-             "unsafe_skipped": unsafe_count}
+             "unsafe_skipped": unsafe_count, "removed_orphans": 0,
+             "dup_skipped": 0}
+    written_paths: set[str] = set()
+    # Ren'Py запрещает дубликаты old-строк в одном языке (падение
+    # «A translation ... already exists»), поэтому одна и та же реплика
+    # из разных скриптов игры пишется ровно один раз — в первый файл.
+    global_olds: set[str] = set()
     for rel, items in by_file.items():
         flat = rel.replace("/", "__")
         if flat.endswith(".rpy"):
             flat = flat[:-4]
-        out_path = os.path.join(game_dir, "game", "tl", lang,
-                                f"ob_{flat}.rpy")
+        out_path = os.path.join(tl_dir, f"ob_{flat}.rpy")
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        written_paths.add(out_path)
         existing_olds = _read_existing_olds(out_path)
         seen_old: set[str] = set()
         deduped: list[TranslationEntry] = []
         for e in items:
-            if e.original not in seen_old:
-                seen_old.add(e.original)
-                deduped.append(e)
+            if e.original in seen_old or e.original in global_olds:
+                if e.original not in seen_old:
+                    stats["dup_skipped"] += 1
+                continue
+            seen_old.add(e.original)
+            global_olds.add(e.original)
+            deduped.append(e)
         new_count = 0
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(f"# OctopusBridge translation ({rel})\n"
@@ -607,6 +637,26 @@ def apply(game_dir: str, entries: list[TranslationEntry],
         stats["strings"] += len(deduped)
         stats["new_strings"] += new_count
         stats["out_dir"] = os.path.dirname(out_path)
+
+    if stats["files"] > 0:
+        # Осиротевшие ob_*.rpy: файлы, оставшиеся от старых билдов
+        # (до 0.5.9, когда переносы строк не экранировались) или от
+        # прежнего языка извлечения (tl/english, tl/french, ...).
+        # Их записи больше не в by_file — файл не перезапишется, но
+        # Ren'Py читает его при старте и падает с «Could not parse
+        # string». Удаляем всё ob_*.rpy, не переписанное в этот прогон.
+        try:
+            for fname in os.listdir(tl_dir):
+                if not (fname.startswith("ob_") and fname.endswith(".rpy")):
+                    continue
+                if fname == "ob_activate.rpy":
+                    continue  # пересоздаётся ниже, не осиротевший
+                path = os.path.join(tl_dir, fname)
+                if path not in written_paths:
+                    os.remove(path)
+                    stats["removed_orphans"] += 1
+        except OSError:
+            pass
 
     if stats["files"] > 0:
         import json

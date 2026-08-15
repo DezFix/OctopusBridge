@@ -406,8 +406,42 @@ class RpgMakerTentacle(CDPTentacle):
         if not os.path.isfile(exe):
             self.error.emit(f"Не найден исполняемый файл игры: {exe}")
             return False
-        port = browser.free_port()
         game_dir = os.path.dirname(exe)
+
+        # Игра уже запущена? NW.js (single-instance) не даёт второму
+        # экземпляру поднять отладочный порт — поэтому подключаемся
+        # к уже запущенному процессу, а без порта перезапускаем его
+        # с --remote-debugging-port (иначе читы молча не работают).
+        norm_dir = os.path.normpath(game_dir).lower()
+        for r in proc.find_game_processes("rpgmaker", game_dir):
+            if not os.path.normpath(r["exe"]).lower().startswith(norm_dir):
+                continue  # чужая игра — не трогаем
+            pid = r["pid"]
+            if r["port"]:
+                self.log.emit(
+                    f"Игра уже запущена (pid {pid}, отладка "
+                    f":{r['port']}) — подключаюсь к ней.")
+                self._pid = pid
+                if self._connect_page(r["port"], url_hint=".html",
+                                      wait=10.0):
+                    return True
+                self._pid = None
+                self.log.emit(
+                    "Не удалось подключиться к запущенной игре — "
+                    "перезапускаю её с отладкой.")
+            else:
+                self.log.emit(
+                    f"Игра запущена без отладки (pid {pid}) — закрываю "
+                    "и запускаю заново с отладочным портом.")
+            if not proc.terminate(pid, timeout=5.0):
+                self.error.emit(
+                    "Не удалось закрыть уже запущенную игру. "
+                    "Закройте её вручную и нажмите «Запустить» снова.")
+                return False
+            time.sleep(1.5)  # освободить порт и профиль NW.js
+            break
+
+        port = browser.free_port()
         if clean_nwjs_profile(game_dir):
             self.log.emit(
                 "Профиль NW.js от другой версии: Local State переименован "
@@ -521,6 +555,34 @@ class RpgMakerTentacle(CDPTentacle):
             return ("$gamePlayer.reserveTransfer("
                     f"{int(kwargs['mapId'])}, {int(kwargs['x'])}, "
                     f"{int(kwargs['y'])}, 0, 0), 'teleported'")
+        if cmd == "reload_map":
+            return (
+                "(() => {"
+                " const mapId = $gameMap.mapId();"
+                " const fn = 'data/Map' + ('00' + mapId).slice(-3)"
+                " + '.json';"
+                " const xhr = new XMLHttpRequest();"
+                " xhr.open('GET', fn);"
+                " xhr.overrideMimeType('application/octet-stream');"
+                " xhr.onload = () => {"
+                "   if (xhr.status > 0) {"
+                "     let text = xhr.responseText;"
+                "     if (typeof Decrypter !== 'undefined'"
+                "         && Decrypter.hasEncryptedImages) {"
+                "       try { text = Decrypter.decrypt(text); }"
+                "       catch (e) {}"
+                "     }"
+                "     try { $dataMap = JSON.parse(text); }"
+                "     catch (e) { return; }"
+                "     $gameMap.setup(mapId);"
+                "     $gamePlayer.reserveTransfer(mapId,"
+                "       $gamePlayer.x, $gamePlayer.y,"
+                "       $gamePlayer.direction(), 0);"
+                "   }"
+                " };"
+                " xhr.send();"
+                " return 'map_reloaded';"
+                "})()")
         if cmd == "win_battle":
             return ("(() => { if (typeof $gameParty === 'undefined' || "
                     "!$gameParty.inBattle()) "

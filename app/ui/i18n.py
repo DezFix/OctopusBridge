@@ -139,6 +139,15 @@ _STRINGS = {
     "welcome_open_folder": {"ru": "Открыть папку игры", "en": "Open game folder"},
     "dash_settings": {"ru": "Настройки", "en": "Settings"},
     "dash_font": {"ru": "Шрифт с кириллицей", "en": "Cyrillic font"},
+    "dash_font_size": {"ru": "Размер шрифта в игре", "en": "In-game font size"},
+    "dash_font_smaller": {
+        "ru": "Сделать текст игры меньше", "en": "Make in-game text smaller"},
+    "dash_font_bigger": {
+        "ru": "Сделать текст игры больше", "en": "Make in-game text bigger"},
+    "dash_font_size_hint": {
+        "ru": "Впишется после перезапуска игры.",
+        "en": "Applies after restarting the game.",
+    },
     "dash_no_extract": {
         "ru": "Текст ещё не извлечён. Нажмите «Извлечь текст».",
         "en": "Text not yet extracted. Click \"Extract text\".",
@@ -297,6 +306,10 @@ _STRINGS = {
     "tr_apply_folder": {
         "ru": "Папка: {path}",
         "en": "Folder: {path}",
+    },
+    "tr_apply_orphans": {
+        "ru": "Удалено устаревших файлов: {n}",
+        "en": "Removed stale files: {n}",
     },
     "tr_restore": {
         "ru": "Восстановить оригинал",

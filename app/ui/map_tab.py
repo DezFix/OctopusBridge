@@ -614,7 +614,10 @@ class MapTab(QWidget):
     def _edit_event_dialog(self, ev: dict):
         from app.ui.event_editor import EventEditorDialog
         dlg = EventEditorDialog(self, self._game_dir(), self._view(), ev)
-        dlg.exec()
+        if dlg.exec() == QDialog.Accepted:
+            # правки события применены — сразу пишем карту на диск и,
+            # если игра запущена, перезагружаем её в живой игре
+            self._save_and_reload_map()
         # изменились только события — перерисовываем лёгкий слой
         self._redraw_events()
         self._compose()
@@ -658,6 +661,7 @@ class MapTab(QWidget):
                          if isinstance(e, dict)], default=0) + 1
         new["name"] = f"{ev.get('name', '')} #2"
         events.append(new)
+        self._save_and_reload_map()
         self._redraw_events()
         self._compose()
 
@@ -671,6 +675,7 @@ class MapTab(QWidget):
         if ret != QMessageBox.Yes:
             return
         events.remove(ev)
+        self._save_and_reload_map()
         self._redraw_events()
         self._compose()
 
@@ -689,19 +694,36 @@ class MapTab(QWidget):
             ch.send_cheat("switch_set", index=switch_id, value=True)
 
     # ── сохранение ──
-    def _save_map(self):
+    def _save_and_reload_map(self) -> bool:
+        """Пишет карту на диск и применяет её в запущенной игре.
+
+        Возвращает True, если карта записана. Если игра запущена через
+        приложение — отправляет ей reload_map: игра перечитывает
+        MapXXX.json с диска и пересоздаёт события на текущей карте.
+        """
         game_dir = self._game_dir()
         if not game_dir or not self._map_data:
-            return
+            return False
         try:
-            rel = maprender.save_map(game_dir, self._map_id, self._map_data,
-                                     view=self._view())
+            rel = maprender.save_map(game_dir, self._map_id,
+                                     self._map_data, view=self._view())
         except OSError as e:
             QMessageBox.critical(self, TR("err"), str(e))
+            return False
+        ch = self.main.channel()
+        if ch:
+            ch.send_cheat("reload_map")
+        return True
+
+    def _save_map(self):
+        if not self._save_and_reload_map():
             return
         self._render_canvas()
+        rel = maprender.map_path(self._game_dir(), self._map_id,
+                                 self._view())
         QMessageBox.information(self, TR("done"),
-                                TR("map_saved", path=os.path.basename(rel)))
+                                TR("map_saved",
+                                   path=os.path.basename(rel or "")))
 
     # ── текущая карта игрока ──
     def _on_state(self, state):

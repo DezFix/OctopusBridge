@@ -1806,6 +1806,8 @@ class TranslateTab(QWidget):
             parts.append(TR("tr_apply_backup", n=len(stats["backups"])))
         if stats.get("out_dir"):
             parts.append(TR("tr_apply_folder", path=stats["out_dir"]))
+        if stats.get("removed_orphans"):
+            parts.append(TR("tr_apply_orphans", n=stats["removed_orphans"]))
         QMessageBox.information(self, TR("done"), "\n".join(parts))
         self._update_steps()
 
