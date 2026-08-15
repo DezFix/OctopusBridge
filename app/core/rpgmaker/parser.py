@@ -220,17 +220,20 @@ def extract_plugins(game_dir: str, data_dir: str, on_skip=None) -> list:
         name = pl.get("name", "")
         if not name or name.startswith(_PLUGIN_SKIP_PREFIXES):
             continue
+        # plugins.js хранит имя с расширением ("MyPlugin.js") — не
+        # приклеиваем ".js" повторно
+        js_name = name[:-3] if name.lower().endswith(".js") else name
         code = None
         try:
             with open(os.path.join(game_dir, js_dir, "plugins",
-                                   name + ".js"),
+                                   js_name + ".js"),
                       encoding="utf-8") as f:
                 code = f.read()
         except (OSError, UnicodeDecodeError) as e:
             if on_skip:
                 on_skip(name, e)
             continue
-        rel = f"{js_dir}/plugins/{name}.js"
+        rel = f"{js_dir}/plugins/{js_name}.js"
         n = 0
         for s in extract_js_strings(code):
             if _plugin_text_candidate(s):
@@ -291,11 +294,16 @@ class _Extractor:
                          f"{context} / speaker name", params[4])
             elif code in (CMD_CHANGE_NAME, CMD_CHANGE_NICK) and len(params) > 1:
                 self.add(file, f"{p}[1]", f"{context} / rename", params[1])
-            elif code == CMD_PLUGIN and len(params) > 3 \
-                    and isinstance(params[3], dict):
-                for k, v in params[3].items():
-                    self.add(file, f"{p}[3].{k}",
-                             f"{context} / plugin", v)
+            elif code == CMD_PLUGIN and len(params) > 3:
+                args = params[3]
+                if isinstance(args, dict):
+                    for k, v in args.items():
+                        self.add(file, f"{p}[3].{k}",
+                                 f"{context} / plugin", v)
+                elif isinstance(args, list):
+                    for j, v in enumerate(args):
+                        self.add(file, f"{p}[3][{j}]",
+                                 f"{context} / plugin", v)
             elif code == CMD_PLUGIN_CONT:
                 for j, v in enumerate(params):
                     self.add(file, f"{p}[{j}]",

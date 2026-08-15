@@ -90,7 +90,7 @@ def make_default_cmd(code: int, indent: int = 0,
     """Команда с параметрами по умолчанию для спец-команд."""
     if code == 102:
         return make_cmd(code, indent, [[TR("ev_choice", n=1),
-                                        TR("ev_choice", n=2)], 0, 0], fmt)
+                                        TR("ev_choice", n=2)], 0, 0, 0], fmt)
     if code == 111:
         return make_cmd(code, indent, [0, 1, True], fmt)
     if code == 205:
@@ -102,7 +102,8 @@ def make_default_cmd(code: int, indent: int = 0,
     if code == 121:
         return make_cmd(code, indent, [1, 1, 0], fmt)
     if code == 122:
-        return make_cmd(code, indent, [1, 0, 0, 0, 0], fmt)
+        # [startId, endId, operationType, operand, operandId, value]
+        return make_cmd(code, indent, [1, 1, 0, 0, 0, 0], fmt)
     if code in (117, 230, 212, 213, 231, 232, 233, 234, 235, 236,
                 241, 242, 243, 244, 245, 246, 250, 301, 302, 303,
                 311, 312, 313, 314, 315, 316, 317, 318, 319, 320,
@@ -142,8 +143,8 @@ def cmd_summary(cmd) -> str:
         return C.route_command_name(params[0] if params else 0, _CL())
     if code in (355, 356) and params and isinstance(params[0], str):
         return f"{name}: {params[0]}"
-    if code == 357 and params and isinstance(params[0], str):
-        return f"{name}: {params[0]}"
+    if code == 357 and len(params) > 1 and isinstance(params[1], str):
+        return f"{name}: {params[1]}"
     if code == 655 and params and isinstance(params[0], str):
         return f"{name}: {params[0]}"
     if code in (402, 403, 404, 411, 412, 113, 115, 221, 222, 249,
@@ -329,6 +330,10 @@ class _ChoicesDialog(QDialog):
         self.sp_cancel.setRange(0, 4)
         self.sp_cancel.setValue(params[1] if len(params) > 1 else 0)
         form.addRow(TR("cmd_cancel"), self.sp_cancel)
+        self.sp_position = QSpinBox()
+        self.sp_position.setRange(0, 2)
+        self.sp_position.setValue(params[3] if len(params) > 3 else 0)
+        form.addRow(TR("cmd_position"), self.sp_position)
         self.sp_default = QSpinBox()
         self.sp_default.setRange(0, 4)
         self.sp_default.setValue(params[2] if len(params) > 2 else 0)
@@ -359,7 +364,8 @@ class _ChoicesDialog(QDialog):
     def values(self) -> list:
         return [[self.list.item(i).text()
                  for i in range(self.list.count())],
-                self.sp_cancel.value(), self.sp_default.value()]
+                self.sp_cancel.value(), self.sp_position.value(),
+                self.sp_default.value()]
 
 
 class _CondDialog(QDialog):

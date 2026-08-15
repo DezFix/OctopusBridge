@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime
 
 from app.core.rpgmaker.fileview import AsarFileView, DiskFileView, FileView
@@ -141,20 +142,30 @@ class RpgMakerModule(EngineModule):
                 for f in files:
                     if f.endswith(".ob.bak") or f.endswith(".ob.new"):
                         continue
+                    src = os.path.join(_r, f)
                     try:
-                        with open(os.path.join(_r, f), "rb") as fh:
-                            blobs[f] = fh.read()
+                        with open(src, "rb") as fh:
+                            blobs[os.path.relpath(src, base)
+                                  .replace(os.sep, "/")] = fh.read()
                     except OSError:
                         pass
         if not blobs:
             return {"restored": 0}
         ar = asarcore.AsarArchive(ar_path)
-        rel_by_base: dict[str, str] = {}
-        for rel, _node in ar.iter_files():
-            base = os.path.basename(rel)
-            rel_by_base.setdefault(base, rel)
-        patches = {rel_by_base[b]: blob
-                   for b, blob in blobs.items() if b in rel_by_base}
+        # современный формат: бэкапы с полными rel-путями
+        patches: dict[str, bytes] = {}
+        for rel, blob in blobs.items():
+            ar_rel = f"{asarlib.PROJECT_PREFIX}/{rel}"
+            if ar.exists(ar_rel):
+                patches[ar_rel] = blob
+        if not patches:
+            # legacy: бэкапы только по имени файла
+            rel_by_base: dict[str, str] = {}
+            for rel, _node in ar.iter_files():
+                rel_by_base.setdefault(os.path.basename(rel), rel)
+            patches = {rel_by_base[os.path.basename(b)]: blob
+                       for b, blob in blobs.items()
+                       if os.path.basename(b) in rel_by_base}
         if not patches:
             return {"restored": 0}
         astats = asarcore.apply_patches(ar_path, patches)

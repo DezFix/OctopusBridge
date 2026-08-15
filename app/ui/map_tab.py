@@ -16,7 +16,7 @@ import os
 
 from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QFormLayout,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFormLayout,
                                 QHBoxLayout, QLabel, QLineEdit, QListWidget,
                                 QListWidgetItem, QMenu, QMessageBox,
                                 QPushButton, QScrollArea, QSpinBox,
@@ -442,7 +442,7 @@ class MapTab(QWidget):
             self.canvas.setText(TR("map_none"))
             self.canvas.setPixmap(QPixmap())
             return
-        w, h, lower, upper, shadow, region, is_mz = \
+        w, h, lower, upper, shadow, region = \
             maprender.map_layers(self._map_data)
         events = copy.deepcopy(self._map_data.get("events") or [])
         self._render_seq += 1

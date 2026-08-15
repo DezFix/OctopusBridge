@@ -2,6 +2,24 @@
 
 All notable changes to the project. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning follows [SemVer](https://semver.org/).
 
+## [0.6.6] — 2026-08-15
+
+### Added
+- **Ren'Py: extraction from compiled games** — `.rpyc` files (legacy zlib+pickle and RPC2 formats) and `.rpa` archives (v1, v2.0, v3.0) are now parsed. Games that ship only compiled sources (no `.rpy`) are recognized and fully extracted; engine detection now accepts `.rpyc` and case-insensitive `.rpa`.
+- **Ren'Py: screen texts from compiled SL2 screens** — `text`/`textbutton` strings are extracted from compiled `.rpyc`; variable interpolation parts (PyExpr/RawCode) are no longer mistaken for translatable text, and interpolated line fragments keep their exact whitespace.
+- **Ren'Py: dual-dialect in-game agent** — separate py2 (Ren'Py 7.x) and py3 (Ren'Py 8.x) branches generated from one template. Attaching to an already-running game now bootstraps the agent via Frida `exec_python` with per-ABI offsets; a leftover `ob_agent.rpy` from a previous session is reused only when its port matches the current server.
+- **Cheat tab redesigned** — compact two-column grid: Turbo (game speed 1–20 + 1x/2x/4x/8x presets), quick gold add buttons (+1000/+10000/−1000), reload-map button, screenshot button (CDP capture → PNG in `game/screenshots/`), full heal (HP/MP + states) and clear-states actions; quick give/take buttons on the Items tab.
+- **RPG Maker**: MV maps now use the same 6-layer layout as MZ (shadows from z4, regions z5) with 4/5-layer fallbacks; plugins listed with a `.js` extension in `plugins.js` are no longer read with a doubled extension; plugin call (357) arguments supported as both dict (MZ) and list (older MZ); MV decryption key read from `System.json:encryptionKey` with a `rpg_core.js` fallback; asar backups store full relative paths.
+- Event editor: command 102 (choices) gained the position parameter; command 122 (control variables) now writes the full 6-parameter MZ form.
+
+### Fixed
+- Ren'Py: RPA index parsing rewritten against `renpy/loader.py` 8.2.3 / 7.7.3 (3.0: zlib+pickle with XOR key, 2.0: hex offset without key, 1: whole-file zlib). `.rpa` archives are opened once instead of once per embedded file (was O(files × archives)).
+- Ren'Py: extracted strings kept verbatim (no more `strip()`) — leading/trailing-space fragments of interpolated lines now match the in-game text exactly, so runtime hooks and `tl/*` blocks apply.
+- RPG Maker: asar backups written with full relative paths; `restore_original` restores modern backups first and falls back to legacy name-only backups.
+
+### Tests
+- New coverage: `.rpyc` (legacy + RPC2) with stubbed Ren'Py classes, `.rpyc` inside `.rpa` v3.0/v2/v1, hybrid single-pass extraction (.rpy + .rpyc + .rpa), dual-ABI agent generation & compilation, MV/MZ map layers, plugins with `.js`, 357 dict/list arguments, MV crypto key from `System.json`/`rpg_core.js`, asar rel-path backup restore, new cheat expressions.
+
 ## [0.6.5] — 2026-08-14
 
 ### Added

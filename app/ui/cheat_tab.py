@@ -9,11 +9,12 @@
 from __future__ import annotations
 
 import json
+import os
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox,
-                                QGroupBox, QHBoxLayout,
+                                QGridLayout, QGroupBox, QHBoxLayout,
                                 QHeaderView, QLabel, QLineEdit, QMessageBox,
                                 QPushButton, QSpinBox, QTableWidget,
                                 QTableWidgetItem, QTabWidget, QVBoxLayout,
@@ -176,8 +177,13 @@ class CheatTab(QWidget):
     # ── построение UI ──
     def _build_main_tab(self) -> QWidget:
         w = QWidget()
-        lay = QVBoxLayout(w)
+        grid = QGridLayout(w)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(6)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
 
+        # ── золото ──
         gold_box = QGroupBox(TR("cheat_gold").rstrip(":"))
         row = QHBoxLayout(gold_box)
         self.gold_value = QSpinBox()
@@ -189,56 +195,51 @@ class CheatTab(QWidget):
             lambda: self._cheat("gold_set", value=self.gold_value.value()))
         row.addWidget(self.gold_value, 1)
         row.addWidget(btn_apply)
-        lay.addWidget(gold_box)
+        for delta in (1000, 10000, -1000):
+            b = QPushButton(f"{delta:+d}")
+            b.clicked.connect(
+                lambda _, d=delta: self._cheat("gold_add", value=d))
+            row.addWidget(b)
+        grid.addWidget(gold_box, 0, 0)
 
-        menu_box = QGroupBox(TR("cheat_menu"))
-        v = QVBoxLayout(menu_box)
-        menu_row = QHBoxLayout()
-        btn_menu = QPushButton(TR("cheat_menu_main"))
-        btn_menu.clicked.connect(lambda: self._cheat("open_menu"))
-        btn_items = QPushButton(TR("cheat_menu_items"))
-        btn_items.clicked.connect(lambda: self._cheat("open_items"))
-        btn_skills = QPushButton(TR("cheat_menu_skills"))
-        btn_skills.clicked.connect(lambda: self._cheat("open_skills"))
-        btn_equip = QPushButton(TR("cheat_menu_equip"))
-        btn_equip.clicked.connect(lambda: self._cheat("open_equip"))
-        btn_status = QPushButton(TR("cheat_menu_status"))
-        btn_status.clicked.connect(lambda: self._cheat("open_status"))
-        menu_row.addWidget(btn_menu)
-        menu_row.addWidget(btn_items)
-        menu_row.addWidget(btn_skills)
-        menu_row.addWidget(btn_equip)
-        menu_row.addWidget(btn_status)
-        menu_row2 = QHBoxLayout()
-        btn_save = QPushButton(TR("cheat_menu_save"))
-        btn_save.clicked.connect(lambda: self._cheat("open_save"))
-        btn_load = QPushButton(TR("cheat_menu_load"))
-        btn_load.clicked.connect(lambda: self._cheat("open_load"))
-        btn_options = QPushButton(TR("cheat_menu_options"))
-        btn_options.clicked.connect(lambda: self._cheat("open_options"))
-        btn_end = QPushButton(TR("cheat_menu_end"))
-        btn_end.clicked.connect(lambda: self._cheat("open_gameend"))
-        menu_row2.addWidget(btn_save)
-        menu_row2.addWidget(btn_load)
-        menu_row2.addWidget(btn_options)
-        menu_row2.addWidget(btn_end)
-        menu_row2.addStretch(1)
-        v.addLayout(menu_row)
-        v.addLayout(menu_row2)
-        lay.addWidget(menu_box)
+        # ── турбо (скорость игры) ──
+        turbo_box = QGroupBox(TR("cheat_turbo"))
+        row = QHBoxLayout(turbo_box)
+        self.turbo_value = QSpinBox()
+        self.turbo_value.setRange(1, 20)
+        self.turbo_value.setValue(1)
+        btn_turbo = QPushButton(TR("cheat_apply"))
+        btn_turbo.clicked.connect(
+            lambda: self._cheat("game_speed",
+                                value=self.turbo_value.value()))
+        row.addWidget(self.turbo_value)
+        row.addWidget(btn_turbo)
+        for sp in (1, 2, 4, 8):
+            b = QPushButton(f"{sp}x")
+            b.clicked.connect(
+                lambda _, s=sp: self._cheat("game_speed", value=s))
+            row.addWidget(b)
+        grid.addWidget(turbo_box, 0, 1)
 
+        # ── бой (отряд + мгновенная победа) ──
         battle_box = QGroupBox(TR("cheat_box_battle"))
         row = QHBoxLayout(battle_box)
-        btn_heal = QPushButton(TR("cheat_heal"))
-        btn_heal.clicked.connect(lambda: self._cheat("heal"))
+        btn_heal = QPushButton(TR("cheat_heal_full"))
+        btn_heal.clicked.connect(lambda: self._cheat("heal_all"))
+        btn_states = QPushButton(TR("cheat_clear_states"))
+        btn_states.clicked.connect(lambda: self._cheat("clear_states"))
         btn_win = QPushButton(TR("cheat_win"))
         btn_win.clicked.connect(lambda: self._cheat("win_battle"))
         row.addWidget(btn_heal)
+        row.addWidget(btn_states)
         row.addWidget(btn_win)
-        lay.addWidget(battle_box)
+        row.addStretch(1)
+        grid.addWidget(battle_box, 1, 0)
 
+        # ── перемещение ──
         move_box = QGroupBox(TR("cheat_box_movement"))
-        row = QHBoxLayout(move_box)
+        v = QVBoxLayout(move_box)
+        row = QHBoxLayout()
         self.cb_noclip = QCheckBox(TR("cheat_noclip"))
         self.cb_noclip.toggled.connect(
             lambda on: self._cheat("through", value=on))
@@ -255,9 +256,47 @@ class CheatTab(QWidget):
         row.addWidget(self.cb_clicketp)
         row.addWidget(self.speed_value)
         row.addWidget(btn_speed)
-        lay.addWidget(move_box)
+        row.addStretch(1)
+        v.addLayout(row)
+        row2 = QHBoxLayout()
+        btn_reload = QPushButton(TR("cheat_reload_map"))
+        btn_reload.clicked.connect(lambda: self._cheat("reload_map"))
+        row2.addWidget(btn_reload)
+        row2.addStretch(1)
+        v.addLayout(row2)
+        grid.addWidget(move_box, 1, 1)
 
-        lay.addStretch(1)
+        # ── меню игры + скриншот ──
+        menu_box = QGroupBox(TR("cheat_menu"))
+        v = QVBoxLayout(menu_box)
+        row = QHBoxLayout()
+        row.setSpacing(4)
+        btn_menu = QPushButton(TR("cheat_menu_main"))
+        btn_menu.clicked.connect(lambda: self._cheat("open_menu"))
+        btn_items = QPushButton(TR("cheat_menu_items"))
+        btn_items.clicked.connect(lambda: self._cheat("open_items"))
+        btn_skills = QPushButton(TR("cheat_menu_skills"))
+        btn_skills.clicked.connect(lambda: self._cheat("open_skills"))
+        btn_equip = QPushButton(TR("cheat_menu_equip"))
+        btn_equip.clicked.connect(lambda: self._cheat("open_equip"))
+        btn_status = QPushButton(TR("cheat_menu_status"))
+        btn_status.clicked.connect(lambda: self._cheat("open_status"))
+        btn_save = QPushButton(TR("cheat_menu_save"))
+        btn_save.clicked.connect(lambda: self._cheat("open_save"))
+        btn_load = QPushButton(TR("cheat_menu_load"))
+        btn_load.clicked.connect(lambda: self._cheat("open_load"))
+        btn_options = QPushButton(TR("cheat_menu_options"))
+        btn_options.clicked.connect(lambda: self._cheat("open_options"))
+        btn_end = QPushButton(TR("cheat_menu_end"))
+        btn_end.clicked.connect(lambda: self._cheat("open_gameend"))
+        btn_shot = QPushButton(TR("cheat_screenshot"))
+        btn_shot.clicked.connect(self._screenshot)
+        for b in (btn_menu, btn_items, btn_skills, btn_equip, btn_status,
+                  btn_save, btn_load, btn_options, btn_end, btn_shot):
+            row.addWidget(b, 1)
+        v.addLayout(row)
+        grid.addWidget(menu_box, 2, 0, 1, 2)
+
         return w
 
     def _build_party_tab(self) -> QWidget:
@@ -301,6 +340,15 @@ class CheatTab(QWidget):
             2, QHeaderView.Stretch)
         self.items_table.itemChanged.connect(self._on_item_edit)
         lay.addWidget(self.items_table, 1)
+        row = QHBoxLayout()
+        row.addWidget(QLabel(TR("cheat_sel_item")))
+        for d in (1, 10, 99, -1):
+            b = QPushButton(f"{d:+d}")
+            b.clicked.connect(
+                lambda _, delta=d: self._give_selected(delta))
+            row.addWidget(b)
+        row.addStretch(1)
+        lay.addLayout(row)
         hint = QLabel(TR("cheat_var_hint"))
         lay.addWidget(hint)
         return w
@@ -344,6 +392,47 @@ class CheatTab(QWidget):
         hint = QLabel(TR("cheat_sw_hint"))
         lay.addWidget(hint)
         return w
+
+    def _give_selected(self, delta: int):
+        """Быстрые кнопки на вкладке предметов: выдать/забрать выделенное."""
+        row = self.items_table.currentRow()
+        if row < 0:
+            return
+        item = self.items_table.item(row, 0)
+        if item is None:
+            return
+        key = item.data(Qt.UserRole)
+        if not key:
+            return
+        self._cheat("give_item", kind=key[0], id=key[1], count=delta)
+
+    def _screenshot(self):
+        ch = self.main.channel()
+        if not ch:
+            QMessageBox.information(self, TR("cheat_no_bridge"),
+                                    TR("cheat_no_bridge"))
+            return
+        shot = ch.screenshot() if hasattr(ch, "screenshot") else None
+        if not shot:
+            self.lbl_status.setText(TR("cheat_screenshot_fail"))
+            return
+        p = self.main.project
+        if not p:
+            self.lbl_status.setText(TR("cheat_screenshot_fail"))
+            return
+        from datetime import datetime
+        shot_dir = os.path.join(p.game_dir, "screenshots")
+        os.makedirs(shot_dir, exist_ok=True)
+        path = os.path.join(shot_dir, "ob_" +
+                            datetime.now().strftime("%Y%m%d_%H%M%S") + ".png")
+        try:
+            with open(path, "wb") as f:
+                f.write(shot)
+        except OSError as e:
+            self.lbl_status.setText(
+                TR("cheat_screenshot_fail") + f" ({e})")
+            return
+        self.lbl_status.setText(TR("cheat_screenshot_ok", path=path))
 
     # ── отправка читов ──
     def _cheat(self, cmd: str, **kwargs):

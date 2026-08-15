@@ -107,6 +107,8 @@ window.__octopus_collectState = function () {
     gold: _has("$gameParty") ? $gameParty.gold() : 0,
     mapId: _has("$gameMap") ? $gameMap.mapId() : 0,
     inBattle: _has("$gameParty") ? $gameParty.inBattle() : false,
+    playerX: _has("$gamePlayer") ? $gamePlayer.x : 0,
+    playerY: _has("$gamePlayer") ? $gamePlayer.y : 0,
     party: [],
     items: [],
     variables: _has("$gameVariables") ? $gameVariables._data.slice(1) : [],
@@ -456,6 +458,16 @@ class RpgMakerTentacle(CDPTentacle):
         self._pid = self._proc.pid
         self.log.emit(f"Игра запущена (pid {self._pid}), отладка :{port}.")
         if not self._connect_page(port, url_hint=".html", wait=30.0):
+            # NW.js мог поднять отладчик на другом порту (занятый
+            # порт/инкремент) — ищем фактический до того, как закрывать
+            actual = probe_game_port(self._pid) if self._pid else 0
+            if actual and actual != port:
+                self.log.emit(
+                    f"Отладка поднялась на :{actual} — подключаюсь туда.")
+                if self._connect_page(actual, url_hint=".html", wait=10.0):
+                    return True
+            if self._proc is not None:
+                self._proc.terminate()
             self.detach()
             return False
         return True
@@ -541,6 +553,13 @@ class RpgMakerTentacle(CDPTentacle):
         if cmd == "heal":
             return ("$gameParty.members().forEach("
                     "a => { a.setHp(a.mhp); a.setMp(a.mmp); }), 'healed'")
+        if cmd == "heal_all":
+            return ("$gameParty.members().forEach("
+                    "a => { a.removeAllStates(); a.setHp(a.mhp); "
+                    "a.setMp(a.mmp); }), 'healed_all'")
+        if cmd == "clear_states":
+            return ("$gameParty.members().forEach("
+                    "a => a.removeAllStates()), 'states_cleared'")
         if cmd == "speed":
             return f"$gamePlayer.setMoveSpeed({int(kwargs['value'])})"
         if cmd == "game_speed":

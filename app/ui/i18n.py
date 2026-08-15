@@ -436,11 +436,6 @@ _STRINGS = {
     "cheat_gold_set": {"ru": "Задать", "en": "Set"},
     "cheat_gold_add": {"ru": "Добавить", "en": "Add"},
     "cheat_apply": {"ru": "Применить", "en": "Apply"},
-    "cheat_tp": {"ru": "Телепорт на карту", "en": "Teleport to map"},
-    "cheat_tp_hint": {
-        "ru": "Если точка (X,Y) в стене — персонаж застрянет; включите ноуклип.",
-        "en": "If point (X,Y) is in a wall, enable no-clip.",
-    },
     "cheat_apply_party": {
         "ru": "Применить изменения (уровень/HP/MP/EXP)",
         "en": "Apply changes (level/HP/MP/EXP)",
@@ -475,6 +470,24 @@ _STRINGS = {
     "cheat_error": {"ru": "Чит {cmd}: ОШИБКА {err}", "en": "Cheat {cmd}: ERROR {err}"},
     "cheat_auto_refresh": {"ru": "Авто-обновление", "en": "Auto-refresh"},
     "cheat_changed": {"ru": "Изменено", "en": "Changed"},
+    "cheat_box_party": {"ru": "Отряд", "en": "Party"},
+    "cheat_heal_full": {
+        "ru": "Полное исцеление (HP/MP + состояния)",
+        "en": "Full heal (HP/MP + states)",
+    },
+    "cheat_clear_states": {"ru": "Снять состояния", "en": "Clear states"},
+    "cheat_turbo": {"ru": "Турбо (скорость игры)", "en": "Turbo (game speed)"},
+    "cheat_reload_map": {"ru": "Перезагрузить карту", "en": "Reload map"},
+    "cheat_screenshot": {"ru": "Скриншот", "en": "Screenshot"},
+    "cheat_screenshot_ok": {
+        "ru": "Скриншот сохранён: {path}",
+        "en": "Screenshot saved: {path}",
+    },
+    "cheat_screenshot_fail": {
+        "ru": "Не удалось сделать скриншот",
+        "en": "Screenshot failed",
+    },
+    "cheat_sel_item": {"ru": "Выделенное:", "en": "Selected:"},
 
     # ── Settings ──
     "settings_title": {"ru": "Настройки", "en": "Settings"},
@@ -1037,6 +1050,7 @@ _STRINGS = {
     "cmd_choices": {"ru": "Варианты выбора", "en": "Choices"},
     "cmd_cancel": {"ru": "Отмена → (0-4, 4=запретить):", "en": "Cancel (0-4, 4=forbid):"},
     "cmd_default": {"ru": "Выбор по умолчанию:", "en": "Default choice:"},
+    "cmd_position": {"ru": "Позиция (0-2, 2=центр):", "en": "Position (0-2, 2=center):"},
     "cmd_choice_new": {"ru": "Вариант", "en": "Choice"},
     "cmd_cond": {"ru": "Условие", "en": "Condition"},
     "cmd_cond_type": {"ru": "Тип:", "en": "Type:"},

@@ -14,15 +14,25 @@ class RenPyModule(EngineModule):
     @classmethod
     def detect(cls, game_dir: str) -> int:
         import os
-        # game/ subdirectory with .rpy files or renpy SDK
+        # Реальные игры почти всегда без .rpy: только скомпилированные
+        # .rpyc (в т.ч. внутри .rpa). Раньше здесь проверялись только
+        # .rpy в корне game/ — такие игры не распознавались вовсе.
         game_sub = os.path.join(game_dir, "game")
+        best = 0
         if os.path.isdir(game_sub):
-            for f in os.listdir(game_sub):
-                if f.endswith(".rpy"):
-                    return 80
+            for _root, _dirs, files in os.walk(game_sub):
+                for f in files:
+                    if f.endswith(".rpy"):
+                        return 80
+                    if f.endswith(".rpyc") and best < 75:
+                        best = 75
+                    if f.lower().endswith(".rpa") and best < 70:
+                        best = 70
+        if best:
+            return best
         renpy_dir = os.path.join(game_dir, "renpy")
         if os.path.isdir(renpy_dir):
-            return 70
+            return 60
         return 0
 
     def __init__(self, game_dir: str):

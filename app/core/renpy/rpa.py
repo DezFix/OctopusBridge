@@ -1,22 +1,21 @@
 # -*- coding: utf-8 -*-
-"""Чтение .rpa-архивов Ren'Py (v1, v2, v3, v3.0).
+"""Чтение .rpa-архивов Ren'Py (v1, v2, v3.0).
 
-Форматы:
-- RPA-3.0 (Ren'Py 8+): 'RPA-3.0 ' + offset(16 hex) + ' ' + key(8 hex)
-  + '\\nMade with Ren'Py.\\n'. Индекс — XOR с key, затем zlib.
-- RPA-3 / RPA-2 (Ren'Py 7):  'RPA-3' + offset(8 LE) + index_size(8 LE)
-  + version(4 LE). Индекс — zlib.
-- RPA-1: 'RPA' + offset(8 LE) + index_size(8 LE). Индекс без сжатия.
+Форматы (сверены с renpy/loader.py 8.2.3 и 7.7.3):
+- RPA-3.0 (Ren'Py 7.4+/8.x): 'RPA-3.0 ' + offset(16 hex) + ' ' + key(8 hex)
+  + '\\n'. Индекс — zlib(pickle), поля XOR'ены с key.
+- RPA-2.0 (Ren'Py 6.99-7.3): 'RPA-2.0 ' + offset(16 hex). Индекс —
+  zlib(pickle), без XOR.
+- RPA-1 (Ren'Py 6.x, .rpi): весь файл — zlib(pickle) индекса, без шапки.
 """
 from __future__ import annotations
 
 import os
-import struct
 import zlib
 
 
 class RpaArchive:
-    """Читатель .rpa-архива Ren'Py (v1, v2, v3, v3.0)."""
+    """Читатель .rpa-архива Ren'Py (v1, v2, v3.0)."""
 
     def __init__(self, path: str):
         self.path = path
@@ -30,11 +29,10 @@ class RpaArchive:
 
         if head[:8] == b"RPA-3.0 " or head[:7] == b"RPA-3.0":
             self._load_v3_0(head)
-        elif head[:5] == b"RPA-3":
-            self._load_v3(head)
-        elif head[:5] == b"RPA-2":
+        elif head[:8] == b"RPA-2.0 " or head[:7] == b"RPA-2.0":
             self._load_v2(head)
-        elif head[:3] == b"RPA":
+        elif head[:2] == b"\x78\x9c":
+            # RPA-1: весь файл — zlib(pickle) индекса (шапки нет)
             self._load_v1(head)
         else:
             raise ValueError(f"Not an RPA archive: {self.path}")
@@ -54,15 +52,38 @@ class RpaArchive:
         with open(self.path, "rb") as f:
             f.seek(index_offset)
             data = f.read()
+        self._parse_index_pickle(data, key)
 
-        # Ren'Py 8: индекс — zlib(pickle) со словарём
-        # {name: [(offset, dlen) | (offset, dlen, start)]}, поля XOR'ены с key.
+    def _load_v2(self, head: bytes):
+        self.version = 2
+
+        # 'RPA-2.0 ' + offset(16 hex) — ключа нет (Ren'Py 6.99-7.3)
         try:
-            import pickle
+            index_offset = int(head[8:24].decode("ascii").strip(), 16)
+        except (ValueError, IndexError):
+            raise ValueError(f"Invalid RPA-2.0 header in {self.path}")
+
+        with open(self.path, "rb") as f:
+            f.seek(index_offset)
+            data = f.read()
+        self._parse_index_pickle(data, 0)
+
+    def _load_v1(self, head: bytes):
+        self.version = 1
+
+        with open(self.path, "rb") as f:
+            data = f.read()
+        self._parse_index_pickle(data, 0)
+
+    def _parse_index_pickle(self, data: bytes, key: int):
+        """Индекс RPA-2.0/3.0: zlib(pickle) словаря
+        {name: [(offset, dlen) | (offset, dlen, start)]}, поля (кроме
+        RPA-2.0) XOR'ены с key."""
+        import pickle
+        try:
             index = pickle.loads(zlib.decompress(data))
         except Exception as e:
-            raise ValueError(f"Broken RPA-3.0 index in {self.path}: {e}")
-        self._index_offset = index_offset
+            raise ValueError(f"Broken RPA index in {self.path}: {e}")
         for name, entries in index.items():
             if not entries:
                 continue
@@ -71,61 +92,6 @@ class RpaArchive:
                 continue
             offset, length = first[0] ^ key, first[1] ^ key
             self._index[name] = (offset, length)
-
-    def _load_v3(self, head: bytes):
-        with open(self.path, "rb") as f:
-            f.seek(5)
-            offset = struct.unpack("<Q", f.read(8))[0]
-            index_size = struct.unpack("<Q", f.read(8))[0]
-            f.read(4)
-            self.version = 3
-            f.seek(offset)
-            data = f.read(index_size)
-            if data:
-                data = zlib.decompress(data)
-            if data:
-                self._parse_index(data)
-
-    def _load_v2(self, head: bytes):
-        with open(self.path, "rb") as f:
-            f.seek(5)
-            offset = struct.unpack("<Q", f.read(8))[0]
-            index_size = struct.unpack("<Q", f.read(8))[0]
-            self.version = 2
-            f.seek(offset)
-            data = f.read(index_size)
-            if data:
-                data = zlib.decompress(data)
-            if data:
-                self._parse_index(data)
-
-    def _load_v1(self, head: bytes):
-        with open(self.path, "rb") as f:
-            f.seek(3)
-            offset = struct.unpack("<Q", f.read(8))[0]
-            index_size = struct.unpack("<Q", f.read(8))[0]
-            self.version = 1
-            f.seek(offset)
-            data = f.read(index_size)
-            if data:
-                self._parse_index(data)
-
-    def _parse_index(self, data: bytes):
-        i = 0
-        while i + 4 <= len(data):
-            path_len = struct.unpack("<H", data[i:i + 2])[0]
-            i += 2
-            if i + path_len > len(data):
-                break
-            path = data[i:i + path_len].decode("utf-8", errors="replace")
-            i += path_len
-            start = struct.unpack("<Q", data[i:i + 8])[0]
-            i += 8
-            length = struct.unpack("<Q", data[i:i + 8])[0]
-            i += 8
-            if self.version == 3:
-                i += 4
-            self._index[path] = (start, length)
 
     @property
     def files(self) -> list[str]:

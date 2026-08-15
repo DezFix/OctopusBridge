@@ -12,6 +12,7 @@ JS-пейлоад наследника может слать произволь�
 """
 from __future__ import annotations
 
+import base64
 import json
 import time
 
@@ -195,3 +196,20 @@ class CDPTentacle(Tentacle):
             return True
         except CDPError:
             return False
+
+    def screenshot(self) -> bytes | None:
+        """PNG-скриншот страницы игры (Page.captureScreenshot) или None."""
+        if not self.is_attached():
+            return None
+        try:
+            res = self._client.call("Page.captureScreenshot",
+                                    {"format": "png"})
+        except CDPError:
+            return None
+        data = (res or {}).get("data")
+        if not data:
+            return None
+        try:
+            return base64.b64decode(data)
+        except (ValueError, TypeError):
+            return None

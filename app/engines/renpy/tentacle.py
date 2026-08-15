@@ -10,14 +10,14 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 import shutil
 import socket
 import threading
 import time
 
-from app.transport.frida_rpc.injector import PythonInjector
 from app.core.tentacles.base import Tentacle
-from app.engines.renpy.agent import agent_rpy_source
+from app.engines.renpy.agent import agent_rpy_source, agent_source
 from app.engines.renpy.offsets import RenpyOffsetDB, detect_version
 
 FONT_NAME = "NotoSans-Regular.ttf"
@@ -80,6 +80,20 @@ def auto_patch_font(game_dir: str) -> int:
         return fontpatch.patch_font(game_dir).get("replaced", 0)
     except Exception:
         return -1
+
+
+_PORT_RE = re.compile(r"_OB_PORT\s*=\s*(\d+)")
+
+
+def _rpy_port_matches(rpy_path: str, port: int) -> bool:
+    """True, если ob_agent.rpy запечатан с нашим портом сервера."""
+    try:
+        with open(rpy_path, encoding="utf-8") as f:
+            head = f.read(4096)
+        m = _PORT_RE.search(head)
+        return bool(m) and int(m.group(1)) == port
+    except (OSError, ValueError):
+        return False
 
 
 def _fallback_font_path() -> str:
@@ -307,7 +321,7 @@ class RenPyTentacle(Tentacle):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._injector: PythonInjector | None = None
+        self._injector = None  # PythonInjector (Frida) — ленивый импорт в attach()
         self._server: _AgentServer | None = None
         self._pid: int | None = None
         self._game_dir: str = ""
@@ -380,25 +394,66 @@ class RenPyTentacle(Tentacle):
                               "файлы шрифтов залочены (runtime-карта работает)")
         if not self._start_server():
             return False
+        self._pid = pid
 
-        # Для attach RPY уже должен быть от предыдущего launch.
-        # Если нет — агент не подключится.
+        # Версия для выбора ветки агента (py2/py3) и офсетов CPython.
+        version, _ = detect_version(exe_dir, exe_path)
+        db = RenpyOffsetDB()
+        abi = db.get_abi_branch(version) if version else "py3"
+
+        # 1) RPY-агент из предыдущей сессии уже в game/? (об_agent.rpy мог
+        #    остаться, если приложение закрылось без detach). Игра уже
+        #    загрузила его при старте — ждём подключения. Только если
+        #    порт в файле совпадает с нашим сервером (иначе агент будет
+        #    стучаться в мёртвый порт прошлой сессии — ждать бесполезно).
+        rpy_path = os.path.join(exe_dir, "game", AGENT_RPY)
+        if os.path.isfile(rpy_path) and _rpy_port_matches(rpy_path,
+                                                          self._server.port):
+            self.log.emit(f"Найден {AGENT_RPY} от предыдущей сессии — "
+                          f"жду подключения агента.")
+            return self._inject_agent(wait=15.0)
+
+        # 2) Иначе внедряем агент в живой процесс через Frida:
+        #    exec_python бутстрапит ровно тот же код, что и RPY-файл.
+        try:
+            from app.transport.frida_rpc.injector import PythonInjector
+        except ImportError:
+            PythonInjector = None
+        if PythonInjector is None:
+            self.error.emit(
+                "Frida не установлена, а game/ob_agent.rpy не найден — "
+                "агент не сможет подключиться к уже запущенной игре.")
+            self._stop_server()
+            return False
         injector = PythonInjector()
         if not injector.attach(pid):
-            self.error.emit(f"Frida не смогла подключиться к pid {pid}.")
+            self.error.emit(f"Frida не смогла подключиться к pid {pid}. "
+                            f"Перезапустите игру через «Запустить».")
             self._stop_server()
             return False
         self._injector = injector
-        self._pid = pid
-
-        version, _ = detect_version(exe_dir, exe_path)
         if version:
-            db = RenpyOffsetDB()
             offsets = db.get_offsets(version)
             if offsets:
                 injector.set_offsets(offsets)
-
-        return self._inject_agent(wait=30.0)
+        code = agent_source(self._server.port, FONT_REL,
+                            _fallback_font_path(), abi)
+        self.log.emit(f"Внедряю агент через Frida (pid {pid}, ветка {abi})…")
+        rc = injector.exec_python(code, wait_python=20.0)
+        if rc == 0:
+            return self._inject_agent(wait=15.0)
+        if rc == -1:
+            self.log.emit("Агент выполнился с Python-исключением — "
+                          "вероятно, игра модифицирована или старая ветка.")
+        else:
+            self.log.emit(f"Frida-бутстрап агента не удался (rc={rc}).")
+        injector.detach()
+        self._injector = None
+        self._stop_server()
+        self.error.emit(
+            f"Не удалось внедрить агент в pid {pid}. Перезапустите игру "
+            f"через «Запустить» (RPY-метод) или проверьте Frida.")
+        return False
 
     def _inject_agent(self, wait: float = 60.0) -> bool:
         deadline = time.monotonic() + wait

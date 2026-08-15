@@ -3,10 +3,12 @@
 патч шрифтов Ren'Py, LZ-сейвы Twine."""
 import io
 import os
-import re
+import pickle
+import random
 import shutil
 import sys
 import tempfile
+import zlib
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -249,6 +251,413 @@ assert ("choice", " дальше") in out2, out2
 assert _renpy._string_parts("просто строка") == ["просто строка"]
 assert _renpy._string_parts(None) == []
 assert _renpy._string_parts(["a", 1, "b"]) == ["a", "b"]
+print("   OK")
+
+# ── Ren'Py: скомпилированные .rpyc и .rpa ──
+
+# Стабы renpy.ast/renpy.astsupport/renpy.sl2.slast — имитируют классы,
+# которыми Ren'Py пикалит скрипты в .rpyc (СВЕРЕНЫ с renpy/ast.py,
+# renpy/sl2/slast.py и launcher/game/archiver.rpy из Ren'Py 8.2.3).
+_RENPY_AST_STUB = '''
+class Node(object):
+    pass
+
+class Say(Node):
+    pass
+
+class Menu(Node):
+    pass
+
+class Define(Node):
+    pass
+
+class Screen(Node):
+    pass
+
+class PyCode(object):
+    def __getstate__(self):
+        return (1, self.source, self.location, self.mode, self.py)
+    def __setstate__(self, state):
+        if len(state) == 4:
+            (_, self.source, self.location, self.mode) = state
+            self.py = 2
+        else:
+            (_, self.source, self.location, self.mode, self.py) = state
+        self.bytecode = None
+
+class PyExpr(str):
+    """Ren'Py 7.4+/8.x: PyExpr — str-подкласс, значение == python-код."""
+    __slots__ = ["filename", "linenumber", "py"]
+    def __new__(cls, s, filename="<none>", linenumber=1, py=3):
+        self = str.__new__(cls, s)
+        self.filename = filename
+        self.linenumber = linenumber
+        self.py = py
+        return self
+'''
+
+_RENPY_ASTSUPPORT_STUB = '''
+class PyExpr(object):
+    """Ren'Py 7.0-7.3: PyExpr — объект с атрибутом source."""
+    __slots__ = ["source", "loc"]
+    def __init__(self, source, loc=("<none>", 1)):
+        self.source = source
+        self.loc = loc
+'''
+
+_RENPY_SLAST_STUB = '''
+class SLNode(object):
+    pass
+
+class SLBlock(SLNode):
+    pass
+
+class SLScreen(SLBlock):
+    pass
+
+class SLDisplayable(SLBlock):
+    pass
+
+class SLIf(SLNode):
+    pass
+
+class SLFor(SLBlock):
+    pass
+'''
+
+_RENPY_TEXT_STUB = '''
+class Text(object):
+    pass
+'''
+
+_RENPY_UI_STUB = '''
+def _textbutton(*args, **kwargs):
+    return None
+'''
+
+
+def make_renpy_stub(root: str) -> None:
+    pkg = os.path.join(root, "renpy")
+    os.makedirs(os.path.join(pkg, "sl2"), exist_ok=True)
+    os.makedirs(os.path.join(pkg, "text"), exist_ok=True)
+    with open(os.path.join(pkg, "__init__.py"), "w", encoding="utf-8") as f:
+        f.write("")
+    with open(os.path.join(pkg, "ast.py"), "w", encoding="utf-8") as f:
+        f.write(_RENPY_AST_STUB)
+    with open(os.path.join(pkg, "astsupport.py"), "w", encoding="utf-8") as f:
+        f.write(_RENPY_ASTSUPPORT_STUB)
+    with open(os.path.join(pkg, "sl2", "__init__.py"), "w",
+              encoding="utf-8") as f:
+        f.write("")
+    with open(os.path.join(pkg, "sl2", "slast.py"), "w",
+              encoding="utf-8") as f:
+        f.write(_RENPY_SLAST_STUB)
+    with open(os.path.join(pkg, "text", "__init__.py"), "w",
+              encoding="utf-8") as f:
+        f.write("")
+    with open(os.path.join(pkg, "text", "text.py"), "w",
+              encoding="utf-8") as f:
+        f.write(_RENPY_TEXT_STUB)
+    with open(os.path.join(pkg, "ui.py"), "w", encoding="utf-8") as f:
+        f.write(_RENPY_UI_STUB)
+
+
+def build_rpyc_stmts():
+    """Скрипт как после парсинга Ren'Py 8.x: Say/Menu/Define с
+    интерполированными списками (PyExpr — str-подкласс) и экран SL2
+    с text/textbutton."""
+    import pickle
+    import sys
+    import importlib
+
+    stub_dir = os.path.join(tempfile.gettempdir(), "ob_renpy_stub_tests")
+    make_renpy_stub(stub_dir)
+    if stub_dir not in sys.path:
+        sys.path.insert(0, stub_dir)
+    importlib.import_module("renpy.ast")
+    importlib.import_module("renpy.astsupport")
+    importlib.import_module("renpy.sl2.slast")
+    importlib.import_module("renpy.text.text")
+    importlib.import_module("renpy.ui")
+    from renpy.ast import Say, Menu, Define, PyCode, Screen, PyExpr
+    from renpy.sl2.slast import SLScreen, SLDisplayable
+    from renpy.text.text import Text
+    from renpy.ui import _textbutton
+
+    def make_say(what, who=None):
+        s = Say()
+        s.what = what
+        s.who = who
+        s.rollback = "normal"
+        s.interact = True
+        return s
+
+    def make_text_disp(source):
+        d = SLDisplayable()
+        d.displayable = Text
+        d.positional = [PyExpr(source, "script.rpy", 10)]
+        d.children = []
+        return d
+
+    stmts = [
+        make_say("Привет, я ведьма.", who="Айра"),
+        make_say(["Часть ", PyExpr("player.name", "script.rpy", 3),
+                  " конец"]),
+    ]
+    m = Menu()
+    m.items = [(["Идти ", PyExpr("x", "script.rpy", 6), " дальше"], None,
+                [make_say("внутри")]),
+               ("Второй выбор", None, [])]
+    stmts.append(m)
+    stmts += [
+        make_say("Строка без интерполяции"),
+        make_say(["Строка с ", PyExpr("menu_music['title']", "script.rpy", 9),
+                  " вставкой"]),
+    ]
+    # screen main_menu:
+    #     text "Играть"
+    #     textbutton "Параметры" action Return()
+    #     text "Счёт: [score]"
+    scr = Screen()
+    slscreen = SLScreen()
+    slscreen.children = [
+        make_text_disp('"Играть"'),
+        make_text_disp('_("Загрузить")'),
+        make_text_disp('"Счёт: [score]"'),
+    ]
+    tb = SLDisplayable()
+    tb.displayable = _textbutton
+    tb.positional = [PyExpr('"Параметры"', "script.rpy", 12)]
+    tb.children = []
+    slscreen.children.append(tb)
+    scr.screen = slscreen
+    stmts.append(scr)
+    define = Define()
+    code = PyCode()
+    code.source = 'define e = Character("Айра")'
+    code.location = ("script.rpy", 1)
+    code.mode = "exec"
+    code.py = 3
+    define.code = code
+    define.varname = "e"
+    stmts.append(define)
+    return pickle.dumps(({"_ob": True}, stmts), protocol=2)
+
+
+def build_rpc2_rpyc(payload: bytes) -> bytes:
+    """RPC2-упаковка как в Script.write_rpyc (renpy/script.py 8.2.3):
+    заголовок + 3 нулевые записи, данные в конец, запись слота 1 — на
+    свою позицию."""
+    import struct
+    import zlib
+    data = zlib.compress(payload, 3)
+    buf = io.BytesIO()
+    buf.write(b"RENPY RPC2")
+    for _i in range(3):
+        buf.write(struct.pack("III", 0, 0, 0))
+    start = buf.tell()
+    buf.write(data)
+    buf.seek(len(b"RENPY RPC2") + 12 * (1 - 1))
+    buf.write(struct.pack("III", 1, start, len(data)))
+    return buf.getvalue()
+
+
+def check_rpyc_texts(texts: list[str]) -> None:
+    assert "Привет, я ведьма." in texts, texts
+    assert "Часть " in texts and " конец" in texts, texts
+    assert "Идти " in texts and " дальше" in texts, texts
+    assert "Второй выбор" in texts, texts
+    assert "внутри" in texts, texts
+    assert "Строка с " in texts and " вставкой" in texts, texts
+    assert "Айра" in texts, texts
+    # экранные тексты SL2 (text/textbutton) извлекаются
+    assert "Играть" in texts and "Загрузить" in texts, texts
+    assert "Параметры" in texts, texts
+    assert "Счёт: [score]" in texts, texts
+    # вставки переменных (PyExpr) НЕ считаются текстом
+    assert not any(t in ("player.name", "x", "menu_music['title']")
+                   for t in texts), texts
+    assert len(texts) == 15, texts
+
+
+print("2e) Ren'Py: legacy .rpyc (Ren'Py < 7.1: zlib(pickle) без RPC2)...")
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "game"))
+    with open(os.path.join(td, "game", "script.rpyc"), "wb") as f:
+        f.write(zlib.compress(build_rpyc_stmts()))
+    assert renpy.detect(td)
+    check_rpyc_texts([e.original for e in renpy.extract(td)])
+print("   OK")
+
+print("2f) Ren'Py: RPC2 .rpyc (Ren'Py 7.1+/8.x)...")
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "game"))
+    with open(os.path.join(td, "game", "script.rpyc"), "wb") as f:
+        f.write(build_rpc2_rpyc(build_rpyc_stmts()))
+    assert renpy.detect(td)
+    check_rpyc_texts([e.original for e in renpy.extract(td)])
+print("   OK")
+
+print("2g) Ren'Py: .rpyc внутри .rpa (v3.0)...")
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "game"))
+    blob = build_rpc2_rpyc(build_rpyc_stmts())
+    key = random.getrandbits(32)
+    path = os.path.join(td, "game", "archive.rpa")
+    with open(path, "wb") as f:
+        f.write(b"RPA-3.0 XXXXXXXXXXXXXXXX XXXXXXXX\n")
+        offset = f.tell()
+        f.write(blob)
+        index = {"script.rpyc": [(offset ^ key, len(blob) ^ key, b"")]}
+        indexoff = f.tell()
+        f.write(zlib.compress(pickle.dumps(index, pickle.HIGHEST_PROTOCOL)))
+        f.seek(0)
+        f.write(b"RPA-3.0 %016x %08x\n" % (indexoff, key))
+    assert renpy.detect(td)
+    texts = [e.original for e in renpy.extract(td)]
+    check_rpyc_texts(texts)
+    # .rpyc из архива не ломается, если на диске есть ещё и .rpy
+    with open(os.path.join(td, "game", "extra.rpy"), "w",
+              encoding="utf-8") as f:
+        f.write('define e = Character("Айра")\n'
+                'label start:\n'
+                '    e "Из .rpy"\n')
+    texts = [e.original for e in renpy.extract(td)]
+    assert "Из .rpy" in texts and "Привет, я ведьма." in texts, texts
+print("   OK")
+
+print("2h) Ren'Py: детект по .rpyc/.rpa без .rpy...")
+from app.engines.renpy import RenPyModule
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "game"))
+    with open(os.path.join(td, "game", "script.rpyc"), "wb") as f:
+        f.write(build_rpc2_rpyc(build_rpyc_stmts()))
+    assert renpy.detect(td)
+    assert RenPyModule.detect(td) == 75
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "game"))
+    with open(os.path.join(td, "game", "archive.rpa"), "wb") as f:
+        f.write(b"RPA-3.0 XXXXXXXXXXXXXXXX XXXXXXXX\n")
+    assert renpy.detect(td)
+    assert RenPyModule.detect(td) == 70
+print("   OK")
+
+print("2i) Ren'Py: .rpa v2 (RPA-2.0 hex, Ren'Py 6.99-7.3) и v1 (zlib, Ren'Py 6.x)...")
+from app.core.renpy import rpa as rpa_mod
+blob = build_rpc2_rpyc(build_rpyc_stmts())
+
+# v2: 'RPA-2.0 ' + offset(16 hex), индекс zlib(pickle) без XOR
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "game"))
+    path = os.path.join(td, "game", "archive.rpa")
+    index = {"script.rpyc": [(len(b"RPA-2.0 XXXXXXXXXXXXXXXX\n"),
+                              len(blob))]}
+    idx_blob = zlib.compress(pickle.dumps(index, pickle.HIGHEST_PROTOCOL))
+    with open(path, "wb") as f:
+        f.write(b"RPA-2.0 " + b"X" * 16 + b"\n")
+        data_start = f.tell()
+        f.write(blob)
+        indexoff = f.tell()
+        f.write(idx_blob)
+        f.seek(0)
+        f.write(b"RPA-2.0 %016x\n" % indexoff)
+    arc = rpa_mod.RpaArchive(path)
+    assert arc.version == 2, arc.version
+    assert arc.read("script.rpyc") == blob
+    texts = [e.original for e in renpy.extract(td)]
+    assert "Привет, я ведьма." in texts and "Играть" in texts, texts
+
+# v1: 'zlib(pickle индекса) + данные' — индексовые оффсеты указывают
+# внутрь файла за пределы сжатого индекса; zlib.decompress игнорирует
+# хвост (Ren'Py 6.x). Размер сжатого индекса стабилен для малых int
+# (BININT фиксирован), поэтому offset считаем за 2 прохода.
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "game"))
+    path = os.path.join(td, "game", "archive.rpa")
+    proto = pickle.HIGHEST_PROTOCOL
+    c0 = zlib.compress(pickle.dumps({"script.rpyc": [(0, len(blob))]}, proto))
+    data_off = len(c0)
+    c1 = zlib.compress(pickle.dumps({"script.rpyc": [(data_off, len(blob))]}, proto))
+    assert len(c1) == len(c0)
+    with open(path, "wb") as f:
+        f.write(c1)
+        f.write(blob)
+    arc = rpa_mod.RpaArchive(path)
+    assert arc.version == 1, arc.version
+    assert arc.read("script.rpyc") == blob
+print("   OK")
+
+print("2j) Ren'Py: гибрид — один проход берёт текст изо всех источников...")
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "game"))
+    # .rpy на диске
+    with open(os.path.join(td, "game", "script.rpy"), "w",
+              encoding="utf-8") as f:
+        f.write('define e = Character("Айра")\nlabel start:\n'
+                '    e "Диалог из .rpy"\n')
+    # .rpyc RPC2 с интерполяцией и экраном
+    with open(os.path.join(td, "game", "script.rpyc"), "wb") as f:
+        f.write(build_rpc2_rpyc(build_rpyc_stmts()))
+    # .rpa v3.0 с ещё одним .rpyc
+    blob2 = build_rpc2_rpyc(build_rpyc_stmts())
+    key = random.getrandbits(32)
+    path = os.path.join(td, "game", "archive.rpa")
+    with open(path, "wb") as f:
+        f.write(b"RPA-3.0 XXXXXXXXXXXXXXXX XXXXXXXX\n")
+        offset = f.tell()
+        f.write(blob2)
+        index = {"script.rpyc": [(offset ^ key, len(blob2) ^ key, b"")]}
+        indexoff = f.tell()
+        f.write(zlib.compress(pickle.dumps(index, pickle.HIGHEST_PROTOCOL)))
+        f.seek(0)
+        f.write(b"RPA-3.0 %016x %08x\n" % (indexoff, key))
+    texts = [e.original for e in renpy.extract(td)]
+    assert "Диалог из .rpy" in texts
+    assert "Привет, я ведьма." in texts
+    assert "Играть" in texts and "Параметры" in texts
+    # каждый исходник отдан ровно один раз (дедупликация по original)
+    assert texts.count("Привет, я ведьма.") == 1, texts
+    entries = renpy.extract(td)
+    for e in entries:
+        e.translation = "TR:" + e.original
+    stats = renpy.apply(td, entries, "ru")
+    assert os.path.isdir(stats["out_dir"])
+print("   OK")
+
+print("2k) Ren'Py: dual-dialect агент — ветки py2 (Ren'Py 7) и py3 (Ren'Py 8)...")
+from app.engines.renpy.agent import agent_source, agent_rpy_source
+from app.engines.renpy.offsets import RenpyOffsetDB
+db = RenpyOffsetDB()
+assert db.get_abi_branch("7.4.11") == "py2", db.get_abi_branch("7.4.11")
+assert db.get_abi_branch("8.2.3") == "py3"
+assert db.get_abi_branch("6.18.3") is None  # не 7.x/8.x → ветки нет
+# известные версии из БД дают офсеты; все записи помечены веткой
+known = db._data.get("versions", {})
+assert known, "renpy_offsets.json пуст"
+for _v, _d in known.items():
+    assert _d.get("abi") in ("py2", "py3")
+    assert isinstance(_d.get("symbols"), dict)
+    # офсеты PyRun/GIL могут быть не заполнены (столбец-заглушка) —
+    # тогда get_offsets честно отдаёт None, а не мусор
+    if any(s is None for s in _d["symbols"].values()):
+        assert db.get_offsets(_v) is None
+    else:
+        assert db.get_offsets(_v) is not None
+# генерация обеих веток: чужие ABI-секции вырезаны, маркеры не остаются
+s2 = agent_source(1234, abi="py2")
+s3 = agent_source(1234, abi="py3")
+assert "@@ABI" not in s2 and "@@ABI" not in s3
+py2mark = 'if isinstance(_d, type(u"")):'
+py3mark = 'return json.dumps(obj, ensure_ascii=False).encode("utf-8") + b"\\n"'
+assert py2mark in s2 and py2mark not in s3
+assert py3mark in s3 and py3mark not in s2
+# обе ветки компилируются под CPython (синтаксически валидны)
+compile(s2, "agent_py2.py", "exec")
+compile(s3, "agent_py3.py", "exec")
+# .rpy-обёртка: init python + отступ, маркеров нет
+r = agent_rpy_source(1234, abi="py3")
+assert r.startswith("init python:") and "\n    " in r
+assert "@@ABI" not in r
 print("   OK")
 
 # ── Twine ──

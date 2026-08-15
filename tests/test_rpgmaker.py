@@ -286,5 +286,103 @@ assert "Decrypter.decrypt" in expr
 assert RpgMakerTentacle._cheat_expr("reload_map_unknown") is None
 print("   OK")
 
+print("15) map_layers: MV/MZ 6 слоёв (тени z4, регионы z5) + fallback 4 слоя...")
+from app.core.rpgmaker import maprender
+w, h = 2, 2
+n = w * h
+m6 = {"width": w, "height": h, "data": list(range(6 * n))}
+W, H, lower, upper, shadow, region = maprender.map_layers(m6)
+assert (W, H) == (w, h)
+assert lower == list(range(0, 2 * n))
+assert upper == list(range(2 * n, 4 * n))
+assert shadow == list(range(4 * n, 5 * n)), "тени должны быть на z4"
+assert region == list(range(5 * n, 6 * n)), "регионы на z5"
+# MV-карты такие же 6-слойные (движок читает тени с z4)
+mv = {"width": w, "height": h, "data": list(range(6 * n))}
+W, H, lower, upper, shadow, region = maprender.map_layers(mv)
+assert shadow == list(range(4 * n, 5 * n)), "MV: тени на z4"
+assert region == list(range(5 * n, 6 * n)), "MV: регионы на z5"
+# 5 слоёв: регионов нет
+m5 = {"width": w, "height": h, "data": list(range(5 * n))}
+W, H, lower, upper, shadow, region = maprender.map_layers(m5)
+assert region == [] and shadow == list(range(4 * n, 5 * n))
+# 4-слойный fallback: z2 — верхние тайлы, z3 — тени
+m4 = {"width": w, "height": h, "data": list(range(4 * n))}
+W, H, lower, upper, shadow, region = maprender.map_layers(m4)
+assert upper == list(range(2 * n, 3 * n))
+assert shadow == list(range(3 * n, 4 * n))
+assert region == []
+assert maprender.map_layers({}) == (0, 0, [], [], [], [])
+print("   OK")
+
+print("16) extract_plugins: имена в plugins.js уже с .js...")
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "js", "plugins"))
+    os.makedirs(os.path.join(td, "data"))
+    with open(os.path.join(td, "js", "plugins.js"), "w",
+              encoding="utf-8") as f:
+        json.dump([{"name": "MyPlugin.js", "status": True}], f)
+    with open(os.path.join(td, "js", "plugins", "MyPlugin.js"), "w",
+              encoding="utf-8") as f:
+        f.write("const msg = 'こんにちは世界'; // comment")
+    skipped = []
+    entries = parser.extract_plugins(
+        td, "data", on_skip=lambda name, e: skipped.append(name))
+    texts = [e.original for e in entries]
+    assert "こんにちは世界" in texts, f"плагин не извлечён, skipped={skipped}"
+    assert not skipped
+    assert entries[0].file == "js/plugins/MyPlugin.js"
+print("   OK:", [e.original for e in entries])
+
+print("17) 357: args-объект (MZ) и args-список (старый MZ)...")
+with tempfile.TemporaryDirectory() as td:
+    make_project(td, "mz")
+    data = os.path.join(td, "data", "CommonEvents.json")
+    common = json.load(open(data, encoding="utf-8"))
+    common[1]["list"] = [
+        {"code": 357, "indent": 0, "parameters": [
+            "js/plugins/Foo.js", "showMsg", "note", {"msg": "Привет"}]},
+        {"code": 357, "indent": 0, "parameters": [
+            "js/plugins/Foo.js", "showMsg2", "note", ["арг1", "арг2"]]},
+    ]
+    json.dump(common, open(data, "w", encoding="utf-8"), ensure_ascii=False)
+    entries = parser.extract(td)
+    texts = [e.original for e in entries]
+    assert "Привет" in texts
+    assert "арг1" in texts and "арг2" in texts
+print("   OK:", texts)
+
+print("18) get_key_mv: ключ из System.json (www/data), fallback rpg_core.js...")
+from app.core.rpgmaker import crypto
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "www", "data"))
+    with open(os.path.join(td, "www", "data", "System.json"), "w",
+              encoding="utf-8") as f:
+        json.dump({"encryptionKey": "00112233445566778899aabbccddeeff"}, f)
+    assert crypto.get_key_mv(td) == "00112233445566778899aabbccddeeff"
+    assert crypto.get_key(td) == "00112233445566778899aabbccddeeff"
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "www", "js"))
+    with open(os.path.join(td, "www", "js", "rpg_core.js"), "w",
+              encoding="utf-8") as f:
+        f.write("// obfuscated\nencryptionKey = 'ffeeddccbbaa99887766554433221100';\n")
+    assert crypto.get_key_mv(td) == "ffeeddccbbaa99887766554433221100"
+with tempfile.TemporaryDirectory() as td:
+    assert crypto.get_key_mv(td) is None
+print("   OK")
+
+print("19) Читы: heal_all / clear_states / турбо-выражения...")
+expr = RpgMakerTentacle._cheat_expr("heal_all")
+assert expr is not None
+assert "removeAllStates" in expr and "setHp(a.mhp)" in expr
+assert "setMp(a.mmp)" in expr
+expr = RpgMakerTentacle._cheat_expr("clear_states")
+assert expr is not None
+assert "removeAllStates" in expr and "setHp" not in expr
+expr = RpgMakerTentacle._cheat_expr("game_speed", value=4)
+assert expr is not None and "setGameSpeed(4)" in expr
+assert RpgMakerTentacle._cheat_expr("heal_all_unknown") is None
+print("   OK")
+
 print()
 print("ВСЕ ТЕСТЫ RPG MAKER ПРОШЛИ")

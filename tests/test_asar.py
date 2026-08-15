@@ -247,5 +247,28 @@ with tempfile.TemporaryDirectory() as td:
         "0123456789abcdef0123456789abcdef"
 print("   OK")
 
+print("9) Движок: восстановление оригинала из backup/ (rel-пути)...")
+with tempfile.TemporaryDirectory() as td:
+    game = _make_game(td, "こんにちは、世界。")
+    mod = RpgMakerModule(game)
+    entries = mod.extract(game)
+    for e in entries:
+        if e.original == "こんにちは、世界。":
+            e.translation = "Здравствуй, мир."
+            e.status = "translated"
+    stats = mod.apply(game, entries)
+    assert stats["strings"] >= 1, stats
+    # бэкап записан с полным rel-путём внутри backup/<ts>/
+    baks = [b for b in stats.get("backups", [])
+            if b.endswith("data/Map001.json")]
+    assert baks, stats
+    res = mod.restore_original(game)
+    assert res["restored"] >= 1, res
+    ar = asarlib.AsarArchive(os.path.join(game, "resources", "app.asar"))
+    blob = ar.read_file("project/data/Map001.json").decode("utf-8")
+    assert "こんにちは、世界。" in blob, blob
+    assert "Здравствуй, мир." not in blob
+print("   OK")
+
 print()
 print("ВСЕ ТЕСТЫ ASAR + RPG MAKER (ELECTRON) ПРОШЛИ")

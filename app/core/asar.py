@@ -190,7 +190,9 @@ def apply_patches(path: str, patches: dict[str, bytes],
             old = ar.read_file(rel)
             if old is None:
                 continue
-            bp = os.path.join(backup_dir, os.path.basename(rel))
+            # бэкап по полному rel-пути — единый формат с parser.apply
+            bp = os.path.join(backup_dir, *rel.split("/"))
+            os.makedirs(os.path.dirname(bp), exist_ok=True)
             with open(bp, "wb") as f:
                 f.write(old)
             stats["backups"].append(bp)

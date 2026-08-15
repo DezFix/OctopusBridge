@@ -8,8 +8,8 @@
 - тени: 4 четверти тайла (данные слоя тени);
 - «столы» A2 (флаг 0x80): края нижней кромки через `_addTableEdge`.
 
-Слои data[] карты (MZ, 6n): z0,z1,z2,z3 — тайлы, z4 — тени, z5 — регионы.
-MV-карты (4n): z0,z1 — тайлы, z2 — тени, z3 — регионы.
+Слои data[] карты (MZ и MV, 6n): z0..z3 — тайлы, z4 — тени, z5 — регионы
+(движок MV читает тени тем же слоем z4, что и MZ: `_readMapData(x, y, 4)`).
 """
 from __future__ import annotations
 
@@ -312,30 +312,35 @@ def load_map(game_dir: str, map_id: int,
     return data if isinstance(data, dict) else None
 
 
-def map_layers(data: dict) -> tuple[int, int, list, list, list, list, list]:
-    """-> (width, height, lower, upper, shadow, region, is_mz).
+def map_layers(data: dict) -> tuple[int, int, list, list, list, list]:
+    """-> (width, height, lower, upper, shadow, region).
 
     Слои: lower = z0+z1 (нижние тайлы), upper = z2+z3 (верхние тайлы),
-    shadow = биты теней, region. MZ-карты (6n) — z4 тени/z5 регионы;
-    MV-карты (4n) — z2 тени/z3 регионы.
+    shadow = биты теней, region. И MZ, и MV хранят 6 слоёв:
+    z0..z3 — тайлы, z4 — тени, z5 — регионы. Fallback для 4-слойных:
+    z0..z1 — тайлы, z2 — верхние, z3 — тени, регионов нет.
     """
     w = int(data.get("width") or 0)
     h = int(data.get("height") or 0)
     flat = data.get("data") or []
     n = w * h
     if n <= 0:
-        return 0, 0, [], [], [], [], False
+        return 0, 0, [], [], [], []
     layers = len(flat) // n
-    is_mz = layers >= 5
     lower = flat[0:2 * n]
-    upper = flat[2 * n:4 * n]
-    if is_mz:
+    if layers >= 6:
+        upper = flat[2 * n:4 * n]
         shadow = flat[4 * n:5 * n]
         region = flat[5 * n:6 * n]
-    else:
-        shadow = flat[2 * n:3 * n]
-        region = flat[3 * n:4 * n]
-    return w, h, lower, upper, shadow, region, is_mz
+    elif layers == 5:
+        upper = flat[2 * n:4 * n]
+        shadow = flat[4 * n:5 * n]
+        region = []
+    else:                                   # 4-слойный fallback
+        upper = flat[2 * n:3 * n]
+        shadow = flat[3 * n:4 * n]
+        region = []
+    return w, h, lower, upper, shadow, region
 
 
 def load_tilesets(game_dir: str, view: FileView | None = None) -> list[dict]:

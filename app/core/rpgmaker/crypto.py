@@ -3,7 +3,8 @@
 
 Формат: 16-байтный заголовок 'RPGMV\\0\\0\\0\\3\\0\\1\\0\\0\\0\\0\\0',
 затем первые 16 байт исходного файла, XOR-енные ключом из
-System.json:encryptionKey (MZ) или rpg_core.js (MV).
+System.json:encryptionKey (и у MZ, и у MV; у MV fallback —
+rpg_core.js для обфусцированных сборок).
 """
 from __future__ import annotations
 
@@ -36,13 +37,20 @@ def get_key_mz(game_dir: str, view=None) -> str | None:
 
 
 def get_key_mv(game_dir: str, view=None) -> str | None:
+    """MV: ключ лежит в System.json:encryptionKey (движок читает его
+    из $dataSystem.encryptionKey — см. Decrypter.readEncryptionkey).
+    Fallback для обфусцированных сборок: 32-hex литерал рядом
+    с encryptionKey в rpg_core.js."""
     view = _view(game_dir, view)
+    key = get_key_mz(game_dir, view)
+    if key:
+        return key
     text = view.read_text("js/rpg_core.js")
     if text is None:
         text = view.read_text("www/js/rpg_core.js")
     if text is None:
         return None
-    m = re.search(r'encryptionKey["\s:]+([0-9a-f]{32})', text)
+    m = re.search(r'encryptionKey["\'=\s:]+([0-9a-f]{32})', text)
     return m.group(1) if m else None
 
 

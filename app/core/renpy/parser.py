@@ -13,6 +13,7 @@ Generation: official Ren'Py mechanism — game/tl/<lang>/*.rpy with blocks:
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import io
 import os
@@ -108,6 +109,19 @@ class _PyExpr:
         src = args[1] if len(args) > 1 else ""
         self.source = src if isinstance(src, str) else str(src)
 
+class _MockPyExpr(str):
+    """Mock для str-подклассов Ren'Py 7.4+/8.x: PyExpr и RawCode.
+
+    Такие объекты pickle восстанавливает через __new__(cls, source) —
+    простой класс упал бы с TypeError и обрушил бы unpickle всего .rpyc.
+    Значение mock-объекта == сам python-исходник (например '"Играть"'),
+    флаг _ob_py_expr помечает его как код, а не текст для перевода.
+    """
+    _ob_py_expr = True
+
+    def __new__(cls, *args):
+        return str.__new__(cls, args[0] if args else "")
+
 class _RevertableDict(dict):
     pass
 
@@ -116,7 +130,9 @@ class _MockNode:
 
 _RENPY_MOCKS: dict[tuple[str, str], type] = {
     ("renpy.ast", "PyCode"): _PyCode,
+    ("renpy.ast", "PyExpr"): _MockPyExpr,
     ("renpy.astsupport", "PyExpr"): _PyExpr,
+    ("renpy.python", "RawCode"): _MockPyExpr,
     ("renpy.revertable", "RevertableDict"): _RevertableDict,
     ("renpy.parameter", "ArgumentInfo"): _MockNode,
     ("renpy.sl2.slast", "SLScreen"): _MockNode,
@@ -183,12 +199,50 @@ def _string_parts(text) -> list[str]:
     вставок переменных. Переводим строковые элементы по отдельности:
     рантайм-хук ob_dict подменяет каждый элемент списка своим переводом
     (см. _ACTIVATE_TEMPLATE, ветку isinstance(text, list)).
+
+    Вставки переменных — объекты PyExpr/RawCode (в Ren'Py 7.4+/8.x это
+    str-подклассы, mock-восстановленные как _MockPyExpr) — НЕ текст:
+    их значение это python-код (имя переменной). Флаг _ob_py_expr
+    отличает их от настоящих строковых частей реплики.
     """
+    def _is_code(t) -> bool:
+        return isinstance(t, str) and getattr(type(t), "_ob_py_expr", False)
+
     if isinstance(text, str):
-        return [text] if text else []
+        return [] if _is_code(text) else ([text] if text else [])
+    if isinstance(text, bytes):
+        # Ren'Py 7 (Python 2) может хранить строки как байты — декодируем
+        return [text.decode("utf-8", "replace")] if text else []
     if isinstance(text, (list, tuple)):
-        return [t for t in text if isinstance(t, str) and t]
+        return [t if isinstance(t, str) and not _is_code(t)
+                else t.decode("utf-8", "replace") if isinstance(t, bytes)
+                else "" for t in text if isinstance(t, (str, bytes)) and t]
     return []
+
+
+def _sl_text_value(part) -> str | None:
+    """Строковый литерал из позиционного аргумента text/textbutton SL2.
+
+    В .rpyc позиционные аргументы — PyExpr (str-подкласс, значение ==
+    python-исходник, например '"Играть"'; у старых Ren'Py 7.0-7.3 —
+    объект с атрибутом .source). Извлекаем строковую константу; если
+    текст составной (text "a" + var) — берём первый строковый литерал
+    (best effort, такие строки редки в экранах).
+    """
+    src = part if isinstance(part, str) else getattr(part, "source", "")
+    if not src:
+        return None
+    src = src.strip()
+    if not src:
+        return None
+    try:
+        v = ast.literal_eval(src)
+        if isinstance(v, str):
+            return v
+    except Exception:
+        pass
+    m = re.search(_STR, src)
+    return m.group(1) if m else None
 
 
 def _walk_ast(stmts) -> list[tuple[str, str]]:
@@ -205,6 +259,9 @@ def _walk_ast(stmts) -> list[tuple[str, str]]:
             return
         visited.add(id(nodes))
         nt = type(nodes).__name__
+        # Ленивые mock-классы называются _mock_<Имя> (например
+        # _mock_SLDisplayable) — нормализуем для ветвлений.
+        base = nt.removeprefix("_mock_")
 
         if nt == "Say":
             what = getattr(nodes, "what", None)
@@ -248,24 +305,45 @@ def _walk_ast(stmts) -> list[tuple[str, str]]:
             src = getattr(code, "source", "") if code else ""
             for m in re.finditer(r'(?:Character|create_character)\(\s*"([^"]+)"', src):
                 result.append(("character", m.group(1)))
-            for m in re.finditer(r'"[^"]*"\s*,\s*"([^"]+)"', src):
-                if src.strip().startswith("define"):
-                    result.append(("character_name", m.group(1)))
 
         elif nt == "Python":
             code = getattr(nodes, "code", None)
             src = getattr(code, "source", "") if code else ""
-            for m in re.finditer(r'create_character\(\s*"([^"]+)"\s*,\s*"([^"]+)"', src):
+            for m in re.finditer(r'create_character\(\s*"([^"]+)"', src):
                 result.append(("character", m.group(1)))
-                result.append(("character_name", m.group(2)))
 
         elif nt == "Screen":
-            screen = getattr(nodes, "screen", None)
-            if screen:
-                name = getattr(screen, "name", None)
-                if name and isinstance(name, str):
-                    result.append(("screen", name))
+            # SL2 (Ren'Py 6.99+): Screen.screen → slast.SLScreen с
+            # деревом SL-узлов; текст экранов — SLDisplayable text/
+            # textbutton (см. ветку SLDisplayable ниже).
+            walk(getattr(nodes, "screen", None))
 
+        elif base == "SLDisplayable":
+            # text "…" и textbutton "…": текст лежит в positional как
+            # PyExpr (python-исходник строкового литерала). Остальные
+            # дисплейаблы (image, add, bar…) в positional держат имена
+            # файлов/переменные — их не переводим. displayable — сам
+            # класс (mock _mock_Text / _mock__textbutton).
+            _d = getattr(nodes, "displayable", None)
+            disp_name = getattr(_d, "__name__", "") if _d is not None else ""
+            if disp_name.removeprefix("_mock_") in ("Text", "_textbutton"):
+                for pos in getattr(nodes, "positional", []):
+                    v = _sl_text_value(pos)
+                    if v:
+                        result.append(("screen", v))
+
+        elif base == "SLPython":
+            code = getattr(nodes, "code", None)
+            src = getattr(code, "source", "") if code else ""
+            for m in re.finditer(r'create_character\(\s*"([^"]+)"', src):
+                result.append(("character", m.group(1)))
+
+        # SL2-деревья: дети блоков (SLBlock.children), ветки if/showif
+        # (SLIf.entries — пары (условие, блок)), блоки use (SLUse.block).
+        walk(getattr(nodes, "children", []))
+        for _e in getattr(nodes, "entries", []):
+            if isinstance(_e, (list, tuple)) and len(_e) > 1:
+                walk(_e[1])
         walk(getattr(nodes, "block", []))
         walk(getattr(nodes, "body", []))
 
@@ -275,13 +353,15 @@ def _walk_ast(stmts) -> list[tuple[str, str]]:
 # ── Main API ────────────────────────────────────────────────────────
 
 def detect(game_dir: str) -> bool:
-    """Is this a Ren'Py game? (has game/ with .rpy/.rpa or renpy/)"""
+    """Is this a Ren'Py game? (has game/ with .rpy/.rpyc/.rpa or renpy/)"""
     game_sub = os.path.join(game_dir, "game")
     if os.path.isdir(game_sub):
         for _root, _dirs, files in os.walk(game_sub):
             if any(f.endswith(".rpy") for f in files):
                 return True
-            if any(f.endswith(".rpa") for f in files):
+            if any(f.endswith(".rpyc") for f in files):
+                return True
+            if any(f.lower().endswith(".rpa") for f in files):
                 return True
     return os.path.isdir(os.path.join(game_dir, "renpy"))
 
@@ -398,37 +478,53 @@ def extract(game_dir: str, extract_lang: str | None = None
         nonlocal next_id
         if not original or len(original.strip()) < 2:
             return
-        key = original.strip()
+        # ВАЖНО: не strip() — игровая строка сохраняется дословно.
+        # Строки с ведущими/хвостовыми пробелами (части интерполированных
+        # реплик «Привет, »/« конец», диалоги с пробелом перед закрывающей
+        # кавычкой) обязаны совпадать с текстом игры ПОСИМВОЛЬНО: рантайм-
+        # хук Text.__init__ ищет точное вхождение в ob_dict.json, а
+        # официальный механизм tl/* матчит old-блоки по точной строке.
+        key = original
         if key in seen_originals:
             return
         seen_originals.add(key)
         entries.append(TranslationEntry(
             id=next_id, file=file, json_path=f"ctx:{context[:60]}",
-            context=context, original=key))
+            context=context, original=original))
         next_id += 1
+
+    # .rpa-архивы открываем один раз — раньше каждый .rpyc из архива
+    # заново сканировал game/ и перечитывал индекс (O(файлов × архивов)).
+    from app.core.renpy.rpa import RpaArchive
+    _archives: dict[str, RpaArchive | None] = {}
+    for arc_path in find_rpa_archives(game_dir):
+        try:
+            _archives[os.path.basename(arc_path)] = RpaArchive(arc_path)
+        except Exception:
+            _archives[os.path.basename(arc_path)] = None
 
     for path, rel in _iter_rpy(game_dir, extract_lang):
         # ── .rpyc from RPA archive ──
         if path.startswith("rpa://"):
+            parts = path[len("rpa://"):].split("/", 1)
+            if len(parts) != 2:
+                continue
+            arc_name, fname = parts
+            arc = _archives.get(arc_name)
+            if arc is None:
+                continue
             try:
-                from app.core.renpy.rpa import RpaArchive
-                parts = path[len("rpa://"):].split("/", 1)
-                arc_name, fname = parts
-                for arc_path in find_rpa_archives(game_dir):
-                    if os.path.basename(arc_path) == arc_name:
-                        arc = RpaArchive(arc_path)
-                        raw = arc.read(fname)
-                        if fname.endswith(".rpyc"):
-                            parsed = _unpickle_rpyc(raw)
-                            if parsed:
-                                _, stmts = parsed
-                                for kind, s in _walk_ast(stmts):
-                                    add(rel, f"{rel}:{kind}", s)
-                        else:
-                            text = raw.decode("utf-8", errors="replace")
-                            for n, line in enumerate(text.splitlines(), 1):
-                                _extract_line(rel, n, line, add)
-                        break
+                raw = arc.read(fname)
+                if fname.endswith(".rpyc"):
+                    parsed = _unpickle_rpyc(raw)
+                    if parsed:
+                        _, stmts = parsed
+                        for kind, s in _walk_ast(stmts):
+                            add(rel, f"{rel}:{kind}", s)
+                else:
+                    text = raw.decode("utf-8", errors="replace")
+                    for n, line in enumerate(text.splitlines(), 1):
+                        _extract_line(rel, n, line, add)
             except Exception:
                 continue
 
@@ -522,7 +618,7 @@ def _extract_line(rel: str, n: int, line: str, add) -> None:
     except Exception:
         return
     for text, kind in found:
-        text = text.strip()
+        # текст из кавычек сохраняем дословно (см. add) — пробелы значимы
         if text:
             add(rel, f"{rel}:{n}:{kind}", text)
 
@@ -551,6 +647,37 @@ def _escape(text: str) -> str:
             .replace("\n", "\\n").replace("\t", "\\t"))
 
 
+def _unescape_rpy_string(text: str) -> str:
+    """Обратное преобразование к _escape(): \\n → перевод строки,
+    \\t → таб, \\" → кавычка, \\\\ → один backslash.
+
+    Порядок важен: обычный chained-replace сначала сворачивает \\\\ в \\,
+    а затем ложно превращает литеральную последовательность \\n (backslash
+    + n из текста игры, в файле \\\\n) в настоящий перевод строки.
+    """
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "\\" and i + 1 < n:
+            nxt = text[i + 1]
+            if nxt == "n":
+                out.append("\n")
+            elif nxt == "t":
+                out.append("\t")
+            elif nxt == '"':
+                out.append('"')
+            elif nxt == "\\":
+                out.append("\\")
+            else:
+                out.append(nxt)
+            i += 2
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def _read_existing_olds(out_path: str) -> set[str]:
     """Old-строки из ранее сгенерированного ob_*.rpy.
 
@@ -563,9 +690,7 @@ def _read_existing_olds(out_path: str) -> set[str]:
         with open(out_path, encoding="utf-8") as f:
             multiline = re.compile(RE_OLD.pattern, re.MULTILINE)
             raw = multiline.findall(f.read())
-        # разэкранирование: old-строки пишутся через _escape()
-        return {(r.replace("\\\\", "\\").replace('\\"', '"')
-                 .replace("\\t", "\t").replace("\\n", "\n")) for r in raw}
+        return {_unescape_rpy_string(r) for r in raw}
     except OSError:
         return set()
 
