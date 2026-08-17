@@ -5,7 +5,7 @@ from PyInstaller.utils.win32.versioninfo import (
     FixedFileInfo, StringFileInfo, StringStruct, StringTable,
     VarFileInfo, VarStruct, VSVersionInfo)
 
-datas = collect_data_files('app') + [('ico.ico', '.'), ('CHANGELOG.md', '.')]
+datas = collect_data_files('app') + [('assets/ico.ico', 'assets'), ('CHANGELOG.md', '.')]
 binaries, hiddenimports = [], []
 
 version_info = VSVersionInfo(
@@ -69,6 +69,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['ico.ico'],
+    icon=['assets/ico.ico'],
     version=version_info,
 )

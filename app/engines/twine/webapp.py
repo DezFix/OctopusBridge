@@ -198,7 +198,7 @@ def open_game_window(title: str, url: str, profile_dir: str,
     except ImportError:
         webbrowser.open(url)
         return None
-    icon = icon_path or os.path.join(_repo_root(), 'ico.ico')
+    icon = icon_path or os.path.join(_repo_root(), 'assets', 'ico.ico')
     if not os.path.isfile(icon):
         icon = ''
     frozen = getattr(sys, 'frozen', False)

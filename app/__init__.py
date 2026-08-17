@@ -83,7 +83,7 @@ def migrate_appdata() -> None:
 
 
 def icon_path() -> str:
-    return os.path.join(bundle_dir(), "ico.ico")
+    return os.path.join(bundle_dir(), "assets", "ico.ico")
 
 
 def crash_log_path() -> str:

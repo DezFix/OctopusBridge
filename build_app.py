@@ -23,7 +23,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 VENV_PY = os.path.join(ROOT, ".venv", "Scripts", "python.exe")
 SPEC_PATH = os.path.join(ROOT, "OctopusBridge.spec")
 ISS_PATH = os.path.join(ROOT, "setup.iss")
-ICON = "ico.ico"
+ICON = "assets/ico.ico"
 APP_NAME = "OctopusBridge"
 DIST_DIR = os.path.join(ROOT, "dist")
 BUILD_DIR = os.path.join(ROOT, "build")
@@ -50,7 +50,7 @@ from PyInstaller.utils.win32.versioninfo import (
     FixedFileInfo, StringFileInfo, StringStruct, StringTable,
     VarFileInfo, VarStruct, VSVersionInfo)
 
-datas = collect_data_files('app') + [('ico.ico', '.'), ('CHANGELOG.md', '.')]
+datas = collect_data_files('app') + [('assets/ico.ico', 'assets'), ('CHANGELOG.md', '.')]
 binaries, hiddenimports = [], []
 
 version_info = VSVersionInfo(
