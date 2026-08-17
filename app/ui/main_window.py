@@ -12,8 +12,7 @@ import os
 
 from PySide6.QtCore import QSettings, Signal
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import (QMainWindow, QTabWidget, QSystemTrayIcon,
-                               QMenu)
+from PySide6.QtWidgets import (QMainWindow, QSystemTrayIcon)
 
 import app as app_paths
 from app.core import cache as app_cache
@@ -28,6 +27,7 @@ from app.ui.i18n import TR, provider_short_name, set_language
 from app.ui.welcome_tab import WelcomeTab
 from app.ui.projects_tab import ProjectsTab
 from app.ui.translate_tab import TranslateTab
+from app.ui.theme import AnimatedMenu, AnimatedTabWidget
 
 PROJECTS_DIR = app_paths.projects_dir()
 
@@ -137,7 +137,7 @@ class MainWindow(QMainWindow):
         self._engine_tabs: list[tuple] = []   # [(widget, role)]
 
         # ── tabs ──
-        self.tabs = QTabWidget()
+        self.tabs = AnimatedTabWidget()
         self.tabs.setDocumentMode(True)
         self.welcome_tab = WelcomeTab(self)
         self.translate_tab = TranslateTab(self)
@@ -181,7 +181,7 @@ class MainWindow(QMainWindow):
             return
         self.tray = QSystemTrayIcon(icon, self)
         self.tray.setToolTip(TR("app_title"))
-        menu = QMenu()
+        menu = AnimatedMenu()
         act_open = menu.addAction(TR("tray_open"))
         act_open.triggered.connect(self._tray_open)
         menu.addSeparator()

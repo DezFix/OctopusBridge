@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from PySide6.QtCore import QThread, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFormLayout,
+from PySide6.QtWidgets import (QCheckBox, QDialog, QFormLayout,
                                 QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-                                QPushButton, QSpinBox, QTabWidget,
+                                QPushButton, QSpinBox,
                                 QVBoxLayout, QWidget)
 
 from app.core import cache as app_cache
@@ -14,6 +14,7 @@ from app.core.translate.engines import PROVIDERS, AI_PROVIDERS
 from app.ui.i18n import TR, provider_name
 from app.ui.icons import icon
 from app.ui.loading_overlay import BusyLabel
+from app.ui.theme import AnimatedComboBox, AnimatedTabWidget
 
 PRESETS = {
     "OpenRouter": "https://openrouter.ai/api/v1",
@@ -52,7 +53,7 @@ class SettingsDialog(QDialog):
         lay = QVBoxLayout(self)
         self._ping_workers: dict[str, PingWorker] = {}
 
-        tabs = QTabWidget()
+        tabs = AnimatedTabWidget()
         self.tabs = tabs
         tabs.addTab(self._build_general_tab(s), TR("settings_general"))
         tabs.addTab(self._build_files_tab(s), TR("settings_files"))
@@ -78,7 +79,7 @@ class SettingsDialog(QDialog):
         box = QGroupBox(title or TR("settings_provider"))
         form = QFormLayout(box)
 
-        combo = QComboBox()
+        combo = AnimatedComboBox()
         provs = providers or PROVIDERS
         for key in provs:
             combo.addItem(provider_name(key), key)
@@ -141,12 +142,12 @@ class SettingsDialog(QDialog):
         box = QGroupBox(TR("settings_languages"))
         form = QFormLayout(box)
 
-        self.source_lang = QComboBox()
+        self.source_lang = AnimatedComboBox()
         self.source_lang.addItems(["auto", "ja", "zh", "en"])
         self.source_lang.setCurrentText(s.value("source_lang", "auto"))
         form.addRow(TR("settings_src_lang"), self.source_lang)
 
-        self.target_lang = QComboBox()
+        self.target_lang = AnimatedComboBox()
         self.target_lang.addItems(["ru", "en"])
         self.target_lang.setCurrentText(s.value("target_lang", "ru"))
         form.addRow(TR("settings_tgt_lang"), self.target_lang)
@@ -155,7 +156,7 @@ class SettingsDialog(QDialog):
 
         ui_box = QGroupBox(TR("settings_ui_lang"))
         ui_form = QFormLayout(ui_box)
-        self.ui_lang = QComboBox()
+        self.ui_lang = AnimatedComboBox()
         self.ui_lang.addItems([TR("settings_ui_ru"), TR("settings_ui_en")])
         self.ui_lang.setCurrentIndex(0 if s.value("ui_lang", "ru") == "ru" else 1)
         ui_form.addRow(TR("settings_ui_lang"), self.ui_lang)
@@ -163,7 +164,7 @@ class SettingsDialog(QDialog):
 
         close_box = QGroupBox(TR("settings_close_behavior"))
         close_form = QFormLayout(close_box)
-        self.close_behavior = QComboBox()
+        self.close_behavior = AnimatedComboBox()
         self.close_behavior.addItems([
             TR("settings_close_tray"),
             TR("settings_close_quit"),
@@ -208,7 +209,7 @@ class SettingsDialog(QDialog):
 
         opt_box = QGroupBox(TR("settings_files"))
         opt_form = QFormLayout(opt_box)
-        self.overwrite_mode = QComboBox()
+        self.overwrite_mode = AnimatedComboBox()
         self.overwrite_mode.addItems([
             TR("settings_overwrite_new"),
             TR("settings_overwrite_all"),

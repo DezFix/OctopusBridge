@@ -16,9 +16,9 @@ import os
 
 from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFormLayout,
+from PySide6.QtWidgets import (QCheckBox, QDialog, QFormLayout,
                                 QHBoxLayout, QLabel, QLineEdit, QListWidget,
-                                QListWidgetItem, QMenu, QMessageBox,
+                                QListWidgetItem, QMessageBox,
                                 QPushButton, QScrollArea, QSpinBox,
                                 QSplitter, QVBoxLayout, QWidget)
 
@@ -26,7 +26,7 @@ from app.core.rpgmaker import crypto, maprender
 from app.core.rpgmaker.varnames import extract_maps
 from app.ui.i18n import TR
 from app.ui.icons import icon
-from app.ui.theme import C_BG
+from app.ui.theme import C_BG, AnimatedComboBox, AnimatedMenu
 
 ZOOM_LEVELS = [25, 50, 75, 100, 150, 200]
 
@@ -346,7 +346,7 @@ class MapTab(QWidget):
 
         bar = QHBoxLayout()
         bar.addWidget(QLabel(TR("map_zoom")))
-        self.zoom_combo = QComboBox()
+        self.zoom_combo = AnimatedComboBox()
         self.zoom_combo.addItems([f"{z}%" for z in ZOOM_LEVELS])
         self.zoom_combo.setCurrentIndex(1)
         self.zoom_combo.currentIndexChanged.connect(self._refresh_canvas)
@@ -554,7 +554,7 @@ class MapTab(QWidget):
         if x < 0 or x >= w or y < 0 or y >= h:
             return
         ev = self._event_at(x, y)
-        menu = QMenu(self)
+        menu = AnimatedMenu(self)
 
         if ev:
             s = maprender.event_summary(ev)

@@ -124,6 +124,76 @@ with tempfile.TemporaryDirectory() as td:
     assert "GameFont" in css and "Rus.ttf" in css
 print("   OK")
 
+print("6a) Авто-шрифт с кириллицей (patch_font_auto/restore/is_patched)...")
+import shutil
+from app.core.rpgmaker.fontpatch import (patch_font_auto, restore_font,
+                                         is_patched, _bundled_font)
+# MV: игра уже использует шрифт с кириллицей — не трогаем
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "fonts"))
+    shutil.copy2(_bundled_font(),
+                 os.path.join(td, "fonts", "NotoSans-Regular.ttf"))
+    with open(os.path.join(td, "fonts", "gamefont.css"), "w",
+              encoding="utf-8") as f:
+        f.write("@font-face { font-family: GameFont;\n"
+                '    src: url("NotoSans-Regular.ttf"); }')
+    report = patch_font_auto(td, "mv")
+    assert report.get("already")
+    assert not is_patched(td, "mv")
+# MV www-деплой: японский шрифт → NotoSans, откат возвращает оригинал
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "www", "fonts"))
+    with open(os.path.join(td, "www", "fonts", "gamefont.css"), "w",
+              encoding="utf-8") as f:
+        f.write("@font-face { font-family: GameFont;\n"
+                '    src: url("mplus-1m-regular.ttf"); }')
+    open(os.path.join(td, "www", "fonts", "mplus-1m-regular.ttf"),
+         "wb").write(b"x")
+    report = patch_font_auto(td, "mv")
+    assert not report.get("already")
+    assert report["font"] == "NotoSans-Regular.ttf"
+    css = open(os.path.join(td, "www", "fonts", "gamefont.css"),
+               encoding="utf-8").read()
+    assert 'url("NotoSans-Regular.ttf")' in css
+    assert os.path.isfile(os.path.join(td, "www", "fonts",
+                                       "NotoSans-Regular.ttf"))
+    assert is_patched(td, "mv")
+    # повторный авто-патч не дублирует манифест
+    patch_font_auto(td, "mv")
+    assert restore_font(td, "mv")
+    assert not is_patched(td, "mv")
+    assert not os.path.exists(os.path.join(td, "www", "fonts",
+                                           "NotoSans-Regular.ttf"))
+    css = open(os.path.join(td, "www", "fonts", "gamefont.css"),
+               encoding="utf-8").read()
+    assert 'url("mplus-1m-regular.ttf")' in css
+    # повторный откат — нечего возвращать
+    assert not restore_font(td, "mv")
+# MZ: System.json → NotoSans, откат возвращает японский шрифт
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "fonts"))
+    os.makedirs(os.path.join(td, "data"))
+    with open(os.path.join(td, "data", "System.json"), "w",
+              encoding="utf-8") as f:
+        json.dump({"advanced": {"mainFontFilename": "mplus-1m-regular.woff",
+                                "numberFontFilename": "mplus-2p-bold-sub.woff"}}, f)
+    open(os.path.join(td, "fonts", "mplus-1m-regular.woff"), "wb").write(b"x")
+    report = patch_font_auto(td, "mz")
+    assert not report.get("already")
+    adv = json.load(open(os.path.join(td, "data", "System.json"),
+                         encoding="utf-8"))["advanced"]
+    assert adv["mainFontFilename"] == "NotoSans-Regular.ttf"
+    assert adv["numberFontFilename"] == "NotoSans-Regular.ttf"
+    assert os.path.isfile(os.path.join(td, "fonts", "NotoSans-Regular.ttf"))
+    assert os.path.isfile(os.path.join(td, "data", "System.json.ob_backup"))
+    assert restore_font(td, "mz")
+    adv = json.load(open(os.path.join(td, "data", "System.json"),
+                         encoding="utf-8"))["advanced"]
+    assert adv["mainFontFilename"] == "mplus-1m-regular.woff"
+    assert not os.path.exists(os.path.join(td, "fonts",
+                                           "NotoSans-Regular.ttf"))
+print("   OK")
+
 print("7) Геометрия карт (maprender.tile_source)...")
 from app.core.rpgmaker import maprender
 assert maprender.tile_source(0) is None

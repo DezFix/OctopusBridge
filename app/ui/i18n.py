@@ -139,7 +139,10 @@ _STRINGS = {
     "welcome_open_folder": {"ru": "Открыть папку игры", "en": "Open game folder"},
     "dash_settings": {"ru": "Настройки", "en": "Settings"},
     "dash_font": {"ru": "Шрифт с кириллицей", "en": "Cyrillic font"},
+    "dash_font_common": {"ru": "Шрифт", "en": "Font"},
+    "dash_font_cyr": {"ru": "Кириллица", "en": "Cyrillic"},
     "dash_font_size": {"ru": "Размер шрифта в игре", "en": "In-game font size"},
+    "dash_font_size_lbl": {"ru": "Размер", "en": "Size"},
     "dash_font_smaller": {
         "ru": "Сделать текст игры меньше", "en": "Make in-game text smaller"},
     "dash_font_bigger": {
@@ -1170,6 +1173,14 @@ _STRINGS = {
     "res_font_restore": {
         "ru": "Откатить шрифт",
         "en": "Restore font",
+    },
+    "res_font_choose": {
+        "ru": "Свой шрифт…",
+        "en": "Own font…",
+    },
+    "res_font_nothing": {
+        "ru": "Нечего откатывать — шрифт не менялся",
+        "en": "Nothing to restore — font was not patched",
     },
     "res_font_done_renpy": {
         "ru": "Заменено шрифтов: {n}. Оригиналы в game/ob_fonts_orig — "

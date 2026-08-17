@@ -17,14 +17,14 @@ from PySide6.QtGui import QPixmap, QImage, QMouseEvent, QWheelEvent
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
-    QComboBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMessageBox, QPushButton, QScrollArea,
-    QSlider, QSplitter, QVBoxLayout, QWidget, QMenu,
+    QSlider, QSplitter, QVBoxLayout, QWidget,
 )
 
 from app.ui.i18n import TR
 from app.ui.icons import icon
-from app.ui.theme import C_BG, C_TEXT_SECONDARY
+from app.ui.theme import C_BG, C_TEXT_SECONDARY, AnimatedComboBox, AnimatedMenu
 
 IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 RPGM_ENC_IMG = (".png_", ".rpgmvp")
@@ -172,7 +172,7 @@ class ImageZoomLabel(QLabel):
     def _show_ctx_menu(self, pos):
         if self._pixmap is None or self._pixmap.isNull():
             return
-        menu = QMenu(self)
+        menu = AnimatedMenu(self)
         act = menu.addAction(TR("res_ctx_save"))
         act.triggered.connect(self._do_save)
         menu.exec(self.mapToGlobal(pos))
@@ -237,7 +237,7 @@ class ResourceTab(QWidget):
         ll.setContentsMargins(6, 6, 6, 6)
 
         top = QHBoxLayout()
-        self.dir_combo = QComboBox()
+        self.dir_combo = AnimatedComboBox()
         self.dir_combo.currentTextChanged.connect(self._fill_list)
         top.addWidget(self.dir_combo, 1)
         self.btn_back = QPushButton("")
@@ -254,7 +254,7 @@ class ResourceTab(QWidget):
         self.search.textChanged.connect(self._fill_list)
         row2 = QHBoxLayout()
         row2.addWidget(self.search, 1)
-        self.filter_combo = QComboBox()
+        self.filter_combo = AnimatedComboBox()
         self.filter_combo.addItem(TR("res_filter_all"), "")
         self.filter_combo.addItem(TR("res_filter_img"), TAG_IMAGE)
         self.filter_combo.addItem(TR("res_filter_audio"), TAG_AUDIO)
@@ -273,7 +273,15 @@ class ResourceTab(QWidget):
 
         self.btn_font = QPushButton(TR("res_font"))
         self.btn_font.clicked.connect(self._patch_font)
-        ll.addWidget(self.btn_font)
+        self.btn_font_choose = QPushButton(TR("res_font_choose"))
+        self.btn_font_choose.clicked.connect(self._patch_font_choose)
+        row_font = QHBoxLayout()
+        row_font.addWidget(self.btn_font, 1)
+        row_font.addWidget(self.btn_font_choose)
+        ll.addLayout(row_font)
+        self.btn_font_restore = QPushButton(TR("res_font_restore"))
+        self.btn_font_restore.clicked.connect(self._restore_font)
+        ll.addWidget(self.btn_font_restore)
         split.addWidget(left)
 
         # ── right panel ──
@@ -426,9 +434,15 @@ class ResourceTab(QWidget):
         self._archives.clear()
         self._in_archive = False
         self.btn_back.setVisible(False)
-        self.btn_font.setVisible(
-            bool(mod and "font" in mod.features)
-            and os.path.isdir(os.path.join(game_dir or "", "img")))
+        show_font = (bool(mod and "font" in mod.features)
+                     and os.path.isdir(os.path.join(game_dir or "", "img")))
+        self.btn_font.setVisible(show_font)
+        self.btn_font_choose.setVisible(show_font)
+        self.btn_font_restore.setVisible(show_font)
+        if show_font and self.main.project:
+            from app.core.rpgmaker import fontpatch as fp
+            self.btn_font_restore.setEnabled(
+                fp.is_patched(game_dir, self.main.project.engine))
         self.dir_combo.blockSignals(True)
         self.dir_combo.clear()
         if not game_dir:
@@ -973,7 +987,7 @@ class ResourceTab(QWidget):
         data = item.data(Qt.UserRole)
         if not data:
             return
-        menu = QMenu(self)
+        menu = AnimatedMenu(self)
         kind = data[0]
         if kind in ("audio", "archive_audio"):
             act = menu.addAction(TR("res_ctx_save_audio"))
@@ -1026,13 +1040,31 @@ class ResourceTab(QWidget):
         with open(path, "wb") as f:
             f.write(body)
 
-    # ── font (RPGM: выбор своего файла; Ren'Py — на главной странице) ──
+    # ── font (RPGM: авто-шрифт / свой файл / откат; Ren'Py — на главной) ──
     def _patch_font(self):
         p = self.main.project
         if not p:
             return
+        from app.core.rpgmaker import fontpatch as fp
+        try:
+            report = fp.patch_font_auto(p.game_dir, p.engine)
+        except Exception as e:
+            QMessageBox.critical(self, TR("res_font"), str(e))
+            return
+        self.btn_font_restore.setEnabled(True)
+        if report.get("already"):
+            QMessageBox.information(self, TR("done"), TR("res_font_already"))
+            return
+        QMessageBox.information(
+            self, TR("done"),
+            TR("res_font_done", font=report["font"]))
+
+    def _patch_font_choose(self):
+        p = self.main.project
+        if not p:
+            return
         path, _ = QFileDialog.getOpenFileName(
-            self, TR("res_font"), r"C:\Windows\Fonts",
+            self, TR("res_font_choose"), r"C:\Windows\Fonts",
             "Fonts (*.ttf *.otf *.woff)")
         if not path:
             return
@@ -1042,9 +1074,26 @@ class ResourceTab(QWidget):
         except Exception as e:
             QMessageBox.critical(self, TR("res_font"), str(e))
             return
+        self.btn_font_restore.setEnabled(True)
         QMessageBox.information(
             self, TR("done"),
             TR("res_font_done", font=report["font"]))
+
+    def _restore_font(self):
+        p = self.main.project
+        if not p:
+            return
+        from app.core.rpgmaker import fontpatch as fp
+        try:
+            changed = fp.restore_font(p.game_dir, p.engine)
+        except Exception as e:
+            QMessageBox.critical(self, TR("res_font_restore"), str(e))
+            return
+        self.btn_font_restore.setEnabled(
+            fp.is_patched(p.game_dir, p.engine))
+        QMessageBox.information(
+            self, TR("done"),
+            TR("res_font_restored") if changed else TR("res_font_nothing"))
 
 
 def _ms_to_str(ms: int) -> str:

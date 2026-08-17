@@ -2,6 +2,16 @@
 
 All notable changes to the project. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning follows [SemVer](https://semver.org/).
 
+## [0.6.8] — 2026-08-17
+
+### Added
+- **RPG Maker MV/MZ: one-click Cyrillic font patch** (`app/core/rpgmaker/fontpatch.py` rewritten). New `patch_font_auto` mode: the bundled NotoSans-Regular.ttf (Japanese + Cyrillic + Latin coverage) replaces the current font only when the game's font lacks Cyrillic (sfnt-cmap check; woff/woff2/corrupt files count as «no Cyrillic» — NotoSans replaces them losslessly). MV supports the `www/fonts` deploy layout; MZ writes `advanced.mainFontFilename`/`numberFontFilename` in `data/System.json`. Originals are backed up (`*.ob_backup`) and the `ob_font.json` manifest tracks added files; `restore_font()` returns them, repeated auto-patch does not duplicate the manifest.
+- **Custom font file** ("Own font…" button in the resource browser) — pick any `.ttf/.otf/.woff` via file dialog; the restore button reverts to the original font.
+- **Unified font block on the dashboard** (welcome tab): "Cyrillic" row + "Size" row for RPG Maker MV/MZ and Ren'Py, shown per engine/variant (`is_patched` per engine).
+- **Animated UI polish**: `AnimatedComboBox` (chevron rotates 180° on open, custom-drawn), `AnimatedMenu` (check/right-arrow indicators from PNG assets), `AnimatedTabWidget` (fade transition), slide animations — applied across main window, resource browser, event editor, cheat tab, settings dialog, contexts menus.
+- **QSS asset URLs fixed on Windows**: `file://` and `data:` URIs don't load in QSS on Windows — `_asset_url` now returns a plain forward-slash path.
+- **Font-patch tests** (test_rpgmaker.py): MV auto-patch skips Cyrillic-capable fonts, www-deploy patch + manifest + restore round-trip, MZ System.json patch/restore.
+
 ## [0.6.7] — 2026-08-15
 
 ### Added

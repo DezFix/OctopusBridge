@@ -25,7 +25,7 @@ from app.ui.i18n import TR
 from app.ui.icons import icon
 from app.ui.theme import (C_CARD, C_CARD_HOVER, C_PRIMARY,
                           C_SURFACE, C_TEXT, C_TEXT_DIM, C_TEXT_SECONDARY,
-                          RADIUS_LG, RADIUS_MD)
+                          RADIUS_LG, RADIUS_MD, AnimatedMenu)
 
 _ENGINE_COLORS = {
     "mz": "#43a047",
@@ -252,8 +252,7 @@ class ProjectsTab(QWidget):
 
     # ── контекстное меню ──
     def _show_project_menu(self, path: str, pos, card: QFrame):
-        from PySide6.QtWidgets import QMenu
-        menu = QMenu(self)
+        menu = AnimatedMenu(self)
         act_open = menu.addAction(TR("welcome_open"))
         act_folder = menu.addAction(TR("projects_open_folder"))
         act_rename = menu.addAction(TR("welcome_edit_name"))

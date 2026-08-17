@@ -13,7 +13,7 @@ import os
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox,
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox,
                                 QGridLayout, QGroupBox, QHBoxLayout,
                                 QHeaderView, QLabel, QLineEdit, QMessageBox,
                                 QPushButton, QSpinBox, QTableWidget,
@@ -26,6 +26,7 @@ from app.core.rpgmaker.varnames import (extract_names,
 from app.core.translate.service import Translator
 from app.ui.i18n import TR
 from app.ui.loading_overlay import BusyLabel
+from app.ui.theme import AnimatedComboBox
 
 CHANGED_COLOR = QColor(255, 255, 150)  # жёлтый фон для изменённых ячеек
 
@@ -326,7 +327,7 @@ class CheatTab(QWidget):
         self.item_search = QLineEdit()
         self.item_search.textChanged.connect(self._fill_items)
         filt.addWidget(self.item_search, 1)
-        self.item_kind = QComboBox()
+        self.item_kind = AnimatedComboBox()
         self.item_kind.addItems([TR("cheat_kind_all"), TR("cheat_kind_items"),
                                  TR("cheat_kind_weapons"), TR("cheat_kind_armor")])
         self.item_kind.currentIndexChanged.connect(self._fill_items)

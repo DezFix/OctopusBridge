@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (QFileDialog, QFormLayout, QGroupBox,
 
 from app.ui.i18n import TR
 from app.ui.icons import icon
-from app.ui.theme import (C_SURFACE, C_TEXT, C_TEXT_SECONDARY,
+from app.ui.theme import (C_SURFACE, C_TEXT, C_TEXT_DIM, C_TEXT_SECONDARY,
                           RADIUS_LG)
 
 
@@ -239,21 +239,38 @@ class WelcomeTab(QWidget):
 
         lay.addWidget(actions_box)
 
-        # font patch (Ren'Py): жёсткая замена шрифтов на кириллический
-        self.font_box = QGroupBox(TR("dash_font"))
-        font_lay = QHBoxLayout(self.font_box)
+        # font: единый блок — кириллица (RPG Maker MV/MZ, Ren'Py)
+        # и размер шрифта в игре (MV/MZ, Ren'Py)
+        self.font_box = QGroupBox(TR("dash_font_common"))
+        font_lay = QVBoxLayout(self.font_box)
+        font_lay.setSpacing(6)
+
+        # ряд 1: замена шрифта на кириллический
+        self.cyr_row = QWidget()
+        cyr_lay = QHBoxLayout(self.cyr_row)
+        cyr_lay.setContentsMargins(0, 0, 0, 0)
+        cyr_lay.setSpacing(6)
+        lbl_cyr = QLabel(TR("dash_font_cyr"))
+        lbl_cyr.setStyleSheet(
+            f"color: {C_TEXT_DIM}; background: transparent;")
+        cyr_lay.addWidget(lbl_cyr)
         self.btn_font_patch = QPushButton(TR("res_font"))
         self.btn_font_patch.clicked.connect(self._font_patch)
-        font_lay.addWidget(self.btn_font_patch, 1)
+        cyr_lay.addWidget(self.btn_font_patch, 1)
         self.btn_font_restore = QPushButton(TR("res_font_restore"))
         self.btn_font_restore.clicked.connect(self._font_restore)
-        font_lay.addWidget(self.btn_font_restore)
-        self.font_box.setVisible(False)
-        lay.addWidget(self.font_box)
+        cyr_lay.addWidget(self.btn_font_restore)
+        font_lay.addWidget(self.cyr_row)
 
-        # font size (RPG Maker MV/MZ, Ren'Py): уменьшить/увеличить
-        self.size_box = QGroupBox(TR("dash_font_size"))
-        size_lay = QHBoxLayout(self.size_box)
+        # ряд 2: размер шрифта в игре
+        self.size_row = QWidget()
+        size_lay = QHBoxLayout(self.size_row)
+        size_lay.setContentsMargins(0, 0, 0, 0)
+        size_lay.setSpacing(6)
+        lbl_size = QLabel(TR("dash_font_size_lbl"))
+        lbl_size.setStyleSheet(
+            f"color: {C_TEXT_DIM}; background: transparent;")
+        size_lay.addWidget(lbl_size)
         self.btn_font_smaller = QPushButton("A−")
         self.btn_font_smaller.setToolTip(TR("dash_font_smaller"))
         self.btn_font_smaller.clicked.connect(
@@ -268,8 +285,10 @@ class WelcomeTab(QWidget):
         self.btn_font_bigger.clicked.connect(
             lambda: self._font_size_change(+2))
         size_lay.addWidget(self.btn_font_bigger)
-        self.size_box.setVisible(False)
-        lay.addWidget(self.size_box)
+        font_lay.addWidget(self.size_row)
+
+        self.font_box.setVisible(False)
+        lay.addWidget(self.font_box)
 
         lay.addStretch(1)
         return w
@@ -291,15 +310,27 @@ class WelcomeTab(QWidget):
         self.lbl_engine.setText(module.display if module else "—")
         self.lbl_path.setText(p.game_dir)
 
-        renpy_mode = bool(module and module.key == "renpy")
-        self.font_box.setVisible(renpy_mode)
-        if renpy_mode:
-            from app.core.renpy import fontpatch
-            self.btn_font_restore.setVisible(
-                fontpatch.is_patched(p.game_dir))
+        key = module.key if module else ""
+        variant = getattr(module, "variant", "") or ""
+
+        # ряд «Кириллица»: RPG Maker MV/MZ и Ren'Py
+        cyr_supported = key in ("rpgmaker", "renpy")
+        self.cyr_row.setVisible(cyr_supported)
+        if cyr_supported:
+            if key == "rpgmaker":
+                from app.core.rpgmaker import fontpatch
+                patched = fontpatch.is_patched(p.game_dir, variant)
+            else:
+                from app.core.renpy import fontpatch
+                patched = fontpatch.is_patched(p.game_dir)
+            self.btn_font_restore.setVisible(patched)
 
         self._refresh_font_size()
         self._refresh_stats()
+
+        # блок целиком виден, если виден хотя бы один ряд
+        self.font_box.setVisible(not self.cyr_row.isHidden()
+                                 or not self.size_row.isHidden())
 
     def _font_size_engine(self) -> str:
         mod = self.main.engine_module
@@ -311,15 +342,15 @@ class WelcomeTab(QWidget):
         p = self.main.project
         mod = self.main.engine_module
         if not p or not mod:
-            self.size_box.setVisible(False)
+            self.size_row.setVisible(False)
             return
         from app.core import fontsize
         cur = fontsize.get_font_size(p.game_dir,
                                      self._font_size_engine())
         if cur is None:
-            self.size_box.setVisible(False)
+            self.size_row.setVisible(False)
             return
-        self.size_box.setVisible(True)
+        self.size_row.setVisible(True)
         self.lbl_font_size.setText(f"{cur} px")
 
     def _font_size_change(self, delta: int):
@@ -468,33 +499,51 @@ class WelcomeTab(QWidget):
         self.btn_launch.setIcon(icon("play"))
 
     # ===================================================================
-    #  Font patch (Ren'Py)
+    #  Font patch (RPG Maker MV/MZ, Ren'Py)
     # ===================================================================
     def _font_patch(self):
         p = self.main.project
-        if not p:
+        mod = self.main.engine_module
+        if not p or not mod:
             return
-        from app.core.renpy import fontpatch
         try:
-            report = fontpatch.patch_font(p.game_dir)
+            if mod.key == "rpgmaker":
+                from app.core.rpgmaker import fontpatch
+                report = fontpatch.patch_font_auto(p.game_dir, mod.variant)
+                if report.get("already"):
+                    QMessageBox.information(
+                        self, TR("done"), TR("res_font_already"))
+                    return
+                QMessageBox.information(
+                    self, TR("done"),
+                    TR("res_font_done", font=report.get("font", "")))
+            else:
+                from app.core.renpy import fontpatch
+                report = fontpatch.patch_font(p.game_dir)
+                if report["replaced"]:
+                    QMessageBox.information(
+                        self, TR("done"),
+                        TR("res_font_done_renpy", n=report["replaced"]))
+                else:
+                    QMessageBox.information(
+                        self, TR("done"), TR("res_font_already"))
         except Exception as e:
             QMessageBox.critical(self, TR("dash_font"), str(e))
             return
-        if report["replaced"]:
-            QMessageBox.information(
-                self, TR("done"),
-                TR("res_font_done_renpy", n=report["replaced"]))
-        else:
-            QMessageBox.information(self, TR("done"), TR("res_font_already"))
         self.refresh_dashboard()
 
     def _font_restore(self):
         p = self.main.project
-        if not p:
+        mod = self.main.engine_module
+        if not p or not mod:
             return
-        from app.core.renpy import fontpatch
         try:
-            fontpatch.restore_font(p.game_dir)
+            if mod.key == "rpgmaker":
+                from app.core.rpgmaker import fontpatch
+                fontpatch.restore_font(p.game_dir, mod.variant)
+            else:
+                from app.core.renpy import fontpatch
+                fontpatch.restore_font(p.game_dir)
         except Exception as e:
             QMessageBox.critical(self, TR("err"), str(e))
             return

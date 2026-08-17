@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QUrl
-from PySide6.QtGui import QColor, QFont, QPalette
-from PySide6.QtWidgets import (QApplication,
-                                QLabel,
-                                QWidget)
+from PySide6.QtCore import (Property, QAbstractAnimation, QEasingCurve,
+                             QPropertyAnimation, Qt)
+from PySide6.QtGui import QColor, QFont, QPainter, QPalette, QPen
+from PySide6.QtWidgets import (QApplication, QComboBox,
+                                QGraphicsOpacityEffect, QLabel, QMenu,
+                                QTabWidget, QWidget)
 
 from app import bundle_dir
 
@@ -81,14 +82,16 @@ C_GROUP_BORDER = "#2e3243"
 
 
 def _asset_url(name: str) -> str:
-    """file:// URL иконки из assets/ (рядом с exe/репозиторием)."""
-    path = os.path.join(bundle_dir(), "assets", name)
-    return QUrl.fromLocalFile(path).toString()
+    """Путь к иконке из assets/ для QSS. file:// и data: URI в QSS
+    на Windows не грузятся — нужен чистый путь со слэшами."""
+    return os.path.join(bundle_dir(), "assets", name).replace("\\", "/")
 
 
 _COMBO_ARROW = _asset_url("chevron-down.png")
 _SPIN_UP = _asset_url("chevron-up.png")
 _SPIN_DOWN = _asset_url("chevron-down.png")
+_MENU_RIGHT = _asset_url("chevron-right.png")
+_MENU_CHECK = _asset_url("check.png")
 
 _QSS = f"""
 * {{
@@ -177,6 +180,18 @@ QMenu::separator {{
 QMenu::indicator {{
     width: 14px;
     height: 14px;
+}}
+QMenu::indicator:checked {{
+    image: url("{_MENU_CHECK}");
+}}
+QMenu::indicator:checked:exclusive {{
+    image: url("{_MENU_CHECK}");
+}}
+QMenu::right-arrow {{
+    image: url("{_MENU_RIGHT}");
+    width: 14px;
+    height: 14px;
+    margin-right: 2px;
 }}
 
 /* ── Toolbar buttons ── */
@@ -347,12 +362,14 @@ QComboBox:hover {{
 }}
 QComboBox::drop-down {{
     border: none;
-    width: 24px;
+    width: 28px;
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
 }}
 QComboBox::down-arrow {{
     image: url("{_COMBO_ARROW}");
-    width: 12px;
-    height: 12px;
+    width: 14px;
+    height: 14px;
     margin-right: 4px;
 }}
 QComboBox QAbstractItemView {{
@@ -687,3 +704,163 @@ def slide_in(widget: QWidget, direction: str = "left", duration: int = 250):
     anim.setEasingCurve(QEasingCurve.OutCubic)
     anim.start()
     widget._slide_anim = anim
+
+
+# ======================================================================
+#  AnimatedComboBox — поворот стрелки при открытии выпадающего списка
+# ======================================================================
+
+class _ComboChevron(QWidget):
+    """Стрелка-шеврон, рисуется отдельным виджетом (без вмешательства
+    в paintEvent комбобокса). Свойство angle анимируется QPropertyAnimation."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._angle = 0.0
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFixedSize(16, 16)
+
+    def _get_angle(self) -> float:
+        return self._angle
+
+    def _set_angle(self, value: float):
+        self._angle = value
+        self.update()
+
+    angle = Property(float, fget=_get_angle, fset=_set_angle)
+
+    def paintEvent(self, event):  # noqa: N802 — переопределение Qt
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor(C_TEXT_SECONDARY), 1.8,
+                   Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+                   Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.translate(self.width() / 2, self.height() / 2)
+        p.rotate(self._angle)
+        p.drawLine(-4.5, -2.0, 0.0, 2.5)
+        p.drawLine(4.5, -2.0, 0.0, 2.5)
+        p.end()
+
+
+class AnimatedComboBox(QComboBox):
+    """QComboBox с плавным поворотом стрелки (180° ↔ 0°) при открытии/закрытии."""
+
+    _ROTATION_MS = 160
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Стандартная QSS-стрелка не нужна — рисуем свою
+        self.setStyleSheet(
+            "QComboBox::down-arrow { image: none; width: 0px; height: 0px; }")
+        self._chevron = _ComboChevron(self)
+        self._chevron_anim: QPropertyAnimation | None = None
+        self._reposition_chevron()
+
+    def resizeEvent(self, event):  # noqa: N802 — переопределение Qt
+        super().resizeEvent(event)
+        self._reposition_chevron()
+
+    def _reposition_chevron(self):
+        w = 16
+        x = self.width() - 28 + (28 - w) // 2
+        y = max(0, (self.height() - w) // 2)
+        self._chevron.setGeometry(x, y, w, w)
+
+    def _animate_chevron(self, target: float, then=None):
+        anim = QPropertyAnimation(self._chevron, b"angle", self)
+        anim.setDuration(self._ROTATION_MS)
+        anim.setStartValue(self._chevron.angle)
+        anim.setEndValue(target)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        if then is not None:
+            anim.finished.connect(then)
+        if (self._chevron_anim is not None
+                and self._chevron_anim.state()
+                != QAbstractAnimation.State.Stopped):
+            self._chevron_anim.stop()
+        self._chevron_anim = anim
+        anim.start()
+
+    def showPopup(self):  # noqa: N802 — переопределение Qt
+        super().showPopup()
+        self._animate_chevron(180.0)
+
+    def hidePopup(self):  # noqa: N802 — переопределение Qt
+        # Закрываем попап СРАЗУ (Qt ждёт синхронного закрытия при клике
+        # по пункту), анимация стрелки идёт параллельно.
+        super().hidePopup()
+        self._animate_chevron(0.0)
+
+
+# ======================================================================
+#  AnimatedMenu — fade-in при появлении контекстного меню
+# ======================================================================
+
+class AnimatedMenu(QMenu):
+    """QMenu с плавным появлением (fade 120 мс). QMenu — top-level окно,
+    поэтому windowOpacity работает корректно."""
+
+    _FADE_MS = 120
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._anim: QPropertyAnimation | None = None
+
+    def showEvent(self, event):  # noqa: N802 — переопределение Qt
+        super().showEvent(event)
+        self.setWindowOpacity(0.0)
+        anim = QPropertyAnimation(self, b"windowOpacity", self)
+        anim.setDuration(self._FADE_MS)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        if (self._anim is not None
+                and self._anim.state() != QAbstractAnimation.State.Stopped):
+            self._anim.stop()
+        self._anim = anim
+        anim.start()
+
+
+# ======================================================================
+#  AnimatedTabWidget — fade при переключении вкладок
+# ======================================================================
+
+class AnimatedTabWidget(QTabWidget):
+    """QTabWidget с плавным появлением вкладки (fade через
+    QGraphicsOpacityEffect — работает и для дочерних виджетов)."""
+
+    _FADE_MS = 140
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._fade_effect: QGraphicsOpacityEffect | None = None
+        self._fade_anim: QPropertyAnimation | None = None
+        self.currentChanged.connect(self._fade_in)
+
+    def _fade_in(self, index: int):
+        widget = self.widget(index)
+        if widget is None:
+            return
+
+        def _cleanup():
+            # Убираем эффект после завершения, чтобы не влиять на
+            # отрисовку сложных виджетов (таблицы, скроллы и т.п.)
+            if widget.graphicsEffect() is effect:
+                widget.setGraphicsEffect(None)
+
+        effect = QGraphicsOpacityEffect(widget)
+        widget.setGraphicsEffect(effect)
+        anim = QPropertyAnimation(effect, b"opacity", self)
+        anim.setDuration(self._FADE_MS)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.finished.connect(_cleanup)
+        if (self._fade_anim is not None
+                and self._fade_anim.state() != QAbstractAnimation.State.Stopped):
+            self._fade_anim.stop()
+        self._fade_effect = effect
+        self._fade_anim = anim
+        anim.start()

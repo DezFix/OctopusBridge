@@ -11,10 +11,10 @@ from PySide6.QtGui import (QAction, QActionGroup, QColor, QFont, QIcon,
                            QPainterPath, QPen, QPixmap, QShortcut)
 from PySide6.QtWidgets import (QAbstractItemDelegate, QAbstractItemView,
                                QApplication, QButtonGroup, QCheckBox,
-                               QComboBox, QDialog, QDialogButtonBox,
+                               QDialog, QDialogButtonBox,
                                QFormLayout,
                                QFileDialog, QFrame, QHBoxLayout, QHeaderView,
-                               QLabel, QLineEdit, QMenu, QMessageBox,
+                               QLabel, QLineEdit, QMessageBox,
                                QPlainTextEdit, QProgressBar, QPushButton,
                                QRadioButton, QScrollArea,
                                QSplitter,
@@ -31,7 +31,7 @@ from app.ui.loading_overlay import BusyLabel
 from app.ui.theme import (C_ACCENT, C_BG, C_GROUP_BORDER,
                           C_PILL_DONE, C_PILL_DRAFT, C_PILL_EMPTY_FG,
                           C_PRIMARY, C_TEXT, C_TEXT_SECONDARY,
-                          C_TRACK)
+                          C_TRACK, AnimatedComboBox, AnimatedMenu)
 
 # ── columns ──
 COL_IDX, COL_CTX, COL_ORIG, COL_TRANS, COL_STATUS = range(5)
@@ -725,7 +725,7 @@ class TranslateTab(QWidget):
         self._act_new.setCheckable(True)
         self._act_all.setCheckable(True)
         self._act_new.setChecked(True)
-        menu = QMenu(self.btn_translate)
+        menu = AnimatedMenu(self.btn_translate)
         menu.addAction(self._act_new)
         menu.addAction(self._act_all)
         self._lang_menu = menu.addMenu(TR("tr_translate_lang"))
@@ -872,7 +872,7 @@ class TranslateTab(QWidget):
         self._crumb_holder = QHBoxLayout()
         self._crumb_holder.setSpacing(6)
         hdr.addLayout(self._crumb_holder, 1)
-        self.view_filter = QComboBox()
+        self.view_filter = AnimatedComboBox()
         self.view_filter.setObjectName("chip_filter")
         self.view_filter.addItems([
             TR("tr_mode_new"), TR("tr_filter_all_lines"),
@@ -1342,7 +1342,7 @@ class TranslateTab(QWidget):
             return
         row = index.row()
         orig, trans = self._row_texts(row)
-        menu = QMenu(self.table)
+        menu = AnimatedMenu(self.table)
         act_orig = menu.addAction(TR("tr_copy_original"))
         act_orig.setEnabled(bool(orig))
         act_trans = menu.addAction(TR("tr_copy_translation"))
@@ -1918,9 +1918,9 @@ class _TermEditDialog(QDialog):
         self.ed_tr = QLineEdit(tr)
         form.addRow(TR("glossary_term_tr"), self.ed_tr)
 
-        self.cb_group = QComboBox()
+        self.cb_group = AnimatedComboBox()
         self.cb_group.setEditable(True)
-        self.cb_group.setInsertPolicy(QComboBox.NoInsert)
+        self.cb_group.setInsertPolicy(AnimatedComboBox.NoInsert)
         self.cb_group.addItem(TR("glossary_group_none"))
         for g in (groups or []):
             if g:
@@ -1969,13 +1969,13 @@ class GlossaryDialog(QDialog):
         # ── верх: источник → целевой язык ──
         top = QHBoxLayout()
         top.addWidget(QLabel(TR("glossary_src")))
-        self.cb_src = QComboBox()
+        self.cb_src = AnimatedComboBox()
         for code in self._LANG_CODES:
             self.cb_src.addItem(TR(self._LANG_KEYS[code]), userData=code)
         top.addWidget(self.cb_src)
         top.addWidget(QLabel("→"))
         top.addWidget(QLabel(TR("glossary_tgt")))
-        self.cb_tgt = QComboBox()
+        self.cb_tgt = AnimatedComboBox()
         for code in self._LANG_CODES:
             self.cb_tgt.addItem(TR(self._LANG_KEYS[code]), userData=code)
         top.addWidget(self.cb_tgt)
@@ -2007,7 +2007,7 @@ class GlossaryDialog(QDialog):
                               QLineEdit.LeadingPosition)
         self.search.textChanged.connect(self._fill)
         filt.addWidget(self.search, 1)
-        self.cb_group = QComboBox()
+        self.cb_group = AnimatedComboBox()
         self.cb_group.currentIndexChanged.connect(self._fill)
         filt.addWidget(self.cb_group)
         lay.addLayout(filt)

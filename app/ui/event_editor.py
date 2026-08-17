@@ -20,14 +20,15 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                                QFormLayout, QHBoxLayout, QLabel, QLineEdit,
-                               QListWidget, QListWidgetItem, QMenu,
+                               QListWidget, QListWidgetItem,
                                QMessageBox, QPushButton, QScrollArea,
-                               QSpinBox, QTabWidget, QTextEdit, QVBoxLayout,
+                               QSpinBox, QTextEdit, QVBoxLayout,
                                QWidget)
 
 from app.core.rpgmaker import commands as C
 from app.core.rpgmaker import maprender
 from app.ui.i18n import TR, current_lang
+from app.ui.theme import AnimatedComboBox, AnimatedMenu, AnimatedTabWidget
 
 
 def _CL() -> str:
@@ -197,7 +198,7 @@ class _ParamRow(QWidget):
         lay.addWidget(QLabel(label))
         if typ == "e":
             options = spec[2]
-            self.widget = QComboBox()
+            self.widget = AnimatedComboBox()
             self.widget.addItems(options)
             if isinstance(value, int) and 0 <= value < len(options):
                 self.widget.setCurrentIndex(value)
@@ -388,7 +389,7 @@ class _CondDialog(QDialog):
         lay = QVBoxLayout(self)
         form = QFormLayout()
         t = params[0] if params else 0
-        self.cb_type = QComboBox()
+        self.cb_type = AnimatedComboBox()
         self.cb_type.addItems(self._types())
         self.cb_type.setCurrentIndex(t)
         self.cb_type.currentIndexChanged.connect(self._sync)
@@ -399,7 +400,7 @@ class _CondDialog(QDialog):
         self.sp2 = QSpinBox()
         self.sp2.setRange(-2_000_000_000, 2_000_000_000)
         self.ed_script = QLineEdit()
-        self.cb_op = QComboBox()
+        self.cb_op = AnimatedComboBox()
         self.cb_op.addItems(["==", ">=", "<=", ">", "<", "!="])
         form.addRow(TR("cmd_cond_p1"), self.sp1)
         form.addRow(TR("cmd_cond_op"), self.cb_op)
@@ -493,7 +494,7 @@ class _RouteDialog(QDialog):
         lay.addWidget(btns)
 
     def _add(self):
-        menu = QMenu(self)
+        menu = AnimatedMenu(self)
         for code in sorted(C.ROUTE_COMMANDS):
             name = C.route_command_name(code, _CL())
             act = menu.addAction(name)
@@ -577,7 +578,7 @@ class _CommandListEditor(QWidget):
         return cmd_indent(cmd)
 
     def _add(self):
-        menu = QMenu(self)
+        menu = AnimatedMenu(self)
         for group in C.groups(_CL()):
             sub = menu.addMenu(group)
             for code in sorted(C.COMMANDS):
@@ -727,7 +728,7 @@ class _PageEditor(QWidget):
         props.setFixedWidth(380)
         form = QFormLayout(props)
 
-        self.cb_image = QComboBox()
+        self.cb_image = AnimatedComboBox()
         self._char_names = self._characters()
         self.cb_image.addItem(TR("ev_none"))
         self.cb_image.addItems(self._char_names)
@@ -737,7 +738,7 @@ class _PageEditor(QWidget):
         img_row = QHBoxLayout()
         self.sp_char_index = QSpinBox()
         self.sp_char_index.setRange(0, 7)
-        self.sp_direction = QComboBox()
+        self.sp_direction = AnimatedComboBox()
         self.sp_direction.addItems(list(_dirs().values()))
         self.sp_pattern = QSpinBox()
         self.sp_pattern.setRange(1, 3)
@@ -755,15 +756,15 @@ class _PageEditor(QWidget):
         self.sp_tile.setRange(0, 8191)
         form.addRow(TR("ev_tile"), self.sp_tile)
 
-        self.cb_trigger = QComboBox()
+        self.cb_trigger = AnimatedComboBox()
         self.cb_trigger.addItems(_triggers())
         form.addRow(TR("ev_trigger"), self.cb_trigger)
 
-        self.cb_priority = QComboBox()
+        self.cb_priority = AnimatedComboBox()
         self.cb_priority.addItems(_priorities())
         form.addRow(TR("ev_priority"), self.cb_priority)
 
-        self.cb_move = QComboBox()
+        self.cb_move = AnimatedComboBox()
         self.cb_move.addItems(_moves())
         form.addRow(TR("ev_move"), self.cb_move)
 
@@ -823,7 +824,7 @@ class _PageEditor(QWidget):
         r3.addStretch(1)
         cl.addLayout(r3)
         self.cb_self = QCheckBox(TR("ev_self"))
-        self.sp_self = QComboBox()
+        self.sp_self = AnimatedComboBox()
         self.sp_self.addItems(["A", "B", "C", "D"])
         r4 = QHBoxLayout()
         r4.addWidget(self.cb_self)
@@ -1007,7 +1008,7 @@ class EventEditorDialog(QDialog):
 
         pages_row = QHBoxLayout()
         pages_row.addWidget(QLabel(TR("ev_pages")))
-        self.cb_pages = QComboBox()
+        self.cb_pages = AnimatedComboBox()
         self.cb_pages.currentIndexChanged.connect(self._page_changed)
         pages_row.addWidget(self.cb_pages, 1)
         btn_add_page = QPushButton(TR("ev_add_page"))
@@ -1020,7 +1021,7 @@ class EventEditorDialog(QDialog):
             pages_row.addWidget(b)
         lay.addLayout(pages_row)
 
-        self.tabs = QTabWidget()
+        self.tabs = AnimatedTabWidget()
         lay.addWidget(self.tabs, 1)
 
         btns = QDialogButtonBox(QDialogButtonBox.Save
