@@ -66,8 +66,6 @@ OctopusBridge translates and mods PC games. Translation is **batch-based**: text
 | 🧠 **AI corrector** | Polishes translations using glossary + context, and shows you a diff to review before applying. |
 | 🌙 **Clean UI** | Dark theme, Russian/English, system tray, drag-and-drop, built-in changelog. |
 
-**Under the hood:** old translations are automatically restored on re-extraction, CSV import/export is supported, and all engines share a single unified cache (`octopus_cache.json`) written to the game folder — legacy caches are migrated automatically.
-
 ---
 
 ## Screenshots
