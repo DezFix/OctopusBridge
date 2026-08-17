@@ -59,14 +59,8 @@ TERMS_LIST_FIELDS = ["basic", "commands", "params"]
 
 def detect_engine(game_dir: str) -> str:
     """Определяет движок: 'mz' | 'mv' | 'unknown'."""
-    js = os.path.join(game_dir, "js")
-    if os.path.exists(os.path.join(js, "rmmz_core.js")):
-        return "mz"
-    if os.path.exists(os.path.join(js, "rpg_core.js")):
-        return "mv"
-    if os.path.exists(os.path.join(game_dir, "www", "js", "rpg_core.js")):
-        return "mv"
-    return "unknown"
+    from .variant import detect_variant
+    return detect_variant(game_dir)
 
 
 def find_data_dir(game_dir: str) -> str:
@@ -197,21 +191,62 @@ def _plugin_text_candidate(s: str) -> bool:
     return not low.startswith(_PLUGIN_SKIP_STARTS)
 
 
-def extract_plugins(game_dir: str, data_dir: str, on_skip=None) -> list:
+def _read_plugins(path: str, variant: str = "") -> list | None:
+    """plugins.js: MZ — JSON-массив '[...]' в data/, MV — JS-скрипт
+    'var $plugins = [...];' в js/. Возвращает список или None.
+
+    Основной парсер выбирается по варианту, при неудаче пробуем другой
+    (страховка для нестандартных деплоев).
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except (OSError, UnicodeDecodeError):
+        return None
+    from .variant import is_mv
+    order = ("js", "json") if is_mv(variant) else ("json", "js")
+    for mode in order:
+        if mode == "json":
+            if not text.lstrip().startswith("["):
+                continue
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                continue
+        else:
+            if text.lstrip().startswith("["):
+                continue
+            try:
+                start = text.index("[")
+                end = text.rindex("]") + 1
+                # MV-редактор пишет висячие запятые перед ']'/'}' (JS)
+                return json.loads(re.sub(r",(\s*[\]}])", r"\1",
+                                          text[start:end]))
+            except (ValueError, json.JSONDecodeError):
+                continue
+    return None
+
+
+def extract_plugins(game_dir: str, data_dir: str, on_skip=None,
+                    variant: str | None = None) -> list:
     """Тексты из включённых js-плагинов (js/plugins/<name>.js).
 
-    Строковые литералы с фильтром на текст (не код/ключи/пути).
+    Список плагинов берём по варианту игры: MV — js/plugins.js
+    (JS-скрипт), MZ — data/plugins.js (JSON-массив). Строковые
+    литералы с фильтром на текст (не код/ключи/пути).
     Возвращает записи с json_path "#plugin:<n>" — внедрение идёт
     по содержимому литерала в тексте файла.
     """
+    from .variant import detect_variant, plugins_list_rel
+    if variant is None:
+        variant = detect_variant(game_dir)
     js_dir = "www/js" if data_dir.startswith("www/") else "js"
-    plugins_path = os.path.join(game_dir, js_dir, "plugins.js")
-    try:
-        with open(plugins_path, encoding="utf-8") as f:
-            plugins = json.load(f)
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+    rel = plugins_list_rel(variant, game_dir, data_dir)
+    if not rel:
         return []
-    if not isinstance(plugins, list):
+    plugins = _read_plugins(
+        os.path.join(game_dir, rel.replace("/", os.sep)), variant)
+    if not plugins:
         return []
     ex = _Extractor()
     for pl in plugins:
@@ -220,6 +255,13 @@ def extract_plugins(game_dir: str, data_dir: str, on_skip=None) -> list:
         name = pl.get("name", "")
         if not name or name.startswith(_PLUGIN_SKIP_PREFIXES):
             continue
+        # имена параметров (из plugins.js) — это КЛЮЧИ, а не текст:
+        # плагины читают их через Parameters['Default Rows']; перевод
+        # ключа ломает плагин (YEP_MessageCore и др. зависают на
+        # старте новой игры). Пропускаем точные совпадения.
+        params = pl.get("parameters")
+        param_keys = ({str(k) for k in params.keys()}
+                      if isinstance(params, dict) else set())
         # plugins.js хранит имя с расширением ("MyPlugin.js") — не
         # приклеиваем ".js" повторно
         js_name = name[:-3] if name.lower().endswith(".js") else name
@@ -236,6 +278,8 @@ def extract_plugins(game_dir: str, data_dir: str, on_skip=None) -> list:
         rel = f"{js_dir}/plugins/{js_name}.js"
         n = 0
         for s in extract_js_strings(code):
+            if s.strip() in param_keys:
+                continue
             if _plugin_text_candidate(s):
                 ex.add(rel, f"{_PLUGIN_MARK}{n}", f"plugin {name}", s)
                 n += 1
@@ -274,6 +318,8 @@ class _Extractor:
     # ── команды событий ──
     def event_list(self, file: str, base: str, cmd_list: list, context: str):
         for i, cmd in enumerate(cmd_list):
+            if not isinstance(cmd, dict):
+                continue
             code = cmd.get("code")
             params = cmd.get("parameters") or []
             p = f"{base}[{i}].parameters"
@@ -339,6 +385,8 @@ class _Extractor:
                 self.add(file, f"events[{ei}].name",
                          f"{file[:-5]} event name", ev["name"])
             for pi, page in enumerate(ev.get("pages") or []):
+                if not isinstance(page, dict):
+                    continue
                 ctx = (f"{file[:-5]} event "
                        f"'{ev.get('name', ei)}' p.{pi + 1}")
                 self.event_list(
@@ -362,6 +410,8 @@ class _Extractor:
             self.add(file, f"[{idx}].name",
                      f"enemy group #{idx}", tr.get("name", ""))
             for pi, page in enumerate(tr.get("pages") or []):
+                if not isinstance(page, dict):
+                    continue
                 self.event_list(
                     file, f"[{idx}].pages[{pi}].list",
                     page.get("list") or [],
@@ -380,6 +430,8 @@ class _Extractor:
         for j, v in enumerate(data.get("switches") or []):
             self.add(file, f"switches[{j}]", f"switch #{j}", v)
         terms = data.get("terms") or {}
+        if not isinstance(terms, dict):
+            terms = {}
         for fld in TERMS_LIST_FIELDS:
             for j, v in enumerate(terms.get(fld) or []):
                 self.add(file, f"terms.{fld}[{j}]",
@@ -399,42 +451,78 @@ def _read_json(path: str):
         return json.load(f)
 
 
+def _read_rpgm_map(game_dir: str, path: str) -> dict | None:
+    """Читает зашифрованную карту MV (.rpgmvm) как dict JSON."""
+    try:
+        with open(path, "rb") as f:
+            body = f.read()
+    except OSError:
+        return None
+    from app.core.rpgmaker import crypto
+    key = crypto.get_key_mv(game_dir)
+    if not key:
+        return None
+    try:
+        plain = crypto.decrypt_bytes(body, key)
+    except (ValueError, IndexError):
+        return None
+    try:
+        return json.loads(plain.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        return None
+
+
 def extract(game_dir: str, data_dir: str | None = None,
+            variant: str | None = None,
             on_skip=None) -> list[TranslationEntry]:
     """Извлекает все переводимые строки из data/*.json игры.
 
+    variant ('mz'/'mv') определяет, где искать список плагинов и как
+    его парсить; при None — авто-детект. Поддерживает и зашифрованные
+    карты MV (.rpgmvm).
     on_skip(filename, exception) вызывается, если файл не удалось прочитать.
     """
     if data_dir is None:
         data_dir = find_data_dir(game_dir)
+    if variant is None:
+        from .variant import detect_variant
+        variant = detect_variant(game_dir)
     ex = _Extractor()
     root = os.path.join(game_dir, data_dir)
     for fname in sorted(os.listdir(root)):
-        if not fname.endswith(".json"):
-            continue
         rel = f"{data_dir}/{fname}"
-        try:
-            data = _read_json(os.path.join(root, fname))
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
-            if on_skip:
-                on_skip(fname, e)
-            else:
-                print(f"[parser] skipped {fname}: {e}")
-            continue
-        if fname in DB_FIELDS:
-            ex.db_file(rel, data, DB_FIELDS[fname])
-        elif fname.startswith("Map") and fname != "MapInfos.json":
+        if fname.endswith(".json"):
+            try:
+                data = _read_json(os.path.join(root, fname))
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                if on_skip:
+                    on_skip(fname, e)
+                else:
+                    print(f"[parser] skipped {fname}: {e}")
+                continue
+            if fname in DB_FIELDS:
+                ex.db_file(rel, data, DB_FIELDS[fname])
+            elif fname.startswith("Map") and fname != "MapInfos.json":
+                ex.map_file(rel, data)
+            elif fname == "CommonEvents.json":
+                ex.common_events(rel, data)
+            elif fname == "Troops.json":
+                ex.troops(rel, data)
+            elif fname == "System.json":
+                ex.system(rel, data)
+            elif fname == "MapInfos.json":
+                ex.map_infos(rel, data)
+        elif fname.lower().endswith(".rpgmvm"):
+            data = _read_rpgm_map(game_dir, os.path.join(root, fname))
+            if data is None:
+                if on_skip:
+                    on_skip(fname, "cannot decrypt MV map")
+                else:
+                    print(f"[parser] skipped {fname}: cannot decrypt")
+                continue
             ex.map_file(rel, data)
-        elif fname == "CommonEvents.json":
-            ex.common_events(rel, data)
-        elif fname == "Troops.json":
-            ex.troops(rel, data)
-        elif fname == "System.json":
-            ex.system(rel, data)
-        elif fname == "MapInfos.json":
-            ex.map_infos(rel, data)
     entries = ex.entries
-    entries += extract_plugins(game_dir, data_dir, on_skip)
+    entries += extract_plugins(game_dir, data_dir, on_skip, variant)
     return entries
 
 
@@ -495,6 +583,49 @@ def apply(game_dir: str, entries: list[TranslationEntry],
         if not os.path.exists(backup_path):
             shutil.copy2(abs_path, backup_path)
             stats["backups"].append(backup_path)
+
+        if rel.lower().endswith(".rpgmvm"):
+            # зашифрованная карта MV: расшифровали при извлечении,
+            # переводим JSON и записываем обратно зашифрованной
+            from app.core.rpgmaker import crypto
+            key = crypto.get_key_mv(game_dir)
+            if not key:
+                continue
+            try:
+                with open(abs_path, "rb") as f:
+                    body = f.read()
+                data = json.loads(
+                    crypto.decrypt_bytes(body, key).decode("utf-8"))
+            except (OSError, ValueError, IndexError,
+                    json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            written = 0
+            for e in items:
+                if _PLUGIN_MARK in e.json_path or _SCRIPT_MARK in e.json_path:
+                    continue
+                try:
+                    current = get_by_path(data, e.json_path)
+                except (KeyError, IndexError, TypeError) as exc:
+                    if on_skip:
+                        on_skip(e, f"path not found: {exc}")
+                    continue
+                if isinstance(current, str):
+                    try:
+                        set_by_path(data, e.json_path, e.translation)
+                        written += 1
+                    except (KeyError, IndexError, TypeError) as exc:
+                        if on_skip:
+                            on_skip(e, f"cannot write: {exc}")
+            try:
+                new_body = crypto.encrypt_bytes(
+                    json.dumps(data, ensure_ascii=False).encode("utf-8"), key)
+                with open(abs_path, "wb") as f:
+                    f.write(new_body)
+            except OSError:
+                continue
+            stats["files"] += 1
+            stats["strings"] += written
+            continue
 
         if not rel.endswith(".json"):
             # js-плагин: заменяем литералы по содержимому

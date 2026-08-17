@@ -1808,6 +1808,16 @@ class TranslateTab(QWidget):
             parts.append(TR("tr_apply_folder", path=stats["out_dir"]))
         if stats.get("removed_orphans"):
             parts.append(TR("tr_apply_orphans", n=stats["removed_orphans"]))
+        # гибрид: если игра запущена — внедряем перевод live-хуком (MV/MZ),
+        # это покрывает и зашифрованные/asar-сборки
+        ch = self.main.channel()
+        if ch is not None and hasattr(ch, "apply_translation"):
+            try:
+                pushed = ch.apply_translation(p.entries)
+            except Exception:  # noqa: BLE001
+                pushed = False
+            if pushed:
+                parts.append(TR("tr_apply_live"))
         QMessageBox.information(self, TR("done"), "\n".join(parts))
         self._update_steps()
 

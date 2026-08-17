@@ -979,7 +979,8 @@ class EventEditorDialog(QDialog):
         self._game_dir = game_dir
         self._view = view
         self._fmt = None
-        pages = ev.get("pages") or []
+        pages = [p for p in (ev.get("pages") or [])
+                 if isinstance(p, dict)]
         self._orig_pages = len(pages)
         s = maprender.event_summary(ev)
         self.setWindowTitle(f"EV{s['id']} — {s['name']}")

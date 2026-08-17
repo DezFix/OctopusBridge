@@ -159,7 +159,8 @@ class _LayerPainter:
             if not isinstance(evd, dict):
                 continue
             ex, ey = evd.get("x", 0) * t, evd.get("y", 0) * t
-            pages = evd.get("pages") or []
+            pages = [p for p in (evd.get("pages") or [])
+                     if isinstance(p, dict)]
             img_ev = (pages[0].get("image") or {}) if pages else {}
             ch_name = img_ev.get("characterName", "")
             if ch_name:

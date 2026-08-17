@@ -678,6 +678,28 @@ def _unescape_rpy_string(text: str) -> str:
     return "".join(out)
 
 
+def _ob_file_parse_broken(path: str) -> bool:
+    """True, если ob_*.rpy содержит «сырые» многострочные old/new-блоки.
+
+    Так писали билды до 0.5.9, когда переводы строк не экранировались
+    (см. _escape): Ren'Py 8.2+ не парсит строковый литерал с настоящим
+    переносом строки и падает при старте игры («Could not parse string»).
+    Текущий код пишет \\n-экранирование, поэтому срабатывание = файл
+    старого билда — его нужно удалять вместе с .rpyc-двойником.
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return False
+    for ln in lines:
+        s = ln.strip()
+        if (s.startswith('old "') or s.startswith('new "')) \
+                and not s.endswith('"'):
+            return True
+    return False
+
+
 def _read_existing_olds(out_path: str) -> set[str]:
     """Old-строки из ранее сгенерированного ob_*.rpy.
 
@@ -714,6 +736,13 @@ def apply(game_dir: str, entries: list[TranslationEntry],
     unsafe_count = 0
     for e in entries:
         if e.translation.strip() and e.status != "skip":
+            # Защита от самоперевода: записи, источником которых оказались
+            # наши же ob_*-артефакты (старые билды извлекали их как текст
+            # игры — получались файлы ob_game__tl__...rpy с теми же
+            # old-строками, из-за чего Ren'Py падает «A translation ...
+            # already exists»). Такие записи не пишем вовсе.
+            if _is_ob_artifact(e.file):
+                continue
             if not _is_interp_safe(e.original, e.translation):
                 unsafe_count += 1
                 continue
@@ -763,25 +792,42 @@ def apply(game_dir: str, entries: list[TranslationEntry],
         stats["new_strings"] += new_count
         stats["out_dir"] = os.path.dirname(out_path)
 
-    if stats["files"] > 0:
-        # Осиротевшие ob_*.rpy: файлы, оставшиеся от старых билдов
-        # (до 0.5.9, когда переносы строк не экранировались) или от
-        # прежнего языка извлечения (tl/english, tl/french, ...).
-        # Их записи больше не в by_file — файл не перезапишется, но
-        # Ren'Py читает его при старте и падает с «Could not parse
-        # string». Удаляем всё ob_*.rpy, не переписанное в этот прогон.
-        try:
-            for fname in os.listdir(tl_dir):
-                if not (fname.startswith("ob_") and fname.endswith(".rpy")):
-                    continue
-                if fname == "ob_activate.rpy":
-                    continue  # пересоздаётся ниже, не осиротевший
-                path = os.path.join(tl_dir, fname)
-                if path not in written_paths:
+    # Осиротевшие ob_*.rpy/.rpyc чистятся при ЛЮБОМ прогоне, не только
+    # когда файлы переписывались: старые билды (до 0.5.9, без
+    # экранирования переводов строк) оставляли файлы, от которых Ren'Py
+    # падает при старте игры («Could not parse string»), а пустой прогон
+    # (нет переводов, files == 0) их раньше не чистил. При files > 0
+    # удаляем все не переписанные в этот прогон; при files == 0 — только
+    # заведомо мусорные: самопереводы (имя с __ob_) и битые по парсингу
+    # (с .rpyc-двойником). Удаляем и .rpy, и .rpyc: Ren'Py грузит
+    # скомпилированный .rpyc даже без .rpy.
+    try:
+        for fname in os.listdir(tl_dir):
+            if not (fname.startswith("ob_")
+                    and fname.endswith((".rpy", ".rpyc"))):
+                continue
+            if fname in ("ob_activate.rpy", "ob_activate.rpyc"):
+                continue  # пересоздаётся ниже, не осиротевший
+            path = os.path.join(tl_dir, fname)
+            if path in written_paths:
+                continue
+            broken = fname.endswith(".rpy") \
+                and _ob_file_parse_broken(path)
+            twin = os.path.join(tl_dir, fname[:-1]) \
+                if fname.endswith(".rpyc") else ""
+            # близнец мог уже быть удалён в этом же цикле (битый .rpy) —
+            # тогда .rpyc тоже мусор
+            twin_broken = fname.endswith(".rpyc") and (
+                not os.path.exists(twin) or _ob_file_parse_broken(twin))
+            if stats["files"] > 0 or "__ob_" in fname \
+                    or broken or twin_broken:
+                try:
                     os.remove(path)
                     stats["removed_orphans"] += 1
-        except OSError:
-            pass
+                except OSError:
+                    pass
+    except OSError:
+        pass
 
     if stats["files"] > 0:
         import json

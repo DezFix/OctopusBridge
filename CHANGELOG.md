@@ -2,6 +2,26 @@
 
 All notable changes to the project. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning follows [SemVer](https://semver.org/).
 
+## [0.6.7] — 2026-08-15
+
+### Added
+- **RPG Maker MV: bridge profile for the official runtime.** The stock MV runtime is a non-SDK NW.js build where remote debugging is removed — CDP is unavailable, so MV now gets an in-game HTTP bridge: the `octopus_ob.js` plugin (NW.js Node API, HTTP server on `127.0.0.1`) carries probe/eval/tr/errlog requests. Cheats, state and live translation transparently route through the bridge; the game is no longer force-restarted when it's already running without debugging. A leftover-bridge reattach path (`find_bridge_port`) is used in `launch()`/`attach()`.
+- **RPG Maker MV: encrypted maps**. `MapXXX.rpgmvm` files are decrypted for extraction and re-encrypted on write (`crypto.encrypt_bytes`); `maprender.load_map`/`save_map` support them; `parser.extract`/`apply` handle the encrypted data files.
+- **RPG Maker: MV/MZ variant detection** (`app/core/rpgmaker/variant.py`) — used to pick the right plugins list location (`js/plugins.js` JS-format for MV, `data/plugins.js` JSON-array for MZ), plugin call command codes (356 MV / 357, 657 MZ) and encrypted-map suffix.
+- **MV live translation**: the static original→translation dictionary is embedded into the bridge plugin at apply time (`update_tr_dict`), so translations work even when the game is launched outside OctopusBridge; apply/restore register/unregister the bridge plugin idempotently (no double entries, old versions regenerated keeping the deployed dictionary).
+- **Turbo speed rewritten for MV 1.6+/MZ**: instead of calling `updateMain` k times (which multiplied `requestAnimationFrame` requests exponentially and froze/crashed the game), the frame delta time is divided by k, letting the engine's own accumulator run k ticks per frame; legacy MV without an accumulator uses a guarded k-loop with requestUpdate suppression.
+- **Ren'Py orphan cleanup hardened**: empty apply runs (`files == 0`) now also remove broken `ob_*.rpy`/`ob_*.rpyc` from old builds (raw multiline strings that Ren'Py 8 can't parse — «Could not parse string» crash) and self-translated duplicates (`__ob_` names that cause «A translation … already exists»); healthy files are never touched. Entries sourced from our own `ob_*` artifacts are no longer written at all.
+- **NW.js profile cleanup extended**: `%LOCALAPPDATA%\User Data` (MV runtime with an empty name in package.json) is scanned; `Web Data`, `Preferences`, `Secure Preferences` are renamed alongside `Local State` when a real profile is detected.
+- **MZ plugins list in `data/plugins.js`** (JSON array) is parsed; YEP-style plugin parameter *keys* are no longer extracted as translatable text (only values/strings are).
+
+### Fixed
+- `heal_all`/`clear_states` cheats no longer use the MZ-only `removeAllStates()` — states are removed via `states().forEach(removeState)` (also revives dead actors).
+- `maprender`/event editor tolerate malformed event data (non-dict pages/tilesets) instead of crashing the map tab.
+- Old bridge plugins with a literal `__TR_DICT__` marker (which threw ReferenceError before the HTTP server started) are regenerated with a real dictionary.
+
+### Tests
+- MV bridge plugin: registration/regeneration/unregister in JS and JSON plugins lists, static dictionary update, legacy-marker recovery; `.rpgmvm` round-trip through `maprender`; MZ `data/plugins.js`; YEP parameter keys excluded; malformed event data; MV profile dirs.
+
 ## [0.6.6] — 2026-08-15
 
 ### Added

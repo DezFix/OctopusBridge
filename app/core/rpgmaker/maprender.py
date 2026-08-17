@@ -291,20 +291,41 @@ def data_root(game_dir: str, view: FileView | None = None) -> str:
 
 def map_path(game_dir: str, map_id: int,
              view: FileView | None = None) -> str | None:
-    rel = f"{data_root(game_dir, view)}/Map{map_id:03d}.json"
+    """MapXXX.json, а для шифрованных MV-игр — MapXXX.rpgmvm."""
     view = view or DiskFileView(game_dir)
-    return rel if view.exists(rel) else None
+    root = data_root(game_dir, view)
+    rel = f"{root}/Map{map_id:03d}.json"
+    if view.exists(rel):
+        return rel
+    rel_mv = f"{root}/Map{map_id:03d}.rpgmvm"
+    return rel_mv if view.exists(rel_mv) else None
 
 
 def load_map(game_dir: str, map_id: int,
              view: FileView | None = None) -> dict | None:
-    """Загружает MapXXX.json. None, если карты нет/битая."""
+    """Загружает MapXXX.json (или .rpgmvm у шифрованных MV-игр).
+    None, если карты нет/битая."""
+    view = view or DiskFileView(game_dir)
     rel = map_path(game_dir, map_id, view)
     if not rel:
         return None
-    text = (view or DiskFileView(game_dir)).read_text(rel)
-    if text is None:
-        return None
+    if rel.lower().endswith(".rpgmvm"):
+        from app.core.rpgmaker import crypto
+        body = view.read_bytes(rel)
+        if body is None:
+            return None
+        key = crypto.get_key(game_dir, view=view)
+        if not key:
+            return None
+        try:
+            plain = crypto.decrypt_bytes(body, key)
+        except (ValueError, IndexError):
+            return None
+        text = plain.decode("utf-8", errors="replace")
+    else:
+        text = view.read_text(rel)
+        if text is None:
+            return None
     try:
         data = json.loads(text)
     except (json.JSONDecodeError, ValueError):
@@ -358,9 +379,12 @@ def load_tilesets(game_dir: str, view: FileView | None = None) -> list[dict]:
 
 def tileset_for_map(tilesets: list[dict], tileset_id: int) -> dict | None:
     for t in tilesets:
-        if t.get("id") == tileset_id:
+        if isinstance(t, dict) and t.get("id") == tileset_id:
             return t
-    return tilesets[0] if tilesets else None
+    for t in tilesets:
+        if isinstance(t, dict):
+            return t
+    return None
 
 
 # ---------- события ----------
@@ -376,7 +400,7 @@ def trigger_name(code: int) -> str:
 
 def event_summary(ev: dict) -> dict:
     """Ключевые свойства события для левой панели."""
-    pages = ev.get("pages") or []
+    pages = [p for p in (ev.get("pages") or []) if isinstance(p, dict)]
     img = (pages[0].get("image") or {}) if pages else {}
     return {
         "id": ev.get("id"),
@@ -393,7 +417,17 @@ def event_summary(ev: dict) -> dict:
 
 def page_conditions(page: dict) -> dict:
     """Условия видимости страницы события."""
+    if not isinstance(page, dict):
+        return {
+            "switch1_valid": False, "switch1_id": 1,
+            "switch2_valid": False, "switch2_id": 1,
+            "variable_valid": False, "variable_id": 1,
+            "variable_value": 0, "self_switch_valid": False,
+            "self_switch_ch": "A",
+        }
     c = page.get("conditions") or {}
+    if not isinstance(c, dict):
+        c = {}
     return {
         "switch1_valid": bool(c.get("switch1Valid")),
         "switch1_id": c.get("switch1Id", 1),
@@ -425,7 +459,10 @@ def visibility_text(page: dict) -> str:
 def save_map(game_dir: str, map_id: int, data: dict,
              backup_suffix: str = ".ob_backup",
              view: FileView | None = None) -> str:
-    """Перезаписывает MapXXX.json (с бэкапом рядом). Возвращает путь/rel."""
+    """Перезаписывает MapXXX.json (с бэкапом рядом). Возвращает путь/rel.
+
+    Шифрованная карта MV (.rpgmvm) записывается обратно зашифрованной.
+    """
     rel = map_path(game_dir, map_id, view)
     if not rel:
         raise FileNotFoundError(f"Map{map_id:03d}.json не найдена")
@@ -437,7 +474,16 @@ def save_map(game_dir: str, map_id: int, data: dict,
         if not os.path.exists(backup):
             import shutil
             shutil.copy2(path, backup)
-    view.write_text(rel, text)
+    if rel.lower().endswith(".rpgmvm"):
+        from app.core.rpgmaker import crypto
+        key = crypto.get_key(game_dir, view=view)
+        if not key:
+            raise FileNotFoundError(
+                f"{rel}: нет ключа шифрования (System.json)")
+        view.write_bytes(rel, crypto.encrypt_bytes(
+            text.encode("utf-8"), key))
+    else:
+        view.write_text(rel, text)
     if not isinstance(view, DiskFileView):
         view.commit()
     return rel

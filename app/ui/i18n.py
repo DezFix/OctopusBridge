@@ -299,6 +299,10 @@ _STRINGS = {
         "ru": "Файлов: {files}\nСтрок: {strings}",
         "en": "Files: {files}\nStrings: {strings}",
     },
+    "tr_apply_live": {
+        "ru": "Перевод внедрён в запущенную игру (live-хук MV/MZ).",
+        "en": "Translation pushed to the running game (MV/MZ live hook).",
+    },
     "tr_apply_backup": {
         "ru": "Бэкап: {n} файлов",
         "en": "Backup: {n} files",

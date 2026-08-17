@@ -1,8 +1,13 @@
 # -*- coding: utf-8 -*-
-"""Щупальце RPG Maker MV/MZ: CDP-внедрение в NW.js-процесс игры.
+"""Щупальце RPG Maker MV/MZ — два профиля.
 
-Запуск: Game.exe с --remote-debugging-port (файлы игры не трогаем).
-Читы/состояние: прямой Runtime.evaluate + JS-пейлоад.
+MZ (и Electron/asar-сборки MV): CDP-внедрение в NW.js-процесс игры,
+запуск с --remote-debugging-port, Runtime.evaluate + JS-пейлоад.
+
+MV (официальный десктопный рантайм): non-SDK NW.js без remote
+debugging — канал через мост octopus_ob.js (HTTP-сервер внутри игры,
+см. app.core.rpgmaker.mv_bridge). Весь API (evaluate/request_state/
+apply_translation) прозрачно роутится через мост.
 """
 from __future__ import annotations
 
@@ -16,6 +21,8 @@ from app.core import process as proc
 from app.transport.cdp import browser
 from app.transport.cdp.client import CDPClient, CDPError
 from app.core.tentacles.cdp_base import CDPTentacle
+from app.core.rpgmaker import mv_bridge
+from app.core.rpgmaker import variant as rpgm_variant
 
 # Кандидаты портов для сканирования
 SCAN_PORTS = [9222, 9229, 9333] + list(range(9000, 9101)) + \
@@ -45,7 +52,7 @@ try {
   document.head.appendChild(s);
 } catch (e) {}
 
-// ── ускорение игры: множитель updateMain (MV и MZ) ──
+// ── ускорение игры: MV 1.6+/MZ — аккумулятор фиксированных шагов ──
 window.__octopus_gameSpeed = 1;
 window.__octopus_setGameSpeed = function (n) {
   n = Math.max(1, Math.min(20, Math.floor(n || 1)));
@@ -56,19 +63,39 @@ window.__octopus_setGameSpeed = function (n) {
       const _obUpdateMain = SceneManager.updateMain;
       SceneManager.updateMain = function () {
         const k = window.__octopus_gameSpeed || 1;
-        if (k > 1) {
-          for (let i = 0; i < k; i++) {
+        if (k <= 1) {
+          _obUpdateMain.call(this);
+          return;
+        }
+        if (typeof this._deltaTime === "number") {
+          // MV 1.6+/MZ: движок сам догоняет время фиксированными шагами
+          // (while по _accumulator). Уменьшаем шаг в k раз — за кадр
+          // накрутится k тиков, а renderScene/requestUpdate отработают
+          // один раз (в оригинале они вне цикла). НЕЛЬЗЯ звать
+          // updateMain k раз: requestUpdate = requestAnimationFrame —
+          // каждый вызов расписывает ещё кадр, рост экспоненциальный,
+          // игра зависает и вылетает.
+          const orig = this._deltaTime;
+          this._deltaTime = orig / k;
+          try {
             _obUpdateMain.call(this);
-            // MV: Input.update вызывается один раз за кадр вне updateMain —
-            // без синхронизации каждое нажатие срабатывает k раз (меню,
-            // диалоги листаются кратно скорости). MZ: вызов идемпотентен.
-            if (i < k - 1 &&
-                typeof SceneManager.updateInputData === "function") {
-              try { SceneManager.updateInputData(); } catch (e) {}
-            }
+          } finally {
+            this._deltaTime = orig;
           }
         } else {
-          _obUpdateMain.call(this);
+          // древний MV без аккумулятора: k кадров, но requestUpdate
+          // глушим (считаем), чтобы не расплодить rAF-кадры
+          const obReq = SceneManager.requestUpdate;
+          let reqs = 0;
+          if (typeof obReq === "function") {
+            SceneManager.requestUpdate = function () { reqs++; };
+          }
+          try {
+            for (let i = 0; i < k; i++) _obUpdateMain.call(this);
+          } finally {
+            SceneManager.requestUpdate = obReq;
+          }
+          if (typeof obReq === "function" && reqs) obReq.call(this);
         }
       };
       window.__octopus_speedHooked = true;
@@ -266,6 +293,87 @@ const _enginePoll = setInterval(function () {
 }
 """
 
+# ── JS-пейлоад: гибридный live-перевод (MV и MZ) ──
+# Подменяет текст в рантайме через словарь original->translation,
+# не трогая файлы игры. Работает и для зашифрованных/asar-сборок.
+_TRANSLATION_PAYLOAD = r"""
+if (!window.__octopus_trInit) {
+  window.__octopus_trInit = true;
+  window.__octopus_tr = {};
+
+  window.__octopus_trApply = function (text) {
+    if (typeof text !== "string" || text.length === 0) return text;
+    var t = window.__octopus_tr[text];
+    return (t === undefined || t === null) ? text : t;
+  };
+
+  window.__octopus_trInstall = function (obj) {
+    if (obj) {
+      for (var k in obj) {
+        if (Object.prototype.hasOwnProperty.call(obj, k)) {
+          window.__octopus_tr[k] = obj[k];
+        }
+      }
+    }
+    return Object.keys(window.__octopus_tr).length;
+  };
+
+  function trSafePatch(method, patchFn) {
+    if (typeof method === "function") {
+      try { patchFn(); } catch (e) {
+        console.warn("[octopus] tr hook skip: " + e);
+      }
+    }
+  }
+
+  var _trPoll = setInterval(function () {
+    if (typeof Window_Base === "undefined") return;
+    clearInterval(_trPoll);
+    // диалоги/сообщения: подменяем строку ДО раскрытия escape-кодов,
+    // чтобы перевод сохранил \N[..] / \C[..] как есть
+    trSafePatch(Window_Base.prototype.convertEscapeCharacters, function () {
+      var obCvt = Window_Base.prototype.convertEscapeCharacters;
+      Window_Base.prototype.convertEscapeCharacters = function (text) {
+        return obCvt.call(this, window.__octopus_trApply(text));
+      };
+    });
+    // имена акторов (меню, статусы, сообщения \N[x])
+    trSafePatch(Game_Actor.prototype.name, function () {
+      var obName = Game_Actor.prototype.name;
+      Game_Actor.prototype.name = function () {
+        return window.__octopus_trApply(obName.call(this));
+      };
+    });
+    // имя текущей карты
+    trSafePatch(Game_Map.prototype.displayName, function () {
+      var obDName = Game_Map.prototype.displayName;
+      Game_Map.prototype.displayName = function () {
+        return window.__octopus_trApply(obDName.call(this));
+      };
+    });
+  }, 400);
+}
+
+window.__octopus_trInstall(__TR_DICT__);
+"""
+
+
+def build_tr_dict(entries) -> dict:
+    """Словарь original->translation для live-перевода (пустые пропущены)."""
+    tr: dict = {}
+    for e in entries:
+        if isinstance(e, dict):
+            orig = e.get("original", "")
+            text = e.get("translation", "") or ""
+            status = e.get("status", "")
+        else:
+            orig = getattr(e, "original", "")
+            text = getattr(e, "translation", "") or ""
+            status = getattr(e, "status", "")
+        if orig and text.strip() and status != "skip":
+            tr[orig] = text
+    return tr
+
 
 def _nwjs_profile_dirs(game_dir: str) -> list[str]:
     """Возможные каталоги профиля NW.js (user-data-dir).
@@ -303,6 +411,7 @@ def _nwjs_profile_dirs(game_dir: str) -> list[str]:
     else:
         base = os.path.join(local, "nwjs")
     for d in (base, os.path.join(base, "User Data"),
+              os.path.join(local, "User Data"),  # MV runtime (пустой name)
               os.path.join(local, "KADOKAWA", "RPGMV"),
               os.path.join(local, "KADOKAWA", "RPGMV", "User Data"),
               os.path.join(local, "KADOKAWA", "RPGMZ"),
@@ -364,30 +473,47 @@ def clean_nwjs_profile(game_dir: str) -> list[str]:
     """Чинит «Ваш профиль не может использоваться, поскольку он от более
     новой версии NW.js».
 
-    Причина: где-то в каталогах профиля NW.js остались файлы, созданные
-    более новой версией NW.js, чем движок игры — например, в папке
-    запускали более новую сборку, папку скопировали вместе с профилем
-    или профиль лежит в %LOCALAPPDATA% от другой игры/редактора.
-    Старые записи не удаляем, а переименовываем в *.bak — NW.js создаст
-    свежий профиль. Сейвы RPG Maker лежат в www/save, профиль их не
-    содержит.
+    Причина: Chromium мигрирует профиль только «вперёд» — если игру
+    раньше запускали более новой сборкой NW.js (или профиль общий:
+    у MV-игр с пустым name в package.json это %LOCALAPPDATA%\\nwjs),
+    старая NW.js не может прочитать базы нового формата и показывает
+    эту ошибку. Официальная рекомендация nwjs и сообщества RPG Maker —
+    очистить каталог профиля.
 
-    Помимо Local State (механизм Chromium) чистим Default/Web Data* и
-    Default/Preferences — известные по сообществу RPG Maker источники
-    той же ошибки (версия профиля «зашита» и в них).
+    Файлы, где «зашита» версия: Local State (механизм Chromium) и
+    Default/Web Data*, Default/Preferences. Их не удаляем, а
+    переименовываем в *.bak — NW.js создаст свежий профиль. Каталог
+    Default/Local Storage не трогаем (localStorage плагинов), а сейвы
+    RPG Maker лежат в www/save — профиль их не содержит.
 
-    Возвращает список каталогов профилей, где Local State переименован.
+    Возвращает список каталогов профилей, где что-то переименовано.
     """
     renamed = []
     for d in _nwjs_profile_dirs(game_dir):
-        stale = _has_stale_profile(d)
-        if stale and _rename_if_exists(os.path.join(d, "Local State")):
+        ls = os.path.join(d, "Local State")
+        default_dir = os.path.join(d, "Default")
+        # «протухший» профиль: маркер версии в Local State ИЛИ реально
+        # использованный профиль (Web Data/Preferences) — именно там, по
+        # опыту сообщества RPG Maker, зашита версия, из-за которой
+        # старая NW.js показывает «профиль от более новой версии»
+        dirty = (_has_stale_profile(d)
+                 or os.path.isfile(os.path.join(default_dir, "Web Data"))
+                 or os.path.isfile(
+                     os.path.join(default_dir, "Web Data-journal"))
+                 or os.path.isfile(
+                     os.path.join(default_dir, "Preferences"))
+                 or os.path.isfile(
+                     os.path.join(default_dir, "Secure Preferences")))
+        if not dirty:
+            continue
+        if _rename_if_exists(ls):
             renamed.append(d)
-        if stale:
-            default_dir = os.path.join(d, "Default")
-            if os.path.isdir(default_dir):
-                for name in ("Web Data", "Web Data-journal", "Preferences"):
-                    _rename_if_exists(os.path.join(default_dir, name))
+        if os.path.isdir(default_dir):
+            for name in ("Web Data", "Web Data-journal",
+                         "Preferences", "Secure Preferences"):
+                _rename_if_exists(os.path.join(default_dir, name))
+        if not renamed or renamed[-1] != d:
+            renamed.append(d)
     return renamed
 
 
@@ -399,6 +525,8 @@ class RpgMakerTentacle(CDPTentacle):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._proc: subprocess.Popen | None = None
+        self._bridge_port = 0
+        self._variant = ""
 
     # ── запуск ──
     def launch(self, target: str) -> bool:
@@ -409,6 +537,9 @@ class RpgMakerTentacle(CDPTentacle):
             self.error.emit(f"Не найден исполняемый файл игры: {exe}")
             return False
         game_dir = os.path.dirname(exe)
+        self._game_dir = game_dir
+        self._variant = rpgm_variant.detect_variant(game_dir)
+        is_mv = self._variant == "mv"
 
         # Игра уже запущена? NW.js (single-instance) не даёт второму
         # экземпляру поднять отладочный порт — поэтому подключаемся
@@ -432,6 +563,18 @@ class RpgMakerTentacle(CDPTentacle):
                     "Не удалось подключиться к запущенной игре — "
                     "перезапускаю её с отладкой.")
             else:
+                if is_mv:
+                    # MV: CDP недоступен, но мост мог подняться (плагин
+                    # уже в игре) — подключаемся, ничего не закрывая
+                    bport = mv_bridge.find_bridge_port(wait=5.0)
+                    if bport:
+                        self.log.emit(
+                            f"Игра уже запущена с мостом (pid {pid}) — "
+                            f"подключаюсь к :{bport}.")
+                        self._pid = pid
+                        self._bridge_port = bport
+                        self.attached.emit()
+                        return True
                 self.log.emit(
                     f"Игра запущена без отладки (pid {pid}) — закрываю "
                     "и запускаю заново с отладочным портом.")
@@ -448,6 +591,13 @@ class RpgMakerTentacle(CDPTentacle):
             self.log.emit(
                 "Профиль NW.js от другой версии: Local State переименован "
                 "в Local State.bak (сейвы не тронуты).")
+        if is_mv:
+            # плагин-мост должен лежать в игре ДО старта: иначе игра
+            # прочитает plugins.js без него и мост не поднимется
+            if mv_bridge.ensure_bridge_registered(
+                    game_dir, self.PAYLOAD, _TRANSLATION_PAYLOAD):
+                self.log.emit(
+                    "Мост MV внедрён: js/plugins/octopus_ob.js.")
         try:
             self._proc = subprocess.Popen(
                 [exe, f"--remote-debugging-port={port}"],
@@ -456,7 +606,10 @@ class RpgMakerTentacle(CDPTentacle):
             self.error.emit(f"Не удалось запустить игру: {e}")
             return False
         self._pid = self._proc.pid
-        self.log.emit(f"Игра запущена (pid {self._pid}), отладка :{port}.")
+        self.log.emit(f"Игра запущена (pid {self._pid}).")
+        if is_mv:
+            return self._launch_mv(port)
+        self.log.emit(f"Отладка :{port}.")
         if not self._connect_page(port, url_hint=".html", wait=30.0):
             # NW.js мог поднять отладчик на другом порту (занятый
             # порт/инкремент) — ищем фактический до того, как закрывать
@@ -472,7 +625,44 @@ class RpgMakerTentacle(CDPTentacle):
             return False
         return True
 
+    def _launch_mv(self, port: int) -> bool:
+        """MV-профиль: мост вместо CDP (non-SDK NW.js, отладка вырезана).
+
+        Перед стартом гарантируем наличие плагина-моста в игре (если его
+        ещё нет — например, игру ещё не переводили). Затем ждём HTTP-мост;
+        на расширенной (SDK) сборке запасной путь — CDP. Если не вышло
+        ни то, ни другое, игру НЕ закрываем: перевод работает через файлы.
+        """
+        self.log.emit("Жду мост MV (официальный рантайм без CDP)…")
+        bport = mv_bridge.find_bridge_port(wait=35.0)
+        if bport:
+            self._bridge_port = bport
+            self.log.emit(
+                f"Мост подключён: http://127.0.0.1:{bport}")
+            self._log_game_errors(bport)
+            self.attached.emit()
+            return True
+        if self._connect_page(port, url_hint=".html", wait=10.0):
+            self.log.emit("Подключено через CDP (расширенная сборка).")
+            return True
+        self.log.emit(
+            "Игра запущена без отладки: официальный рантайм MV "
+            "не поддерживает remote debugging. Читы заработают после "
+            "перезапуска через OctopusBridge; перевод применяется "
+            "напрямую к файлам игры.")
+        return True
+
     def attach(self, pid: int) -> bool:
+        # MV: мост может быть уже поднят (игра запущена с нашим плагином)
+        bport = mv_bridge.find_bridge_port(wait=3.0)
+        if bport:
+            self._pid = pid
+            self._bridge_port = bport
+            self.log.emit(
+                f"Мост подключён: http://127.0.0.1:{bport}")
+            self._log_game_errors(bport)
+            self.attached.emit()
+            return True
         port = getattr(self, "_port_hint", 0) or probe_game_port(pid)
         if not port:
             self.error.emit(
@@ -497,7 +687,48 @@ class RpgMakerTentacle(CDPTentacle):
 
     def detach(self):
         self._proc = None
+        self._bridge_port = 0
         super().detach()
+
+    # ── мост MV: прозрачный роутинг поверх CDP-API ──
+    def _log_game_errors(self, bport: int):
+        """Ошибки страницы игры из предыдущих сессий (пережили краш в
+        localStorage) — молчаливые вылеты MV становятся видимыми."""
+        try:
+            err = mv_bridge.bridge_errlog(bport)
+        except Exception:  # noqa: BLE001
+            return
+        if not isinstance(err, dict):
+            return
+        for kind in ("catch", "error", "rejection"):
+            e = err.get(kind)
+            if isinstance(e, dict) and e.get("msg"):
+                self.log.emit(
+                    f"[игра] {kind}: {e['msg']} "
+                    f"({e.get('extra', '')})")
+
+    def evaluate(self, expression: str, await_promise: bool = False,
+                 timeout: float = 15.0):
+        if self._bridge_port:
+            return mv_bridge.bridge_eval(
+                self._bridge_port, expression, timeout)
+        return super().evaluate(expression, await_promise, timeout)
+
+    def is_attached(self) -> bool:
+        if self._bridge_port:
+            return True
+        return super().is_attached()
+
+    def send_key(self, key: str, code: str = "", keyCode: int = 0,
+                 windowsKeyCode: int = 0) -> bool:
+        if self._bridge_port:
+            return False  # Input.dispatchKeyEvent недоступен без CDP
+        return super().send_key(key, code, keyCode, windowsKeyCode)
+
+    def screenshot(self) -> bytes | None:
+        if self._bridge_port:
+            return None  # Page.captureScreenshot недоступен без CDP
+        return super().screenshot()
 
     # ── состояние ──
     def request_state(self) -> bool:
@@ -537,6 +768,20 @@ class RpgMakerTentacle(CDPTentacle):
                             json.dumps(val) if ok else "")
         return ok
 
+    def apply_translation(self, entries) -> bool:
+        """Гибридный live-перевод: внедряет словарь в игру (MV и MZ).
+
+        Работает поверх файлового патча и покрывает зашифрованные/asar
+        сборки, где данные не меняются напрямую.
+        """
+        tr = build_tr_dict(entries)
+        if not tr:
+            return False
+        code = _TRANSLATION_PAYLOAD.replace(
+            "__TR_DICT__", json.dumps(tr, ensure_ascii=False))
+        ok, _val = self.evaluate(code)
+        return bool(ok)
+
     @staticmethod
     def _cheat_expr(cmd: str, **kwargs) -> str | None:
         js = json.dumps
@@ -554,12 +799,16 @@ class RpgMakerTentacle(CDPTentacle):
             return ("$gameParty.members().forEach("
                     "a => { a.setHp(a.mhp); a.setMp(a.mmp); }), 'healed'")
         if cmd == "heal_all":
+            # MV: removeAllStates() отсутствует (MZ-only) — снимаем через
+            # states().forEach(removeState), это же лечит смерть (revive)
             return ("$gameParty.members().forEach("
-                    "a => { a.removeAllStates(); a.setHp(a.mhp); "
+                    "a => { a.states().forEach("
+                    "s => a.removeState(s.id)); a.setHp(a.mhp); "
                     "a.setMp(a.mmp); }), 'healed_all'")
         if cmd == "clear_states":
             return ("$gameParty.members().forEach("
-                    "a => a.removeAllStates()), 'states_cleared'")
+                    "a => a.states().forEach("
+                    "s => a.removeState(s.id))), 'states_cleared'")
         if cmd == "speed":
             return f"$gamePlayer.setMoveSpeed({int(kwargs['value'])})"
         if cmd == "game_speed":

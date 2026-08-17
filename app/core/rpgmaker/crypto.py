@@ -63,6 +63,13 @@ def decrypt_bytes(body: bytes, key_hex: str) -> bytes:
     return head + body[HEADER_LEN * 2:]
 
 
+def encrypt_bytes(body: bytes, key_hex: str) -> bytes:
+    """Обратная операция: шифрует байты (16-байтный заголовок + XOR)."""
+    key = bytes.fromhex(key_hex)
+    head = bytes(b ^ key[i] for i, b in enumerate(body[:HEADER_LEN]))
+    return SIGNATURE + head + body[HEADER_LEN:]
+
+
 # MZ: .png_ / .ogg_ / .m4a_;  MV: .rpgmvp / .rpgmvo / .rpgmvm
 ENCRYPTED_SUFFIXES = (".png_", ".ogg_", ".m4a_",
                       ".rpgmvp", ".rpgmvo", ".rpgmvm")

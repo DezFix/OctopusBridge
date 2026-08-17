@@ -211,6 +211,42 @@ with tempfile.TemporaryDirectory() as fake_local:
             os.environ["LOCALAPPDATA"] = old_env
 print("   OK")
 
+print("9b) Профиль NW.js: версия зашита в Web Data/Preferences "
+      "(без маркера в Local State)...")
+with tempfile.TemporaryDirectory() as fake_local:
+    old_env = os.environ.get("LOCALAPPDATA")
+    os.environ["LOCALAPPDATA"] = fake_local
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            prof = os.path.join(fake_local, "nwjs", "Default")
+            os.makedirs(prof)
+            # свежий Local State без user_data_version, но Web Data есть
+            with open(os.path.join(fake_local, "nwjs", "Local State"), "w",
+                      encoding="utf-8") as f:
+                json.dump({"profile": "ok"}, f)
+            for fn in ("Web Data", "Web Data-journal", "Preferences"):
+                with open(os.path.join(prof, fn), "w",
+                          encoding="utf-8") as f:
+                    f.write("{}")
+            assert clean_nwjs_profile(td) == [
+                os.path.join(fake_local, "nwjs")]
+            assert not os.path.exists(
+                os.path.join(prof, "Web Data"))
+            assert os.path.exists(
+                os.path.join(prof, "Web Data.bak"))
+            assert not os.path.exists(
+                os.path.join(fake_local, "nwjs", "Local State"))
+            # Local Storage (сейвы/настройки localStorage) не тронуты
+            os.makedirs(os.path.join(prof, "Local Storage"))
+            assert os.path.isdir(
+                os.path.join(prof, "Local Storage"))
+    finally:
+        if old_env is None:
+            os.environ.pop("LOCALAPPDATA", None)
+        else:
+            os.environ["LOCALAPPDATA"] = old_env
+print("   OK")
+
 print("11) launch: игра уже запущена с отладкой — подключаемся, "
       "не запуская второй экземпляр...")
 from app.engines.rpgmaker.tentacle import RpgMakerTentacle
@@ -374,14 +410,424 @@ print("   OK")
 print("19) Читы: heal_all / clear_states / турбо-выражения...")
 expr = RpgMakerTentacle._cheat_expr("heal_all")
 assert expr is not None
-assert "removeAllStates" in expr and "setHp(a.mhp)" in expr
-assert "setMp(a.mmp)" in expr
+assert "removeState" in expr and "setHp(a.mhp)" in expr
+assert "removeAllStates" not in expr  # MV-совместимость
 expr = RpgMakerTentacle._cheat_expr("clear_states")
 assert expr is not None
-assert "removeAllStates" in expr and "setHp" not in expr
+assert "removeState" in expr and "setHp" not in expr
 expr = RpgMakerTentacle._cheat_expr("game_speed", value=4)
 assert expr is not None and "setGameSpeed(4)" in expr
 assert RpgMakerTentacle._cheat_expr("heal_all_unknown") is None
+# speed-хук: аккумулятор MV 1.6+/MZ (деление _deltaTime), без
+# k-кратного вызова updateMain (requestUpdate = rAF -> экспонента)
+_payload = tentacle_mod.PAYLOAD
+assert "this._deltaTime = orig / k" in _payload
+assert "_obUpdateMain.call(this)" in _payload
+assert "SceneManager.updateMain = function ()" in _payload
+print("   OK")
+
+print("20) MV: plugins.js в JS-формате (var $plugins = [...])...")
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "js", "plugins"))
+    os.makedirs(os.path.join(td, "data"))
+    with open(os.path.join(td, "js", "plugins.js"), "w",
+              encoding="utf-8") as f:
+        f.write("var $plugins = [\n"
+                "{\"name\":\"MyPlugin.js\",\"status\":true,"
+                "\"description\":\"\",\"parameters\":{}},\n"
+                "];\n")
+    with open(os.path.join(td, "js", "plugins", "MyPlugin.js"), "w",
+              encoding="utf-8") as f:
+        f.write("const msg = 'こんにちは世界';")
+    entries = parser.extract_plugins(td, "data")
+    texts = [e.original for e in entries]
+    assert "こんにちは世界" in texts, f"MV plugins.js не извлечён: {texts}"
+print("   OK:", texts)
+
+print("21) MV: зашифрованная карта .rpgmvm (извлечение и внедрение)...")
+from app.core.rpgmaker import crypto
+_ENC_KEY = "00112233445566778899aabbccddeeff"
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "data"))
+    with open(os.path.join(td, "data", "System.json"), "w",
+              encoding="utf-8") as f:
+        json.dump({"encryptionKey": _ENC_KEY}, f)
+    map_data = {
+        "displayName": "Лес",
+        "events": [{
+            "id": 1, "name": "EV1", "x": 3, "y": 4, "note": "",
+            "pages": [{"conditions": {}, "image": {}, "list": [
+                {"code": 401, "indent": 0,
+                 "parameters": ["Привет, путник!"]},
+            ]}],
+        }],
+    }
+    raw = json.dumps(map_data, ensure_ascii=False).encode("utf-8")
+    with open(os.path.join(td, "data", "Map001.rpgmvm"), "wb") as f:
+        f.write(crypto.encrypt_bytes(raw, _ENC_KEY))
+    entries = parser.extract(td)
+    texts = [e.original for e in entries]
+    assert "Лес" in texts, f"имя карты MV не извлечено: {texts}"
+    assert "Привет, путник!" in texts, f"реплика карты MV не извлечена: {texts}"
+    for e in entries:
+        if e.original == "Привет, путник!":
+            e.translation = "Hello, traveler!"
+    stats = parser.apply(td, entries)
+    assert stats["files"] >= 1 and stats["strings"] >= 1, stats
+    with open(os.path.join(td, "data", "Map001.rpgmvm"), "rb") as f:
+        body = f.read()
+    assert body[:16] == crypto.SIGNATURE, "файл должен остаться зашифрованным"
+    plain = crypto.decrypt_bytes(body, _ENC_KEY).decode("utf-8")
+    assert '"Hello, traveler!"' in plain and "Привет, путник!" not in plain
+print("   OK: извлечено", len(entries), "строк")
+
+print("22) Гибрид: live-перевод — словарь и JS-пейлоад (MV и MZ)...")
+from app.core.models import TranslationEntry
+from app.engines.rpgmaker.tentacle import (
+    build_tr_dict, _TRANSLATION_PAYLOAD)
+_es = [
+    TranslationEntry(id=1, file="f", json_path="p", context="",
+                     original="Привет", translation="Hello"),
+    TranslationEntry(id=2, file="f", json_path="p", context="",
+                     original="пусто", translation="  "),
+    TranslationEntry(id=3, file="f", json_path="p", context="",
+                     original="скоп", translation="X", status="skip"),
+]
+_tr_dict = build_tr_dict(_es)
+assert _tr_dict == {"Привет": "Hello"}, _tr_dict
+assert "convertEscapeCharacters" in _TRANSLATION_PAYLOAD
+assert "Game_Actor.prototype.name" in _TRANSLATION_PAYLOAD
+assert "Game_Map.prototype.displayName" in _TRANSLATION_PAYLOAD
+assert "__octopus_trInstall" in _TRANSLATION_PAYLOAD
+_code = _TRANSLATION_PAYLOAD.replace(
+    "__TR_DICT__", json.dumps(_tr_dict, ensure_ascii=False))
+assert "Привет" in _code and '"Hello"' in _code
+assert build_tr_dict([]) == {}
+print("   OK:", _tr_dict)
+
+print("23) MV: битые структуры (список вместо словаря) не валят extract...")
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "www", "data"))
+    os.makedirs(os.path.join(td, "www", "js"))
+    open(os.path.join(td, "www", "js", "rpg_core.js"), "w").close()
+    data = os.path.join(td, "www", "data")
+    # событие со страницей-списком и страницей-строкой; тройка со
+    # страницей-списком; команда-список внутри листа
+    with open(os.path.join(data, "Map001.json"), "w",
+              encoding="utf-8") as f:
+        json.dump({
+            "displayName": "Карта",
+            "width": 2, "height": 2,
+            "data": [0] * 2 * 2 * 6,
+            "events": [None, {
+                "id": 1, "name": "EV", "x": 1, "y": 1, "note": "",
+                "pages": [
+                    ["bad", "page"],          # список вместо dict
+                    {"conditions": {}, "image": {}, "list": [
+                        {"code": 401, "indent": 0,
+                         "parameters": ["Речь"]},
+                        ["legacy", "cmd"],     # команда-список
+                    ]},
+                ],
+            }],
+        }, f, ensure_ascii=False)
+    with open(os.path.join(data, "Troops.json"), "w",
+              encoding="utf-8") as f:
+        json.dump([None, {"id": 1, "name": "Враги", "pages": [["x"]]}], f)
+    with open(os.path.join(data, "System.json"), "w",
+              encoding="utf-8") as f:
+        json.dump({"gameTitle": "Игра", "terms": ["bad", "list"]}, f)
+    with open(os.path.join(data, "MapInfos.json"), "w",
+              encoding="utf-8") as f:
+        json.dump([None, {"id": 1, "name": "Карта"}], f)
+    entries = parser.extract(td)
+    texts = [e.original for e in entries]
+    assert "Речь" in texts and "Карта" in texts
+    from app.core.rpgmaker import maprender
+    mp = maprender.load_map(td, 1)
+    assert mp is not None
+    assert maprender.event_summary(mp["events"][1])["pages"] >= 1
+    assert maprender.page_conditions(["bad"])["switch1_valid"] is False
+print("   OK:", texts)
+
+print()
+print("24) MZ: список плагинов лежит в data/plugins.js (JSON-массив)...")
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "js"))
+    open(os.path.join(td, "js", "rmmz_core.js"), "w").close()
+    data = os.path.join(td, "data")
+    os.makedirs(data)
+    with open(os.path.join(data, "plugins.js"), "w",
+              encoding="utf-8") as f:
+        json.dump([
+            {"name": "NicePlugin", "status": True, "description": "",
+             "parameters": {}},
+            {"name": "OffPlugin", "status": False, "description": "",
+             "parameters": {}},
+        ], f)
+    os.makedirs(os.path.join(td, "js", "plugins"))
+    with open(os.path.join(td, "js", "plugins", "NicePlugin.js"), "w",
+              encoding="utf-8") as f:
+        f.write("/*! NicePlugin */\nvar V = 5;\nfunction f() {\n"
+                "    return 'Здравствуй, мир';\n}\n"
+                "Game_Interpreter.prototype.say = function() {\n"
+                "    return 'Привет, мир';\n};\n")
+    with open(os.path.join(td, "js", "plugins", "OffPlugin.js"), "w",
+              encoding="utf-8") as f:
+        f.write("var x = 'выключенный плагин не парсится';\n")
+    with open(os.path.join(data, "System.json"), "w",
+              encoding="utf-8") as f:
+        json.dump({"gameTitle": "Игра"}, f)
+    entries = parser.extract(td)
+    texts = [e.original for e in entries]
+    assert "Здравствуй, мир" in texts
+    assert "Привет, мир" in texts
+    assert not any("OffPlugin" in e.file for e in entries)
+    assert not any("var V = 5" in e.original for e in entries)
+print("   OK")
+
+print()
+print("25) MV: шифрованная карта .rpgmvm через maprender (load+save)...")
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "www", "js"))
+    open(os.path.join(td, "www", "js", "rpg_core.js"), "w").close()
+    data = os.path.join(td, "www", "data")
+    os.makedirs(data)
+    key = "7e04b77e815c96850c0aedfe714defa7"
+    with open(os.path.join(data, "System.json"), "w",
+              encoding="utf-8") as f:
+        json.dump({"gameTitle": "Игра", "encryptionKey": key}, f)
+    body = {"displayName": "Тайная карта", "width": 2, "height": 2,
+            "data": [0] * 2 * 2 * 6, "events": []}
+    from app.core.rpgmaker import crypto, maprender
+    with open(os.path.join(data, "Map007.rpgmvm"), "wb") as f:
+        f.write(crypto.encrypt_bytes(
+            json.dumps(body, ensure_ascii=False).encode("utf-8"), key))
+    mp = maprender.load_map(td, 7)
+    assert mp is not None and mp["displayName"] == "Тайная карта"
+    mp["displayName"] = "Переведённая"
+    rel = maprender.save_map(td, 7, mp)
+    assert rel.lower().endswith(".rpgmvm")
+    with open(os.path.join(data, "Map007.rpgmvm"), "rb") as f:
+        raw = f.read()
+    assert crypto.decrypt_bytes(raw, key).decode("utf-8").find(
+        "Переведённая") >= 0
+    assert maprender.load_map(td, 7)["displayName"] == "Переведённая"
+print("   OK")
+
+print()
+print("26) Ключи параметров плагинов НЕ извлекаются (иначе YEP-плагины "
+      "зависают на новой игре)...")
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "js", "plugins"))
+    os.makedirs(os.path.join(td, "data"))
+    with open(os.path.join(td, "js", "plugins.js"), "w",
+              encoding="utf-8") as f:
+        f.write("var $plugins = [\n"
+                "{\"name\":\"YEP_MessageCore\",\"status\":true,"
+                "\"parameters\":{\"Default Rows\":\"4\","
+                "\"Default Width\":\"Graphics.boxWidth\","
+                "\"---General---\":\"\"}},\n"
+                "];\n")
+    with open(os.path.join(td, "js", "plugins", "YEP_MessageCore.js"),
+              "w", encoding="utf-8") as f:
+        f.write("var P = PluginManager.parameters('YEP_MessageCore');\n"
+                "Yanfly.Param.MSGDefaultRows = "
+                "String(P['Default Rows']);\n"
+                "Yanfly.Param.MSGDefW = eval(String(P['Default Width']));\n"
+                "var header = '---General---';\n"
+                "var msg = 'Строка сообщения для перевода';\n")
+    with open(os.path.join(td, "data", "System.json"), "w",
+              encoding="utf-8") as f:
+        json.dump({"gameTitle": "Игра"}, f)
+    entries = parser.extract_plugins(td, "data")
+    texts = [e.original for e in entries]
+    assert "Default Rows" not in texts
+    assert "Default Width" not in texts
+    assert "---General---" not in texts
+    assert "Строка сообщения для перевода" in texts
+print("   OK")
+
+print()
+print("27) MV-мост: внедрение плагина, словарь, unregister (JS plugins.js)...")
+from app.core.rpgmaker import mv_bridge
+_cheats = ("if (!window.__octopus.rpgm) {\n"
+           "window.__octopus.rpgm = true;\n"
+           "window.__octopus_collectState = function () { return {ok:1}; };\n"
+           "}\n")
+_tr_p = ("if (!window.__octopus_trInit) { window.__octopus_trInit = true; "
+         "window.__octopus_tr = {}; "
+         "window.__octopus_trInstall = function (o) { "
+         "for (var k in o) window.__octopus_tr[k] = o[k]; "
+         "return Object.keys(window.__octopus_tr).length; }; }\n"
+         "window.__octopus_trInstall(__TR_DICT__);\n")
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "js", "plugins"))
+    os.makedirs(os.path.join(td, "data"))
+    with open(os.path.join(td, "js", "plugins.js"), "w",
+              encoding="utf-8") as f:
+        f.write("var $plugins = [\n"
+                "{\"name\":\"YEP_MessageCore\",\"status\":true,"
+                "\"parameters\":{}},\n"
+                "];\n")
+    assert mv_bridge.ensure_bridge_registered(td, _cheats, _tr_p)
+    pj = os.path.join(td, "js", "plugins.js")
+    with open(pj, encoding="utf-8") as f:
+        text = f.read()
+    assert '"octopus_ob"' in text, "плагин не зарегистрирован"
+    assert text.count('"octopus_ob"') == 1
+    assert mv_bridge.ensure_bridge_registered(td, _cheats, _tr_p)
+    with open(pj, encoding="utf-8") as f:
+        text2 = f.read()
+    assert text2 == text, "повторная регистрация не должна менять файл"
+    plugin = os.path.join(td, "js", "plugins", "octopus_ob.js")
+    with open(plugin, encoding="utf-8") as f:
+        src = f.read()
+    assert "__TR_DICT__" not in src
+    assert "__octopus_trInstall({});" in src
+    assert "__octopusBridgeVersion = 2" in src
+    assert 'localStorage.getItem("__octopus_last_err")' in src
+    assert "require(\"http\")" in src and "/probe" in src and "/errlog" in src
+    assert "window.__octopus_collectState" in src
+    assert "__octopus.send = function () {}" in src
+    n = mv_bridge.update_tr_dict(td, [
+        TranslationEntry(id=1, file="f", json_path="p", context="",
+                         original="Привет", translation="Hello"),
+        TranslationEntry(id=2, file="f", json_path="p", context="",
+                         original="пусто", translation="  "),
+        TranslationEntry(id=3, file="f", json_path="p", context="",
+                         original="скоп", translation="X", status="skip"),
+    ])
+    assert n == 1, n
+    with open(plugin, encoding="utf-8") as f:
+        src = f.read()
+    assert "__octopus_trInstall({});" not in src
+    assert '"Привет": "Hello"' in src
+    assert mv_bridge.update_tr_dict(td, []) == 0
+    # устаревший шаблон с маркером __TR_DICT__ переписывается (маркер
+    # обрывал скрипт ReferenceError до старта HTTP-сервера)
+    with open(plugin, "w", encoding="utf-8") as f:
+        f.write("__octopus_trInstall(__TR_DICT__);\n")
+    assert mv_bridge.ensure_bridge_registered(td, _cheats, _tr_p)
+    with open(plugin, encoding="utf-8") as f:
+        src = f.read()
+    assert "__TR_DICT__" not in src
+    assert "__octopus_trInstall({});" in src
+    # старая версия плагина: перегенерируется с сохранением словаря
+    with open(plugin, "w", encoding="utf-8") as f:
+        f.write("window.__octopusBridgeVersion = 1;\n"
+                "window.__octopus_trInstall({\"Привет\": \"Hello\"});\n")
+    assert mv_bridge.ensure_bridge_registered(td, _cheats, _tr_p)
+    with open(plugin, encoding="utf-8") as f:
+        src = f.read()
+    assert "__octopusBridgeVersion = 2" in src
+    assert '"Привет": "Hello"' in src
+    assert mv_bridge.unregister_bridge(td)
+    assert not os.path.isfile(plugin)
+    with open(pj, encoding="utf-8") as f:
+        text3 = f.read()
+    assert '"octopus_ob"' not in text3
+    assert '"YEP_MessageCore"' in text3
+print("   OK")
+
+print()
+print("28) MV-мост: JSON-формат plugins.js (страховка, MZ-стиль)...")
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "js", "plugins"))
+    os.makedirs(os.path.join(td, "data"))
+    with open(os.path.join(td, "js", "plugins.js"), "w",
+              encoding="utf-8") as f:
+        json.dump([{"name": "P", "status": True, "parameters": {}}], f)
+    assert mv_bridge.ensure_bridge_registered(td, _cheats, _tr_p)
+    with open(os.path.join(td, "js", "plugins.js"), "w", encoding="utf-8") as f:
+        json.dump([{"name": "P", "status": True, "parameters": {}},
+                   {"name": "octopus_ob", "status": True,
+                    "description": "", "parameters": {}}], f)
+    with open(os.path.join(td, "js", "plugins.js"), encoding="utf-8") as f:
+        text = f.read()
+    assert text.count("octopus_ob") == 1
+    assert mv_bridge.unregister_bridge(td)
+    with open(os.path.join(td, "js", "plugins.js"), encoding="utf-8") as f:
+        text = f.read()
+    assert "octopus_ob" not in text
+print("   OK")
+
+print()
+print("29) Профиль MV-рантайма: %LOCALAPPDATA%\\User Data учитывается...")
+from app.engines.rpgmaker.tentacle import _nwjs_profile_dirs
+_ld = os.environ.get("LOCALAPPDATA") or ""
+if _ld:
+    with tempfile.TemporaryDirectory() as td:
+        dirs = _nwjs_profile_dirs(td)
+        assert os.path.join(_ld, "User Data") in dirs, dirs
+print("   OK")
+
+print()
+print("30) Клиент моста: probe / eval / tr против фейкового моста...")
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+class _FakeBridge(BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(
+            int(self.headers.get("Content-Length", "0"))).decode("utf-8")
+        out = {"ok": True}
+        if self.path == "/probe":
+            out["name"] = "octopus_ob"
+        elif self.path == "/eval":
+            expr = json.loads(body)["expr"]
+            if expr.startswith("return_string"):
+                out["value"] = json.dumps("Привет из игры")
+            elif expr.startswith("return_obj"):
+                out["value"] = json.dumps({"gold": 100})
+            elif expr.startswith("boom"):
+                out["ok"] = False
+                out["error"] = "SyntaxError"
+            else:
+                out["value"] = "null"
+        elif self.path == "/tr":
+            out["count"] = len(json.loads(body))
+        elif self.path == "/errlog":
+            out["err"] = {"catch": {"msg": "TypeError: x",
+                                    "extra": "file.js:12"}}
+        else:
+            out["ok"] = False
+        data = json.dumps(out, ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *args):  # тишина в консоли тестов
+        pass
+
+_bridge_holder = {}
+class _BridgeServer(threading.Thread):
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.server = HTTPServer(("127.0.0.1", 0), _FakeBridge)
+
+    def run(self):
+        self.server.serve_forever(poll_interval=0.05)
+
+_bs = _BridgeServer()
+_bs.start()
+_port = _bs.server.server_address[1]
+assert mv_bridge.bridge_probe(_port)
+assert mv_bridge.find_bridge_port(wait=0.0) in (0, _port)
+ok, val = mv_bridge.bridge_eval(_port, "return_string x")
+assert ok and val == "Привет из игры", (ok, val)
+ok, val = mv_bridge.bridge_eval(_port, "return_obj x")
+assert ok and val == {"gold": 100}, (ok, val)
+ok, val = mv_bridge.bridge_eval(_port, "boom x")
+assert not ok and "SyntaxError" in str(val)
+ok, val = mv_bridge.bridge_eval(_port, "x = 1")
+assert ok and val is None
+assert mv_bridge.bridge_install_tr(_port, {"Привет": "Hello"})
+err = mv_bridge.bridge_errlog(_port)
+assert err and err["catch"]["msg"] == "TypeError: x", err
+_bs.server.shutdown()
 print("   OK")
 
 print()

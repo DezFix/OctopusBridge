@@ -90,26 +90,56 @@ class RpgMakerModule(EngineModule):
         from . import parser
         if self._asar:
             return self._extract_asar(game_dir)
-        return parser.extract(game_dir)
+        return parser.extract(game_dir, variant=self.variant)
 
     def _extract_asar(self, game_dir: str) -> list:
         from .asar import _temp_project
         from . import parser
         with _temp_project(game_dir) as proj:
-            return parser.extract(proj)
+            return parser.extract(proj, variant=self.variant)
 
     def apply(self, game_dir: str, entries: list, **kwargs) -> dict:
         if self._asar:
             return self._apply_asar(game_dir, entries, **kwargs)
         from . import parser
-        return parser.apply(game_dir, entries,
-                            target_lang=kwargs.get("target_lang", "ru"))
+        stats = parser.apply(game_dir, entries,
+                             target_lang=kwargs.get("target_lang", "ru"))
+        if self.variant == "mv":
+            self._apply_mv_bridge(game_dir, entries, stats)
+        return stats
+
+    def _apply_mv_bridge(self, game_dir: str, entries: list, stats: dict):
+        """MV-профиль: внедряет плагин-мост и статический словарь.
+
+        Официальный рантайм MV не имеет CDP — чит-канал и live-перевод
+        идут через HTTP-мост в игре (octopus_ob.js). Словарь кладётся
+        прямо в плагин, поэтому работает даже без запуска через
+        OctopusBridge. MZ этот путь не затрагивает.
+        """
+        from app.core.rpgmaker import mv_bridge
+        from .tentacle import PAYLOAD, _TRANSLATION_PAYLOAD
+        try:
+            if mv_bridge.ensure_bridge_registered(
+                    game_dir, PAYLOAD, _TRANSLATION_PAYLOAD):
+                n = mv_bridge.update_tr_dict(game_dir, entries)
+                if n:
+                    stats["bridge"] = n
+        except Exception:  # noqa: BLE001
+            pass
 
     def restore_original(self, game_dir: str) -> dict:
         if self._asar:
             return self._restore_asar(game_dir)
         from . import parser
-        return parser.restore_original(game_dir)
+        stats = parser.restore_original(game_dir)
+        if self.variant == "mv":
+            try:
+                from app.core.rpgmaker import mv_bridge
+                if mv_bridge.unregister_bridge(game_dir):
+                    stats["bridge_removed"] = True
+            except Exception:  # noqa: BLE001
+                pass
+        return stats
 
     def _restore_asar(self, game_dir: str) -> dict:
         """Восстанавливает asar из backup/ (самая ранняя папка) либо из

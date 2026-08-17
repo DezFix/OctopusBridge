@@ -156,9 +156,12 @@ with tempfile.TemporaryDirectory() as td:
                 '    old "Старая строка\n'
                 '        с переносом"\n'
                 '    new "Устаревший перевод"\n')
+    with open(stale + "c", "wb") as f:
+        f.write(b"RENPY RPC2" + b"\x00" * 36)  # скомпилированный вариант
     stats2 = renpy.apply(td, entries, "ru")
     assert not os.path.exists(stale), "осиротевший ob_*.rpy не удалён"
-    assert stats2["removed_orphans"] == 1, stats2
+    assert not os.path.exists(stale + "c"), "осиротевший ob_*.rpyc не удалён"
+    assert stats2["removed_orphans"] == 2, stats2
     remaining = [f for f in os.listdir(tl_dir)
                  if f.startswith("ob_") and f.endswith(".rpy")]
     assert "ob_activate.rpy" in remaining and "ob_game__script.rpy" in remaining
@@ -168,6 +171,31 @@ with tempfile.TemporaryDirectory() as td:
             if 'old "' in line or 'new "' in line:
                 assert line.rstrip().endswith('"'), \
                     f"строка old/new не однострочная в {f}: {line!r}"
+
+    # сценарий краша игры: старый билд сгенерировал ob_game__tl__* с теми же
+    # old-строками («A translation ... already exists» при старте Ren'Py) —
+    # повторный apply обязан вычистить и .rpy, и .rpyc
+    dup = os.path.join(tl_dir, "ob_game__tl__russian__ob_Code__Old.rpy")
+    with open(dup, "w", encoding="utf-8") as f:
+        f.write("translate russian strings:\n"
+                '    old "Прощай"\n    new "Старое"\n')
+    dupc = dup + "c"
+    with open(dupc, "wb") as f:
+        f.write(b"RENPY RPC2" + b"\x00" * 36)
+    stats3 = renpy.apply(td, entries, "ru")
+    assert not os.path.exists(dup), "дубль old-строк не вычищен (.rpy)"
+    assert not os.path.exists(dupc), "дубль old-строк не вычищен (.rpyc)"
+    assert stats3["removed_orphans"] == 2, stats3
+
+    # защита в apply: записи с источником из наших ob_-артефактов не пишутся
+    fake = TranslationEntry(id=999, file="game/tl/russian/ob_Code__Old.rpy",
+                            json_path="x", context="x",
+                            original="Самоперевод", translation="XXX")
+    stats4 = renpy.apply(td, entries + [fake], "ru")
+    assert not os.path.exists(
+        os.path.join(tl_dir, "ob_game__tl__russian__ob_Code__Old.rpy")), \
+        "запись из ob_-артефакта попала в ob_*.rpy"
+    assert stats4["removed_orphans"] == 0, stats4
 print("   OK")
 
 print("2d3) Ren'Py: наши ob_* артефакты не извлекаются как текст игры...")
@@ -192,6 +220,48 @@ with tempfile.TemporaryDirectory() as td:
     assert "Старый артефакт" not in texts, texts
     assert "Активатор" not in texts, texts
     assert "Привет, я ведьма." in texts
+print("   OK")
+
+print("2d5) Ren'Py: пустой прогон (files==0) чистит битые ob_*.rpy/.rpyc старых билдов...")
+with tempfile.TemporaryDirectory() as td:
+    make_renpy(td)
+    tl_dir = os.path.join(td, "game", "tl", "russian")
+    os.makedirs(tl_dir, exist_ok=True)
+    # битый файл старого билда: сырые переносы строк в old («Could not
+    # parse string») — как в реальном краше Demon Boy Saga
+    broken = os.path.join(tl_dir, "ob_tl__english__Code__Old.rpy")
+    with open(broken, "w", encoding="utf-8") as f:
+        f.write("translate russian strings:\n"
+                '    old "{b}-{/b} {i}Love you Shawty.\n'
+                '    From : Peter Shaw  {/i}"\n'
+                '    new "Люблю тебя"\n')
+    with open(broken + "c", "wb") as f:
+        f.write(b"RENPY RPC2" + b"\x00" * 36)
+    # самоперевод старого билда: извлечён из наших же ob_* (дубль old,
+    # «A translation ... already exists»)
+    dup = os.path.join(tl_dir, "ob_game__tl__russian__ob_Code__Old.rpy")
+    with open(dup, "w", encoding="utf-8") as f:
+        f.write("translate russian strings:\n"
+                '    old "Прощай"\n    new "Старое"\n')
+    with open(dup + "c", "wb") as f:
+        f.write(b"RENPY RPC2" + b"\x00" * 36)
+    # здоровые файлы текущего билда (экранированный \\n) — трогать нельзя
+    good = os.path.join(tl_dir, "ob_tl__english__Code__Good.rpy")
+    with open(good, "w", encoding="utf-8") as f:
+        f.write("translate russian strings:\n"
+                '    old "Hello \\nwith \\\\n escape"\n'
+                '    new "Привет"\n')
+    with open(good + "c", "wb") as f:
+        f.write(b"RENPY RPC2" + b"\x00" * 36)
+
+    stats = renpy.apply(td, [], "ru")  # пустой прогон: переводов нет
+    assert not os.path.exists(broken), "битый ob_*.rpy не вычищен"
+    assert not os.path.exists(broken + "c"), "битый ob_*.rpyc не вычищен"
+    assert not os.path.exists(dup), "самоперевод не вычищен"
+    assert not os.path.exists(dup + "c"), "самоперевод .rpyc не вычищен"
+    assert os.path.exists(good) and os.path.exists(good + "c"), \
+        "здоровый ob_*.rpy/.rpyc удалён зря"
+    assert stats["removed_orphans"] == 4, stats
 print("   OK")
 
 print("2d4) Ren'Py: одинаковые old из разных скриптов пишутся один раз...")
