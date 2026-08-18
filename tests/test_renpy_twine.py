@@ -64,7 +64,8 @@ with tempfile.TemporaryDirectory() as td:
     assert 'old "Привет, я ведьма."' in content
     assert 'new "TR:Привет, я ведьма."' in content
     assert renpy.apply(td, entries, "ru")  # повторная генерация не падает
-    dup = entries[:1] + entries[:1]
+    dup = [e for e in entries if e.original == "Привет, я ведьма."] \
+        + [e for e in entries if e.original == "Привет, я ведьма."]
     for i, e in enumerate(dup):
         e.id = i + 1
     stats2 = renpy.apply(td, dup, "ru")
@@ -341,6 +342,12 @@ class Menu(Node):
 class Define(Node):
     pass
 
+class Python(Node):
+    pass
+
+class Default(Node):
+    pass
+
 class Screen(Node):
     pass
 
@@ -548,6 +555,77 @@ def check_rpyc_texts(texts: list[str]) -> None:
     assert not any(t in ("player.name", "x", "menu_music['title']")
                    for t in texts), texts
     assert len(texts) == 15, texts
+
+
+print("2l) Ren'Py: python-код в .rpy — тексты квестов, промпты, уведомления, f-строки...")
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "game"))
+    script = (
+        'define quest_desc = "Найди меч в пещере"\n'
+        'default gold_text = "Золото: {gold}"\n'
+        'init python:\n'
+        '    quests = {\n'
+        '        "q1": "Победи дракона",\n'
+        '        "quest_1": "Спаси принцессу из башни",\n'
+        '    }\n'
+        '    renpy.notify("Квест принят")\n'
+        '    name = renpy.input("Как тебя зовут?")\n'
+        '    hp_text = f"HP: {hp}"\n'
+        '    logo = "images/logo.png"\n'
+        '    url = "https://example.com"\n'
+        '    color = "#ff8800"\n'
+        '    count = 42\n'
+        '$ renpy.notify("Выбор сделан")\n'
+    )
+    with open(os.path.join(td, "game", "script.rpy"), "w",
+              encoding="utf-8") as f:
+        f.write(script)
+    texts = [e.original for e in renpy.extract(td)]
+    for want in ("Найди меч в пещере", "Золото: {gold}",
+                 "Победи дракона", "Спаси принцессу из башни",
+                 "Квест принят", "Как тебя зовут?", "HP: {hp}",
+                 "Выбор сделан"):
+        assert want in texts, (want, texts)
+    for bad in ("q1", "quest_1", "images/logo.png", "https://example.com",
+                "#ff8800", "42", "gold_text"):
+        assert bad not in texts, (bad, texts)
+print("   OK")
+
+print("2m) Ren'Py: python-узлы в .rpyc (Python/Default) извлекаются...")
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "game"))
+    import sys as _sys
+    import importlib as _importlib
+    stub_dir = os.path.join(tempfile.gettempdir(), "ob_renpy_stub_2m")
+    make_renpy_stub(stub_dir)
+    if stub_dir not in _sys.path:
+        _sys.path.insert(0, stub_dir)
+    _importlib.import_module("renpy.ast")
+    from renpy.ast import Python, Default, PyCode, PyExpr
+
+    def build_py_rpyc():
+        import pickle as _pickle
+        py = Python()
+        code = PyCode()
+        code.source = ('quests = {\n'
+                       '    "q1": "Победи дракона",\n'
+                       '}\n'
+                       'renpy.notify("Квест принят")')
+        code.location = ("script.rpy", 1)
+        code.mode = "exec"
+        code.py = 3
+        py.code = code
+        d = Default()
+        d.value = PyExpr('"Найди меч"', "script.rpy", 2)
+        return _pickle.dumps(({"_ob": True}, [py, d]), protocol=2)
+
+    with open(os.path.join(td, "game", "script.rpyc"), "wb") as f:
+        f.write(build_rpc2_rpyc(build_py_rpyc()))
+    texts = [e.original for e in renpy.extract(td)]
+    for want in ("Победи дракона", "Квест принят", "Найди меч"):
+        assert want in texts, (want, texts)
+    assert "q1" not in texts, texts
+print("   OK")
 
 
 print("2e) Ren'Py: legacy .rpyc (Ren'Py < 7.1: zlib(pickle) без RPC2)...")

@@ -92,6 +92,8 @@ _SPIN_UP = _asset_url("chevron-up.png")
 _SPIN_DOWN = _asset_url("chevron-down.png")
 _MENU_RIGHT = _asset_url("chevron-right.png")
 _MENU_CHECK = _asset_url("check.png")
+_STEP_ARROW = _asset_url("chevron-down.png")
+_STEP_ARROW_ACTIVE = _asset_url("chevron-down-white.png")
 
 _QSS = f"""
 * {{
@@ -289,6 +291,18 @@ QToolButton#step::menu-arrow {{
 }}
 QToolButton#step[active="true"]::menu-arrow {{
     border-top-color: #ffffff;
+}}
+QFrame#mode_option {{
+    background: {C_CARD};
+    border: 1px solid {C_BORDER};
+    border-radius: {RADIUS_MD}px;
+}}
+QFrame#mode_option:hover {{
+    border-color: {C_PRIMARY};
+}}
+QFrame#mode_option[selected="true"] {{
+    background: rgba(91, 127, 255, 0.16);
+    border-color: {C_PRIMARY};
 }}
 QComboBox#chip_filter {{
     background: transparent;

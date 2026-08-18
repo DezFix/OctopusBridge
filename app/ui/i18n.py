@@ -172,6 +172,11 @@ _STRINGS = {
     "tr_correcting": {"ru": "ИИ-коррекция…", "en": "Correcting…"},
     "tr_mode_new": {"ru": "Только новые и сбойные", "en": "New & failed only"},
     "tr_mode_all": {"ru": "Перевести всё заново", "en": "Re-translate all"},
+    "tr_mode": {"ru": "Режим перевода", "en": "Translation mode"},
+    "tr_mode_new_desc": {"ru": "Переведёт только непереведённые строки и строки с ошибками",
+                         "en": "Translate only untranslated lines and failed ones"},
+    "tr_mode_all_desc": {"ru": "Перезапишет все строки, включая уже переведённые",
+                         "en": "Rewrite all lines, including already translated"},
     "tr_translate": {"ru": "Перевести", "en": "Translate"},
     "tr_cancel": {"ru": "Отмена", "en": "Cancel"},
     "tr_apply": {"ru": "Внедрить в игру", "en": "Apply to game"},
@@ -224,12 +229,12 @@ _STRINGS = {
         "en": "No translation needed: the text is already in the target language.",
     },
     "tr_translate_lang": {
-        "ru": "Язык перевода",
-        "en": "Translation language",
+        "ru": "Язык игры",
+        "en": "Game language",
     },
     "tr_lang_all": {
-        "ru": "Весь текст игры (все языки)",
-        "en": "All game text (every language)",
+        "ru": "Весь текст игры",
+        "en": "All game text",
     },
     "tr_lang_dialog_title": {
         "ru": "Язык перевода",

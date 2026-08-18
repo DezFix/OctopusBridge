@@ -4,15 +4,16 @@
 статус-пилюли, степпер шагов в топбаре."""
 from __future__ import annotations
 
+import os
 import time
 
 from PySide6.QtCore import (QEvent, QPointF, QRectF, QSize, Qt, QThread,
                             QTimer, Signal)
-from PySide6.QtGui import (QAction, QActionGroup, QColor, QFont, QIcon,
+from PySide6.QtGui import (QAction, QColor, QFont, QIcon,
                            QKeySequence, QLinearGradient, QPainter,
                            QPainterPath, QPen, QPixmap, QShortcut)
 from PySide6.QtWidgets import (QAbstractItemDelegate, QAbstractItemView,
-                               QApplication, QButtonGroup, QCheckBox,
+                               QApplication,
                                QDialog, QDialogButtonBox,
                                QFormLayout,
                                QFileDialog, QFrame, QHBoxLayout, QHeaderView,
@@ -21,7 +22,7 @@ from PySide6.QtWidgets import (QAbstractItemDelegate, QAbstractItemView,
                                QRadioButton, QScrollArea,
                                QSplitter,
                                QStackedWidget, QStyledItemDelegate,
-                               QTableWidget, QTableWidgetItem, QToolButton,
+                               QTableWidget, QTableWidgetItem,
                                QVBoxLayout, QWidget)
 
 from app.core.models import TranslationEntry
@@ -102,32 +103,81 @@ class ExtractWorker(QThread):
             self.failed.emit(str(e))
 
 
-class _LanguageChoiceDialog(QDialog):
-    """Выбор: переводить весь текст игры или только один официальный
-    перевод (Ren'Py, несколько tl/<lang>)."""
+class _ModeOption(QFrame):
+    """Кликабельная плитка выбора режима: заголовок + описание.
+    Подсвечивается рамкой/фоном при выборе (QSS #mode_option)."""
 
-    def __init__(self, langs: list[str], parent=None):
+    clicked = Signal()
+
+    def __init__(self, title: str, desc: str, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(TR("tr_lang_dialog_title"))
-        self.setModal(True)
-        self.setMinimumWidth(400)
+        self.setObjectName("mode_option")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMinimumHeight(58)
         lay = QVBoxLayout(self)
-        hint = QLabel(TR("tr_lang_dialog_question"))
-        hint.setWordWrap(True)
-        lay.addWidget(hint)
-        self._group = QButtonGroup(self)
-        self._radio_all = QRadioButton(TR("tr_lang_all"))
-        self._group.addButton(self._radio_all)
-        self._radio_all.setChecked(True)
-        lay.addWidget(self._radio_all)
-        self._radio_lang: dict[str, QRadioButton] = {}
+        lay.setContentsMargins(14, 10, 14, 10)
+        lay.setSpacing(3)
+        lbl_t = QLabel(title)
+        lbl_t.setStyleSheet(
+            "background: transparent; color: #e8eaf1; font-weight: 600;")
+        lbl_d = QLabel(desc)
+        lbl_d.setStyleSheet(
+            "background: transparent; color: #aab1c4; font-size: 11px;")
+        lbl_d.setWordWrap(True)
+        lay.addWidget(lbl_t)
+        lay.addWidget(lbl_d)
+
+    def set_selected(self, on: bool):
+        self.setProperty("selected", on)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
+
+    def is_selected(self) -> bool:
+        return self.property("selected") is True
+
+    def mousePressEvent(self, event):  # noqa: N802
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+
+class _TranslateDialog(QDialog):
+    """Выбор параметров перевода: язык (весь текст или один официальный)
+    и режим (только непереведённое или всё заново). Открывается по клику
+    на кнопку «Перевести» вместо выпадающего меню."""
+
+    def __init__(self, langs: list[str], current: str | None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(TR("tr_translate"))
+        self.setModal(True)
+        self.setMinimumWidth(440)
+        lay = QVBoxLayout(self)
+        lay.setSpacing(10)
+
+        lbl_lang = QLabel(TR("tr_translate_lang"))
+        lay.addWidget(lbl_lang)
+        self.cb_lang = AnimatedComboBox()
+        self.cb_lang.addItem(TR("tr_lang_all"), None)
         for lang in langs:
-            rb = QRadioButton(lang)
-            self._group.addButton(rb)
-            self._radio_lang[lang] = rb
-            lay.addWidget(rb)
-        self.chk_remember = QCheckBox(TR("tr_lang_dialog_remember"))
-        lay.addWidget(self.chk_remember)
+            if lang and lang != "None":
+                self.cb_lang.addItem(lang, lang)
+        idx = self.cb_lang.findData(current)
+        if idx < 0:
+            idx = 0
+        self.cb_lang.setCurrentIndex(idx)
+        lay.addWidget(self.cb_lang)
+
+        lbl_mode = QLabel(TR("tr_mode"))
+        lay.addWidget(lbl_mode)
+        self._opt_new = _ModeOption(TR("tr_mode_new"), TR("tr_mode_new_desc"))
+        self._opt_all = _ModeOption(TR("tr_mode_all"), TR("tr_mode_all_desc"))
+        self._opt_new.clicked.connect(lambda: self._select_mode(self._opt_new))
+        self._opt_all.clicked.connect(lambda: self._select_mode(self._opt_all))
+        self._select_mode(self._opt_new)
+        lay.addWidget(self._opt_new)
+        lay.addWidget(self._opt_all)
+
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
         b_ok = QPushButton(TR("btn_ok"))
@@ -138,12 +188,15 @@ class _LanguageChoiceDialog(QDialog):
         btn_row.addWidget(b_cancel)
         lay.addLayout(btn_row)
 
-    def choice(self) -> str | None:
-        """Выбранный язык или None = весь текст."""
-        for lang, rb in self._radio_lang.items():
-            if rb.isChecked():
-                return lang
-        return None
+    def _select_mode(self, opt: _ModeOption):
+        self._opt_new.set_selected(opt is self._opt_new)
+        self._opt_all.set_selected(opt is self._opt_all)
+
+    def lang(self) -> str | None:
+        return self.cb_lang.currentData()
+
+    def overwrite(self) -> bool:
+        return self._opt_all.is_selected()
 
 
 class TranslateWorker(QThread):
@@ -691,6 +744,7 @@ class TranslateTab(QWidget):
         self._cancel_timer: QTimer | None = None
         self._status_timer: QTimer | None = None
         self._last_progress = (0, 0)
+        self._pending_overwrite = False
         self._selected_file = ""
         self._file_items: list[_FileItem] = []
         self._toast_timer: QTimer | None = None
@@ -712,32 +766,12 @@ class TranslateTab(QWidget):
         self.btn_extract.clicked.connect(self.extract_text)
         bar.addWidget(self.btn_extract)
 
-        self.btn_translate = QToolButton()
-        self.btn_translate.setObjectName("step")
+        self.btn_translate = QPushButton(TR("tr_translate"))
+        self.btn_translate.setProperty("step", True)
         self.btn_translate.setIcon(_step_icon(2))
         self.btn_translate.setIconSize(QSize(16, 16))
-        self.btn_translate.setText(" " + TR("tr_translate") + "   ")
-        self.btn_translate.setPopupMode(
-            QToolButton.ToolButtonPopupMode.MenuButtonPopup)
-        self.btn_translate.setToolButtonStyle(
-            Qt.ToolButtonTextBesideIcon)
-        self._mode_group = QActionGroup(self)
-        self._act_new = self._mode_group.addAction(TR("tr_mode_new"))
-        self._act_all = self._mode_group.addAction(TR("tr_mode_all"))
-        self._act_new.setCheckable(True)
-        self._act_all.setCheckable(True)
-        self._act_new.setChecked(True)
-        menu = AnimatedMenu(self.btn_translate)
-        menu.addAction(self._act_new)
-        menu.addAction(self._act_all)
-        self._lang_menu = menu.addMenu(TR("tr_translate_lang"))
-        self._lang_menu.setIcon(icon("translate", 14, C_TEXT_SECONDARY))
-        self._lang_group = QActionGroup(self)
-        self._lang_actions: dict[str | None, QAction] = {}
-        self._refresh_lang_menu()
-        self.btn_translate.setMenu(menu)
         self.btn_translate.setCursor(Qt.PointingHandCursor)
-        self.btn_translate.clicked.connect(self.translate_all)
+        self.btn_translate.clicked.connect(self._translate_with_options)
         bar.addWidget(self.btn_translate)
 
         self.btn_apply = QPushButton(TR("tr_apply"))
@@ -1434,59 +1468,30 @@ class TranslateTab(QWidget):
     # ── translate ──
 
     def _lang_options(self) -> list[str]:
-        """Официальные языки перевода игры (Ren'Py: game/tl/*)."""
+        """Официальные языки игры (Ren'Py: game/tl/*). Отбрасываем
+        «None» (системные строки) и папки, где лежат только переводы,
+        созданные самим приложением (ob_*-файлы) — это не языки
+        разработчика."""
         module = self.main.engine_module
         p = self._project()
         if not (module and p and hasattr(module, "list_languages")):
             return []
         try:
-            return list(module.list_languages(p.game_dir) or [])
+            langs = list(module.list_languages(p.game_dir) or [])
         except Exception:  # noqa: BLE001
             return []
-
-    def _refresh_lang_menu(self):
-        """Пункты «Язык перевода»: весь текст + каждый официальный язык."""
-        self._lang_menu.clear()
-        self._lang_actions = {}
-        p = self._project()
-        current = p.extract_lang if p else None
-
-        def _act(label: str, value: str | None):
-            a = self._lang_group.addAction(label)
-            a.setCheckable(True)
-            a.setChecked(current == value)
-            a.triggered.connect(lambda _=False, v=value: self._set_lang(v))
-            self._lang_menu.addAction(a)
-            self._lang_actions[value] = a
-
-        _act(TR("tr_lang_all"), None)
-        for lang in self._lang_options():
-            _act(lang, lang)
-
-    def _set_lang(self, lang: str | None):
-        """Сменить язык перевода → сохранить и переизвлечь проект."""
-        p = self._project()
-        if not p:
-            return
-        prev = p.extract_lang
-        p.extract_lang = lang
-        p.lang_asked = True
-        self.main.save_project()
-        self._refresh_lang_menu()
-        if prev == lang:
-            return
-        self.btn_extract.setEnabled(False)
-        self.lbl_status.setText(TR("tr_extracting"))
-        self.main.start_extraction(self._on_lang_extracted)
-
-    def _on_lang_extracted(self, restored: int, error: str):
-        self.btn_extract.setEnabled(True)
-        if error:
-            self.lbl_status.setText(error)
-            return
-        self.main.refresh_all()
-        self.lbl_status.setText(TR("tr_lang_applied", count=len(
-            self._project().entries) if self._project() else 0))
+        res = []
+        for lang in langs:
+            if not lang or lang == "None":
+                continue
+            tl_dir = os.path.join(p.game_dir, "game", "tl", lang)
+            if os.path.isdir(tl_dir):
+                files = [f for f in os.listdir(tl_dir)
+                         if not f.endswith((".rpyc", ".json"))]
+                if files and all(f.startswith("ob_") for f in files):
+                    continue
+            res.append(lang)
+        return res
 
     def _on_lang_extracted_then_translate(self, restored: int, error: str):
         self.btn_extract.setEnabled(True)
@@ -1496,39 +1501,34 @@ class TranslateTab(QWidget):
         self.main.refresh_all()
         self.translate_all()
 
-    def _ensure_lang_then_translate(self) -> bool:
-        """Первый раз: спросить, что переводить — весь текст игры или
-        только один официальный язык (Ren'Py, несколько tl/<lang>).
-        True — перевод можно начинать; False — запущено переизвлечение."""
+    def _translate_with_options(self):
+        """Клик по «Перевести»: диалог — язык перевода (весь текст или
+        один официальный) и режим (только непереведённое / всё заново),
+        затем перевод."""
         p = self._project()
-        if getattr(p, "lang_asked", False):
-            return True
-        langs = self._lang_options()
-        if len(langs) < 2:
-            return True
-        dlg = _LanguageChoiceDialog(langs, self)
+        if not p or not p.entries:
+            QMessageBox.information(self, TR("err"), TR("tr_no_data"))
+            return
+        dlg = _TranslateDialog(self._lang_options(), p.extract_lang, self)
         if not dlg.exec():
-            return False
-        choice = dlg.choice()
+            return
+        lang = dlg.lang()
+        self._pending_overwrite = dlg.overwrite()
         prev = p.extract_lang
-        p.extract_lang = choice
-        if dlg.chk_remember.isChecked():
-            p.lang_asked = True
+        p.extract_lang = lang
+        p.lang_asked = True
         self.main.save_project()
-        self._refresh_lang_menu()
-        if prev == choice:
-            return True
-        self.btn_extract.setEnabled(False)
-        self.lbl_status.setText(TR("tr_extracting"))
-        self.main.start_extraction(self._on_lang_extracted_then_translate)
-        return False
+        if prev != lang:
+            self.btn_extract.setEnabled(False)
+            self.lbl_status.setText(TR("tr_extracting"))
+            self.main.start_extraction(self._on_lang_extracted_then_translate)
+            return
+        self.translate_all()
 
     def translate_all(self):
         p = self._project()
         if not p or not p.entries:
             QMessageBox.information(self, TR("err"), TR("tr_no_data"))
-            return
-        if not self._ensure_lang_then_translate():
             return
         engine = self.main.create_engine("files")
         if engine is None:
@@ -1545,7 +1545,7 @@ class TranslateTab(QWidget):
         self.worker = TranslateWorker(
             translator, p.entries,
             s.value("source_lang", "auto"), s.value("target_lang", "ru"),
-            overwrite=self._act_all.isChecked())
+            overwrite=self._pending_overwrite)
         self.worker.progressed.connect(self._on_progress)
         self.worker.done.connect(self._on_translated)
         self.worker.failed.connect(self._on_translate_failed)

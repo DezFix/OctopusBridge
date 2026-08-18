@@ -199,8 +199,8 @@ for key in ("settings_corr_tab", "settings_glossary_box",
     assert TR(key), key
 print("   OK")
 
-print("8) Ren'Py: выбор языка перевода (tl/*)...")
-from app.ui.translate_tab import _LanguageChoiceDialog
+print("8) Ren'Py: диалог перевода (язык tl/* + режим)...")
+from app.ui.translate_tab import _TranslateDialog
 with tempfile.TemporaryDirectory() as td:
     make_renpy(td)
     tl = os.path.join(td, "game", "tl")
@@ -212,15 +212,13 @@ with tempfile.TemporaryDirectory() as td:
                     % lang)
     assert w.open_project(td) == "renpy"
     assert w.translate_tab._lang_options() == ["english", "french"]
-    w.project.extract_lang = "english"
-    w.project.lang_asked = True
-    w.translate_tab._refresh_lang_menu()
-    assert w.translate_tab._lang_actions[None].isChecked() is False
-    assert w.translate_tab._lang_actions["english"].isChecked()
-    dlg = _LanguageChoiceDialog(["english", "french"], w)
-    assert dlg.choice() is None  # по умолчанию — весь текст
-    dlg._radio_lang["french"].setChecked(True)
-    assert dlg.choice() == "french"
+    dlg = _TranslateDialog(["english", "french"], "english", w)
+    assert dlg.lang() == "english"  # текущий язык игры выбран
+    assert dlg.overwrite() is False  # по умолчанию — только новые
+    dlg._select_mode(dlg._opt_all)
+    assert dlg.overwrite() is True
+    dlg.cb_lang.setCurrentIndex(0)  # «весь текст игры»
+    assert dlg.lang() is None
 print("   OK")
 
 print("9) Мастер первоначальной настройки...")

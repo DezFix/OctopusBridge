@@ -2,6 +2,12 @@
 
 All notable changes to the project. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: `X.Y` — `X` is the update number (new features), `Y` fixes for the last update (e.g. `154.6`).
 
+## [7.1] — 2026-08-18
+
+### Changed
+- **Translation dialog instead of dropdown menu**: clicking "Translate" now opens a dialog with the game language picker (whole game text or one official Ren'Py translation) and a translation mode — "only new & failed lines" or "re-translate everything". The mode is confirmed explicitly instead of hiding in a menu arrow.
+- **Official language list filtered**: Ren'Py `tl/*` languages created by the app itself (`ob_*` files only) and system "None" entries are no longer offered as translation languages.
+
 ## [7.0] — 2026-08-18
 
 ### Added
