@@ -39,6 +39,12 @@ def main():
     if os.path.isfile(icon_path):
         app.setWindowIcon(QIcon(icon_path))
     apply_dark_theme(app)
+    from PySide6.QtCore import QSettings
+    from app.ui.setup_wizard import SetupWizard
+    if not QSettings("OctopusBridge", "OctopusBridge").value(
+            "setup_done", False, type=bool):
+        wizard = SetupWizard()
+        wizard.exec()
     window = MainWindow()
     window.show()
     sys.excepthook = _excepthook

@@ -10,7 +10,8 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QFormLayout,
                                 QVBoxLayout, QWidget)
 
 from app.core import cache as app_cache
-from app.core.translate.engines import PROVIDERS, AI_PROVIDERS
+from app.core.translate.engines import (PROVIDERS, AI_PROVIDERS,
+                                         SOURCE_LANGS, TARGET_LANGS)
 from app.ui.i18n import TR, provider_name
 from app.ui.icons import icon
 from app.ui.loading_overlay import BusyLabel
@@ -63,6 +64,9 @@ class SettingsDialog(QDialog):
 
         bottom = QHBoxLayout()
         bottom.addStretch(1)
+        btn_wizard = QPushButton(TR("settings_show_wizard"))
+        btn_wizard.clicked.connect(self._show_wizard)
+        bottom.addWidget(btn_wizard)
         btn_save = QPushButton(TR("settings_save"))
         btn_save.setObjectName("accent")
         btn_save.clicked.connect(self._save_and_close)
@@ -143,13 +147,17 @@ class SettingsDialog(QDialog):
         form = QFormLayout(box)
 
         self.source_lang = AnimatedComboBox()
-        self.source_lang.addItems(["auto", "ja", "zh", "en"])
-        self.source_lang.setCurrentText(s.value("source_lang", "auto"))
+        for code in SOURCE_LANGS:
+            self.source_lang.addItem(TR("lang_" + code), code)
+        idx = self.source_lang.findData(s.value("source_lang", "auto"))
+        self.source_lang.setCurrentIndex(max(idx, 0))
         form.addRow(TR("settings_src_lang"), self.source_lang)
 
         self.target_lang = AnimatedComboBox()
-        self.target_lang.addItems(["ru", "en"])
-        self.target_lang.setCurrentText(s.value("target_lang", "ru"))
+        for code in TARGET_LANGS:
+            self.target_lang.addItem(TR("lang_" + code), code)
+        idx = self.target_lang.findData(s.value("target_lang", "ru"))
+        self.target_lang.setCurrentIndex(max(idx, 0))
         form.addRow(TR("settings_tgt_lang"), self.target_lang)
 
         lay.addWidget(box)
@@ -161,18 +169,6 @@ class SettingsDialog(QDialog):
         self.ui_lang.setCurrentIndex(0 if s.value("ui_lang", "ru") == "ru" else 1)
         ui_form.addRow(TR("settings_ui_lang"), self.ui_lang)
         lay.addWidget(ui_box)
-
-        close_box = QGroupBox(TR("settings_close_behavior"))
-        close_form = QFormLayout(close_box)
-        self.close_behavior = AnimatedComboBox()
-        self.close_behavior.addItems([
-            TR("settings_close_tray"),
-            TR("settings_close_quit"),
-        ])
-        self.close_behavior.setCurrentIndex(
-            0 if s.value("close_to_tray", True, type=bool) else 1)
-        close_form.addRow(TR("settings_close_behavior"), self.close_behavior)
-        lay.addWidget(close_box)
 
         launch_box = QGroupBox(TR("settings_game"))
         launch_form = QFormLayout(launch_box)
@@ -410,6 +406,21 @@ class SettingsDialog(QDialog):
             TR("settings_status_ready") if ok else TR("settings_status_fail"))
         self._ping_workers.pop(prefix, None)
 
+    # ── Show setup wizard again ──
+    def _show_wizard(self):
+        from app.ui.setup_wizard import SetupWizard
+
+        s = self.main.settings
+        old_lang = s.value("ui_lang", "ru")
+        s.setValue("setup_done", False)
+        wizard = SetupWizard(self)
+        wizard.exec()
+        new_lang = s.value("ui_lang", "ru")
+        self.ui_lang.setCurrentIndex(0 if new_lang == "ru" else 1)
+        if new_lang != old_lang:
+            QMessageBox.information(self, TR("info"),
+                                    TR("settings_restart_hint"))
+
     # ── Save & close ──
     def _save_engine(self, eng: dict, engine_key: str, prefix: str):
         s = self.main.settings
@@ -423,10 +434,9 @@ class SettingsDialog(QDialog):
         s = self.main.settings
         self._save_engine(self.files_eng, "engine_files", "files")
         self._save_engine(self.corr_eng, "engine_corrector", "corrector")
-        s.setValue("source_lang", self.source_lang.currentText())
-        s.setValue("target_lang", self.target_lang.currentText())
+        s.setValue("source_lang", self.source_lang.currentData())
+        s.setValue("target_lang", self.target_lang.currentData())
         s.setValue("auto_launch", self.auto_launch.isChecked())
-        s.setValue("close_to_tray", self.close_behavior.currentIndex() == 0)
         s.setValue("file_overwrite_mode", self.overwrite_mode.currentIndex())
         s.setValue("auto_backup", self.auto_backup.isChecked())
         s.setValue("glossary_use_ai", self.glossary_use_ai.isChecked())

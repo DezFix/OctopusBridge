@@ -102,6 +102,10 @@ with tempfile.TemporaryDirectory() as td:
     assert "cheats" in roles and roles.count("module") >= 1
     assert w.cheat_tab is not None
     assert w.engine_module.extract(td)
+    dash = w.welcome_tab
+    assert dash.btn_font_choose is not None
+    assert dash.spin_font_size.minimum() == 12
+    assert dash.spin_font_size.maximum() == 64
 with tempfile.TemporaryDirectory() as td:
     make_renpy(td)
     assert w.open_project(td) == "renpy"
@@ -217,6 +221,45 @@ with tempfile.TemporaryDirectory() as td:
     assert dlg.choice() is None  # по умолчанию — весь текст
     dlg._radio_lang["french"].setChecked(True)
     assert dlg.choice() == "french"
+print("   OK")
+
+print("9) Мастер первоначальной настройки...")
+from app.ui.setup_wizard import SetupWizard
+s = w.settings
+s.setValue("setup_done", False)
+wiz = SetupWizard(w)
+assert wiz._stack.count() == 4
+assert wiz.btn_back.isHidden()
+wiz._on_next()  # → языки
+wiz.cb_source.setCurrentIndex(wiz.cb_source.findData("ja"))
+wiz.cb_target.setCurrentIndex(wiz.cb_target.findData("en"))
+wiz.cb_ui_lang.setCurrentIndex(1)  # пересборка, выборы не теряются
+assert wiz.cb_source.currentData() == "ja"
+assert wiz.cb_target.currentData() == "en"
+assert wiz.cb_ui_lang.currentIndex() == 1
+wiz._on_next()  # → переводчик
+wiz.cb_provider.setCurrentIndex(wiz.cb_provider.findData("ai"))
+wiz.ed_base_url.setText("http://127.0.0.1:1234/v1")
+wiz.ed_model.setText("wizard-model")
+assert not wiz.ed_base_url.isHidden()
+wiz.cb_provider.setCurrentIndex(wiz.cb_provider.findData("rotate"))
+assert wiz.ed_base_url.isHidden()
+wiz.cb_provider.setCurrentIndex(wiz.cb_provider.findData("ai"))
+wiz._on_next()  # → поведение
+wiz._on_next()  # → готово
+assert s.value("setup_done", False, type=bool) is True
+assert s.value("source_lang") == "ja"
+assert s.value("target_lang") == "en"
+assert s.value("ui_lang") == "en"
+assert s.value("engine_files") == "ai"
+assert s.value("model") == "wizard-model"
+# «Пропустить» — просто ставит флаг
+s.setValue("setup_done", False)
+wiz2 = SetupWizard(w)
+wiz2._on_skip()
+assert s.value("setup_done", False, type=bool) is True
+s.setValue("ui_lang", "ru")
+s.setValue("setup_done", True)
 print("   OK")
 
 w.close()

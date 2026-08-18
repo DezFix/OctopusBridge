@@ -12,7 +12,7 @@ import os
 
 from PySide6.QtCore import QSettings, Signal
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import (QMainWindow, QSystemTrayIcon)
+from PySide6.QtWidgets import QMainWindow
 
 import app as app_paths
 from app.core import cache as app_cache
@@ -27,7 +27,7 @@ from app.ui.i18n import TR, provider_short_name, set_language
 from app.ui.welcome_tab import WelcomeTab
 from app.ui.projects_tab import ProjectsTab
 from app.ui.translate_tab import TranslateTab
-from app.ui.theme import AnimatedMenu, AnimatedTabWidget
+from app.ui.theme import AnimatedTabWidget
 
 PROJECTS_DIR = app_paths.projects_dir()
 
@@ -69,6 +69,8 @@ def _cleanup_legacy_settings(s: QSettings):
     for key in ("engine_files", "engine_corrector"):
         if s.value(key) in ("nllb", "argos", "honyaku"):
             s.setValue(key, "ai" if key == "engine_corrector" else "rotate")
+    # системный трей убран из приложения — настройка больше не читается
+    s.remove("close_to_tray")
 
 
 def _migrate_project_files():
@@ -106,9 +108,6 @@ class MainWindow(QMainWindow):
         icon_path = app_paths.icon_path()
         if os.path.isfile(icon_path):
             self.setWindowIcon(QIcon(icon_path))
-
-        self._really_quit = False
-        self._setup_tray()
 
         os.makedirs(PROJECTS_DIR, exist_ok=True)
         _migrate_project_files()
@@ -173,36 +172,6 @@ class MainWindow(QMainWindow):
         if getattr(self, "loading", None):
             self.loading.setGeometry(self.rect())
         super().resizeEvent(event)
-
-    # ---------- трей ----------
-    def _setup_tray(self):
-        icon = QIcon(app_paths.icon_path())
-        if icon.isNull():
-            return
-        self.tray = QSystemTrayIcon(icon, self)
-        self.tray.setToolTip(TR("app_title"))
-        menu = AnimatedMenu()
-        act_open = menu.addAction(TR("tray_open"))
-        act_open.triggered.connect(self._tray_open)
-        menu.addSeparator()
-        act_quit = menu.addAction(TR("tray_quit"))
-        act_quit.triggered.connect(self._tray_quit)
-        self.tray.setContextMenu(menu)
-        self.tray.activated.connect(self._on_tray_activated)
-        self.tray.show()
-
-    def _on_tray_activated(self, reason):
-        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
-            self._tray_open()
-
-    def _tray_open(self):
-        self.showNormal()
-        self.raise_()
-        self.activateWindow()
-
-    def _tray_quit(self):
-        self._really_quit = True
-        self.close()
 
     # ---------- показать/скрыть рабочие вкладки ----------
     def _show_work_tabs(self):
@@ -521,7 +490,9 @@ class MainWindow(QMainWindow):
 
     def _stop_workers(self):
         """Мягко останавливает фоновые QThread перед выходом —
-        иначе QThread.destroy во время run() роняет процесс."""
+        иначе QThread.destroy во время run() роняет процесс.
+        terminate() не используется: он убивает поток посреди C-кода
+        (requests/SSL/sqlite) и роняет весь процесс до сохранения."""
         tt = self.translate_tab
         for worker, cancel in (
                 (tt.worker, getattr(tt.worker.translator, "cancel", None)
@@ -538,7 +509,7 @@ class MainWindow(QMainWindow):
                 if cancel:
                     cancel()
                 worker.requestInterruption()
-                if not worker.wait(3000):
+                if not worker.wait(10000):
                     worker.terminate()
                     worker.wait(1000)
             except RuntimeError:   # C++-объект уже удалён (deleteLater)
@@ -553,18 +524,11 @@ class MainWindow(QMainWindow):
                     pass
 
     def closeEvent(self, event):
-        # крестик либо сворачивает в трей (настройка по умолчанию),
-        # либо закрывает приложение — реальный выход всегда через трей
-        close_to_tray = self.settings.value("close_to_tray", True, type=bool)
-        if (not self._really_quit and close_to_tray
-                and getattr(self, "tray", None)
-                and self.tray.isVisible()):
-            event.ignore()
-            self.hide()
-            self.tray.showMessage(TR("app_title"), TR("tray_minimized"),
-                                  QSystemTrayIcon.MessageIcon.Information, 2000)
-            return
+        # закрытие окна = выход из приложения
         self.settings.setValue("window_geometry", self.saveGeometry())
+        # сохраняем проект ДО остановки воркеров: даже если при выходе
+        # что-то упадёт, переведённое останется на диске
+        self.save_project()
         self._stop_workers()
         self.stop_session(kill_game=True)
         self.save_project()

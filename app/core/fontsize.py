@@ -27,9 +27,65 @@ MAX_SIZE = 64
 # Window_Base.prototype.standardFontSize = function() { return 28; };
 _RE_RPGM_JS = re.compile(
     r"(standardFontSize\s*=\s*function\s*\(\s*\)\s*\{\s*return\s+)(\d+)")
-# define gui.text_size = 33
+# define gui.text_size = 33  (бывает default / просто gui.text_size,
+# в т.ч. с отступом внутри init python:; \s* после ключевого слова —
+# из-за особенности PyRE-движка Python 3.13, где ^\s* перед
+# опциональной группой с \s+ ломает матч)
 _RE_RENPY = re.compile(
-    r"(^\s*define\s+gui\.text_size\s*=\s*)(\d+)", re.MULTILINE)
+    r"(^(?:define|default\s+)?\s*gui\.text_size\s*=\s*)(\d+)",
+    re.MULTILINE)
+
+
+RENPY_DEFAULT_SIZE = 33
+
+
+def _renpy_candidates(game_dir: str) -> list[str]:
+    """Файлы Ren'Py, где может задаваться gui.text_size."""
+    return [os.path.join(game_dir, "game", "gui.rpy"),
+            os.path.join(game_dir, "game", "screens.rpy")]
+
+
+def _renpy_source(game_dir: str) -> tuple[str, str] | None:
+    """(путь, текст) с gui.text_size для Ren'Py.
+
+    Сначала ищет физические файлы, затем gui.rpy/screens.rpy внутри
+    .rpa-архивов (архивированные игры). Для физического файла возвращает
+    его же; для архивного — имя файла, куда запишем перекрывающую копию.
+    Если исходника нет, но есть скомпилированный gui.rpyc — возвращает
+    (game/gui.rpy, "") — ряд «Размер» показывается со стандартным
+    значением, а первая правка создаёт перекрывающий gui.rpy.
+    """
+    for path in _renpy_candidates(game_dir):
+        if os.path.isfile(path):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    return path, f.read()
+            except OSError:
+                continue
+    try:
+        from app.core.renpy.rpa import find_rpa_archives, RpaArchive
+    except ImportError:
+        return None
+    has_rpyc = False
+    for arch_path in find_rpa_archives(game_dir):
+        try:
+            arch = RpaArchive(arch_path)
+        except ValueError:
+            continue
+        for name in ("gui.rpy", "screens.rpy"):
+            if name not in arch.files:
+                continue
+            try:
+                text = arch.read(name).decode("utf-8")
+            except (KeyError, UnicodeDecodeError):
+                continue
+            return os.path.join(game_dir, "game", name), text
+        for name in ("gui.rpyc", "screens.rpyc"):
+            if any(n.endswith(name) for n in arch.files):
+                has_rpyc = True
+    if has_rpyc:
+        return os.path.join(game_dir, "game", "gui.rpy"), ""
+    return None
 
 
 def _js_paths(game_dir: str, engine: str) -> list[str]:
@@ -66,6 +122,10 @@ def _js_font_size(path: str, pat) -> int | None:
             text = f.read()
     except OSError:
         return None
+    return _js_font_size_text(text, pat)
+
+
+def _js_font_size_text(text: str, pat) -> int | None:
     m = pat.search(text)
     return int(m.group(2)) if m else None
 
@@ -73,8 +133,14 @@ def _js_font_size(path: str, pat) -> int | None:
 def get_font_size(game_dir: str, engine: str) -> int | None:
     """Текущий размер шрифта игры (из файла) или None, если не найден."""
     if engine == "renpy":
-        return _js_font_size(os.path.join(game_dir, "game", "gui.rpy"),
-                             _RE_RENPY)
+        src = _renpy_source(game_dir)
+        if src is None:
+            return None
+        path, text = src
+        if not text:
+            return RENPY_DEFAULT_SIZE
+        size = _js_font_size_text(text, _RE_RENPY)
+        return size if size is not None else RENPY_DEFAULT_SIZE
     sys_json = _system_json(game_dir, engine)
     if sys_json and os.path.isfile(sys_json):
         size = _json_font_size(sys_json)
@@ -151,16 +217,38 @@ def _set_js_font_size(path: str, pat, size: int) -> dict:
 
 
 def _set_renpy(game_dir: str, size: int) -> dict:
-    path = os.path.join(game_dir, "game", "gui.rpy")
-    if not os.path.isfile(path) or _js_font_size(path, _RE_RENPY) is None:
+    src = _renpy_source(game_dir)
+    if src is None:
         raise FileNotFoundError(
             "Не найден файл, задающий размер шрифта игры")
-    return _set_js_font_size(path, _RE_RENPY, size)
+    path, text = src
+    if not text:
+        # Исходника нет (только .rpyc в архиве) — создаём перекрывающий
+        # gui.rpy, который Ren'Py скомпилирует и выполнит ПОСЛЕДНИМ
+        # (init offset перекрывает порядок архива).
+        new = (f"# Created by OctopusBridge (in-game font size override)\n"
+               f"init offset = 999999999\n\n"
+               f"define gui.text_size = {size}\n")
+    else:
+        m = _RE_RENPY.search(text)
+        if m is None:
+            raise FileNotFoundError(
+                "Не найден файл, задающий размер шрифта игры")
+        _backup(path) if os.path.isfile(path) else None
+        new = _RE_RENPY.sub(lambda mm: mm.group(1) + str(size), text)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(new)
+    except OSError as e:
+        raise RuntimeError(f"Не удалось записать {path}: {e}")
+    return {"path": os.path.basename(path), "size": size}
 
 
 def restore_font_size(game_dir: str, engine: str) -> bool:
     """Возвращает оригинал из бэкапа (True — откат выполнен)."""
-    candidates = [os.path.join(game_dir, "game", "gui.rpy")]
+    candidates = _renpy_candidates(game_dir) \
+        if engine == "renpy" else [os.path.join(game_dir, "game", "gui.rpy")]
     sys_json = _system_json(game_dir, engine)
     if sys_json:
         candidates.append(sys_json)

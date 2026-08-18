@@ -34,8 +34,8 @@ class Project:
     """Профиль проекта перевода (хранится отдельно от файлов игры)."""
     game_dir: str
     engine: str = "mz"           # mz | mv
-    source_lang: str = "ja"      # ja | zh | en
-    target_lang: str = "ru"      # ru | en
+    source_lang: str = "auto"   # код языка: auto | ja | zh | ko | en | ...
+    target_lang: str = "ru"      # код языка: ru | en | uk | de | ...
     entries: list[TranslationEntry] = field(default_factory=list)
     var_names: dict[str, str] = field(default_factory=dict)
     switch_names: dict[str, str] = field(default_factory=dict)
@@ -60,7 +60,7 @@ class Project:
         p = Project(
             game_dir=d["game_dir"],
             engine=d.get("engine", "mz"),
-            source_lang=d.get("source_lang", "ja"),
+            source_lang=d.get("source_lang", "auto"),
             target_lang=d.get("target_lang", "ru"),
         )
         p.entries = [TranslationEntry.from_dict(e) for e in d.get("entries", [])]

@@ -1,6 +1,19 @@
 # Changelog
 
-All notable changes to the project. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning follows [SemVer](https://semver.org/).
+All notable changes to the project. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: `X.Y` — `X` is the update number (new features), `Y` fixes for the last update (e.g. `154.6`).
+
+## [7.0] — 2026-08-18
+
+### Added
+- **First-run setup wizard** (`app/ui/setup_wizard.py`): 4 steps — welcome, languages, translator provider (Google/Bing/Rotate/AI with URL/key/model), behavior (auto-launch, auto-backup). Shown once on first launch (`setup_done` flag); "Skip" and "Show setup wizard again" button in Settings. Switching the UI language inside the wizard retranslates it live.
+- **More translation languages**: 20 + auto-detect (ja, zh, ko, en, ru, uk, de, fr, es, it, pt, pl, cs, ar, id, th, vi, tr, nl, sv). Language combos show localized names while codes are stored (`SOURCE_LANGS`/`TARGET_LANGS` in engines.py, `LANG_NAMES` extended for Bing); source language defaults to **auto** (auto-detect) everywhere, including new projects.
+- **Font size editing on the dashboard**: the size row now has a spin box (12–64 px) in addition to A−/A+ buttons; the value is written to the game file immediately. Ren'Py `gui.text_size` detection relaxed (`define`/`default`/plain assignment, indented inside `init python:`, searched in `gui.rpy` and `screens.rpy`).
+- **"Load own font…" button on the dashboard** (RPG Maker MV/MZ and Ren'Py): replaces the game fonts with the user-picked `.ttf/.otf/.woff` — for Ren'Py all fonts including Cyrillic-capable ones are replaced, originals backed up and restorable.
+
+### Changed
+- **Version scheme**: `X.Y` instead of `0.X.Y` — the first number is the update count, the second fixes for the latest update (e.g. `154.6`). Update check and build scripts handle the new format.
+- **System tray removed**: closing the window always quits the app; the tray settings and code were removed (`close_to_tray` key is cleaned up on startup).
+- **Translation cancel fixed**: cancel no longer kills worker threads mid-C-code (the app crashed and lost progress). Engines now raise `InterruptedError` on `cancel()`, the project is autosaved every 10 s during translation, and the project is saved before workers are stopped on exit.
 
 ## [0.6.8] — 2026-08-17
 

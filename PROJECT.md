@@ -111,7 +111,7 @@ python build_app.py --installer    # дополнительно установщ
 build.bat                          # обёртка для Windows
 ```
 
-Версия берётся из `app/__init__.py` (`__version__`). Релизы на GitHub: тег `X.Y.Z`, exe прикладывается к релизу (репозиторий DezFix/OctopusBridge/releases). История изменений — `CHANGELOG.md`.
+Версия берётся из `app/__init__.py` (`__version__`). Схема нумерации: `X.Y`, где `X` — номер обновления (новые фичи), `Y` — фиксы последнего обновления (например `154.6`). Релизы на GitHub: тег `X.Y`, exe прикладывается к релизу (репозиторий DezFix/OctopusBridge/releases). История изменений — `CHANGELOG.md`.
 
 ## 7. Тесты и качество
 

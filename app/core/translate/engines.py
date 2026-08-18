@@ -16,8 +16,20 @@ _RATE_LIMIT_COOLDOWN = 60.0
 
 LANG_NAMES = {
     "ja": "Japanese", "zh": "Chinese", "en": "English",
-    "ru": "Russian", "ko": "Korean",
+    "ru": "Russian", "ko": "Korean", "uk": "Ukrainian",
+    "de": "German", "fr": "French", "es": "Spanish",
+    "it": "Italian", "pt": "Portuguese", "pl": "Polish",
+    "cs": "Czech", "ar": "Arabic", "id": "Indonesian",
+    "th": "Thai", "vi": "Vietnamese", "tr": "Turkish",
+    "nl": "Dutch", "sv": "Swedish",
 }
+
+# языки для выбора в настройках/мастере (коды Google Translate,
+# понимает и Bing через LANG_NAMES). "auto" — только для исходного.
+SOURCE_LANGS = ("auto", "ja", "zh", "ko", "en", "ru", "uk", "de",
+                "fr", "es", "it", "pt", "pl", "cs", "ar", "id",
+                "th", "vi", "tr", "nl", "sv")
+TARGET_LANGS = tuple(l for l in SOURCE_LANGS if l != "auto")
 
 
 _TOKEN_RE = re.compile(r"</?x\d+\s*/?>")
@@ -34,6 +46,14 @@ class EngineError(Exception):
 
 class BaseEngine:
     name = "base"
+    # флаг отмены: класс-атрибут, чтобы подклассы без __init__-вызова
+    # суперкласса (GoogleFreeEngine и др.) читали его без инициализации
+    cancelled = False
+
+    def cancel(self):
+        """Просит движок остановиться. Проверки выполняются в
+        translate() и перед сетевыми запросами/ожиданиями."""
+        self.cancelled = True
 
     def translate(self, texts: list[str], source: str, target: str,
                   context_before: list[str] | None = None,
@@ -186,6 +206,8 @@ class AIEngine(BaseEngine):
                   context_after: list[str] | None = None) -> list[str]:
         result: list[str] = []
         for i in range(0, len(texts), self.batch_size):
+            if self.cancelled:
+                raise InterruptedError("cancelled")
             chunk = texts[i:i + self.batch_size]
             cb = context_before[i:] if context_before else None
             ca = context_after[i + len(chunk):] if context_after else None
@@ -260,6 +282,8 @@ class GoogleFreeEngine(BaseEngine):
                         ) -> list[str]:
         """Один запрос на весь пакет. Только для строк без переводов
         строк (translateHtml их теряет). Кидает EngineError при сбое."""
+        if self.cancelled:
+            raise InterruptedError("cancelled")
         if self._rate_limited():
             raise EngineError("Google: rate-limit кулдаун")
         try:
@@ -300,6 +324,8 @@ class GoogleFreeEngine(BaseEngine):
         """
         q = "\n".join(texts)
         for attempt in range(3):
+            if self.cancelled:
+                raise InterruptedError("cancelled")
             if self._rate_limited():
                 raise EngineError("Google: rate-limit кулдаун")
             try:
@@ -327,6 +353,8 @@ class GoogleFreeEngine(BaseEngine):
     def _translate_m(self, text: str, src: str, target: str) -> str:
         """Старая мобильная HTML-версия — щедрые лимиты, последний
         фолбэк перед построчным обходом. Только без переводов строк."""
+        if self.cancelled:
+            raise InterruptedError("cancelled")
         if self._rate_limited():
             raise EngineError("Google: rate-limit кулдаун")
         try:
@@ -349,10 +377,14 @@ class GoogleFreeEngine(BaseEngine):
         if "\n" not in text:
             try:
                 return self._translate_fast([text], src, target)[0]
+            except InterruptedError:
+                raise
             except EngineError:
                 pass
         last_err = None
         for attempt in range(3):
+            if self.cancelled:
+                raise InterruptedError("cancelled")
             if self._rate_limited():
                 raise EngineError("Google: rate-limit кулдаун")
             try:
@@ -373,6 +405,8 @@ class GoogleFreeEngine(BaseEngine):
                                else 1.0 * (attempt + 1))
         try:
             return self._translate_m(text, src, target)
+        except InterruptedError:
+            raise
         except EngineError:
             pass
         raise EngineError(
@@ -381,14 +415,20 @@ class GoogleFreeEngine(BaseEngine):
     def _translate_chunk(self, texts: list[str], src: str,
                          target: str) -> list[str]:
         """Один пакет: быстрый батч → склейка → построчно."""
+        if self.cancelled:
+            raise InterruptedError("cancelled")
         simple = all("\n" not in t for t in texts)
         if simple:
             try:
                 return self._translate_fast(texts, src, target)
+            except InterruptedError:
+                raise
             except EngineError:
                 pass
         try:
             return self._translate_batch_join(texts, src, target)
+        except InterruptedError:
+            raise
         except EngineError:
             pass
         return [self._translate_one(t, src, target) for t in texts]
@@ -492,6 +532,8 @@ class BingEngine(BaseEngine):
         src = "auto-detect" if source == "auto" else source
         last_err = None
         for attempt in range(3):
+            if self.cancelled:
+                raise InterruptedError("cancelled")
             try:
                 self._load_tokens()
                 api_url = self.HOST_URL.replace("Translator", "ttranslatev3")
@@ -550,6 +592,11 @@ class RotateEngine(BaseEngine):
         self._cursor = 0
         self._lock = threading.Lock()
 
+    def cancel(self):
+        super().cancel()
+        for e in self._engines:
+            e.cancel()
+
     def ping(self) -> bool:
         return any(e.ping() for e in self._engines)
 
@@ -558,10 +605,14 @@ class RotateEngine(BaseEngine):
                   context_after: list[str] | None = None) -> list[str]:
         if not texts:
             return []
+        if self.cancelled:
+            raise InterruptedError("cancelled")
         if len(texts) == 1:
             return [self._translate_one(texts[0], source, target)]
         try:
             return self._engines[0].translate(texts, source, target)
+        except InterruptedError:
+            raise
         except EngineError:
             pass
         # фолбэк: по одной строке с чередованием провайдеров
@@ -582,11 +633,15 @@ class RotateEngine(BaseEngine):
             engines = self._engines[1:] + [self._engines[0]]
         last_err = None
         for _ in range(len(engines)):
+            if self.cancelled:
+                raise InterruptedError("cancelled")
             with self._lock:
                 eng = engines[self._cursor % len(engines)]
                 self._cursor += 1
             try:
                 return eng.translate([text], source, target)[0]
+            except InterruptedError:
+                raise
             except Exception as e:  # noqa: BLE001
                 last_err = e
         raise EngineError(f"Rotate unavailable: {last_err}") from last_err

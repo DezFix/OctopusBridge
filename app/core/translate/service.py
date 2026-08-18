@@ -86,6 +86,10 @@ class Translator:
 
     def cancel(self):
         self.cancelled = True
+        # движок проверяет флаг перед каждым сетевым запросом/ожиданием —
+        # иначе поток не выйдет из спячки/таймаута до конца батча
+        if self.engine is not None:
+            self.engine.cancel()
 
     # ---------- одна строка ----------
     def translate_text(self, text: str, src_lang: str, tgt_lang: str,
@@ -223,6 +227,8 @@ class Translator:
                 batch = [j[3] for j in chunk]
                 try:
                     translated = self.engine.translate(batch, src, tgt_lang)
+                except InterruptedError:
+                    raise
                 except Exception:  # noqa: BLE001 — движок упал, вернём как есть
                     translated = [""] * len(batch)
                 tm_pairs: list[tuple[str, str]] = []

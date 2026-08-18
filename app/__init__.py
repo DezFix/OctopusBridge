@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import sys
 
-__version__ = "0.6.8"
+__version__ = "7.0"
 
 
 def is_frozen() -> bool:

@@ -10,13 +10,6 @@ _STRINGS = {
         "ru": "OctopusBridge — перевод и модификация игр",
         "en": "OctopusBridge — game translation & modding",
     },
-    "tray_open": {"ru": "Открыть", "en": "Open"},
-    "tray_quit": {"ru": "Выход", "en": "Quit"},
-    "tray_minimized": {
-        "ru": "Свёрнуто в трей. Выход — через иконку в трее.",
-        "en": "Minimized to tray. Quit via the tray icon.",
-    },
-
     # ── Диалоги ──
     "side_home": {"ru": "Открыть папку игры", "en": "Open game folder"},
 
@@ -599,18 +592,6 @@ _STRINGS = {
         "en": "Re-translate all (overwrite)",
     },
     "settings_backup": {"ru": "Автобэкап при внедрении", "en": "Auto-backup on apply"},
-    "settings_close_behavior": {
-        "ru": "При закрытии окна:",
-        "en": "On window close:",
-    },
-    "settings_close_tray": {
-        "ru": "Сворачивать в трей",
-        "en": "Minimize to tray",
-    },
-    "settings_close_quit": {
-        "ru": "Выход из приложения",
-        "en": "Exit the app",
-    },
     "settings_files_info": {
         "ru": "«Только новые» — переводит строки без перевода.\n«Всё заново» — заново переводит все строки.",
         "en": "\"New only\" — translates untranslated lines.\n\"Re-translate all\" — retranslates everything.",
@@ -628,6 +609,91 @@ _STRINGS = {
     "settings_restart_hint": {
         "ru": "Язык изменится после перезапуска приложения.",
         "en": "Language will change after restarting the app.",
+    },
+
+    # ── Названия языков (перевод текста игр) ──
+    "lang_auto": {"ru": "Автоопределение", "en": "Auto-detect"},
+    "lang_ja": {"ru": "Японский", "en": "Japanese"},
+    "lang_zh": {"ru": "Китайский", "en": "Chinese"},
+    "lang_ko": {"ru": "Корейский", "en": "Korean"},
+    "lang_en": {"ru": "Английский", "en": "English"},
+    "lang_ru": {"ru": "Русский", "en": "Russian"},
+    "lang_uk": {"ru": "Украинский", "en": "Ukrainian"},
+    "lang_de": {"ru": "Немецкий", "en": "German"},
+    "lang_fr": {"ru": "Французский", "en": "French"},
+    "lang_es": {"ru": "Испанский", "en": "Spanish"},
+    "lang_it": {"ru": "Итальянский", "en": "Italian"},
+    "lang_pt": {"ru": "Португальский", "en": "Portuguese"},
+    "lang_pl": {"ru": "Польский", "en": "Polish"},
+    "lang_cs": {"ru": "Чешский", "en": "Czech"},
+    "lang_ar": {"ru": "Арабский", "en": "Arabic"},
+    "lang_id": {"ru": "Индонезийский", "en": "Indonesian"},
+    "lang_th": {"ru": "Тайский", "en": "Thai"},
+    "lang_vi": {"ru": "Вьетнамский", "en": "Vietnamese"},
+    "lang_tr": {"ru": "Турецкий", "en": "Turkish"},
+    "lang_nl": {"ru": "Нидерландский", "en": "Dutch"},
+    "lang_sv": {"ru": "Шведский", "en": "Swedish"},
+    "settings_show_wizard": {
+        "ru": "Показать мастер настройки заново",
+        "en": "Show setup wizard again",
+    },
+
+    # ── Setup wizard (первый запуск) ──
+    "wizard_title": {"ru": "Первоначальная настройка", "en": "Initial setup"},
+    "wizard_skip": {"ru": "Пропустить", "en": "Skip"},
+    "wizard_back": {"ru": "Назад", "en": "Back"},
+    "wizard_next": {"ru": "Далее", "en": "Next"},
+    "wizard_finish": {"ru": "Готово", "en": "Finish"},
+    "wizard_step": {"ru": "Шаг {n} из {total}", "en": "Step {n} of {total}"},
+    "wizard_welcome_title": {
+        "ru": "Добро пожаловать в OctopusBridge!",
+        "en": "Welcome to OctopusBridge!",
+    },
+    "wizard_welcome_text": {
+        "ru": "OctopusBridge переводит и модифицирует игры: RPG Maker "
+              "MV/MZ, Ren'Py, Twine и Tyrano. Сейчас вы настроите основные "
+              "параметры — это займёт меньше минуты. Всё можно изменить "
+              "позже в «Настройках».",
+        "en": "OctopusBridge translates and mods games: RPG Maker MV/MZ, "
+              "Ren'Py, Twine and Tyrano. You are about to set up the "
+              "basics — it takes less than a minute. Everything can be "
+              "changed later in Settings.",
+    },
+    "wizard_langs_title": {
+        "ru": "Языки",
+        "en": "Languages",
+    },
+    "wizard_langs_text": {
+        "ru": "Выберите язык интерфейса и язык, на который будет "
+              "переводиться текст игр.",
+        "en": "Pick the UI language and the language game text will be "
+              "translated into.",
+    },
+    "wizard_provider_title": {
+        "ru": "Переводчик",
+        "en": "Translator",
+    },
+    "wizard_provider_text": {
+        "ru": "По умолчанию используется бесплатный Google + Bing "
+              "(без ключей и регистрации). Для больших проектов можно "
+              "подключить свой AI (OpenAI-совместимый API или Ollama) — "
+              "настройки доступны позже.",
+        "en": "Free Google + Bing is the default (no keys, no sign-up). "
+              "For large projects you can connect your own AI "
+              "(OpenAI-compatible API or Ollama) — configurable later.",
+    },
+    "wizard_provider_lbl": {
+        "ru": "Провайдер перевода:",
+        "en": "Translation provider:",
+    },
+    "wizard_behavior_title": {
+        "ru": "Поведение",
+        "en": "Behavior",
+    },
+    "wizard_behavior_text": {
+        "ru": "Несколько полезных настроек по умолчанию. Их тоже можно "
+              "поменять в «Настройках».",
+        "en": "A few useful defaults. Also changeable in Settings.",
     },
 
     # ── Status bar ──
@@ -1175,8 +1241,8 @@ _STRINGS = {
         "en": "Restore font",
     },
     "res_font_choose": {
-        "ru": "Свой шрифт…",
-        "en": "Own font…",
+        "ru": "Загрузить свой шрифт…",
+        "en": "Load own font…",
     },
     "res_font_nothing": {
         "ru": "Нечего откатывать — шрифт не менялся",

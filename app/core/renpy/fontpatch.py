@@ -165,17 +165,26 @@ def _load_manifest(manifest_path: str) -> dict:
         return {}
 
 
-def patch_font(game_dir: str) -> dict:
-    """Заменяет шрифты без кириллицы на NotoSans. Возвращает отчёт.
+def patch_font(game_dir: str, font_path: str | None = None) -> dict:
+    """Заменяет шрифты без кириллицы на NotoSans (или на свой шрифт из
+    font_path — тогда заменяются все шрифты). Возвращает отчёт.
 
     Работает и с локальными шрифтами, и со шрифтами внутри .rpa-архивов
     (перекрывающие файлы в game/ — Ren'Py читает диск раньше архивов).
     """
-    font_src = _bundled_font()
-    if not os.path.isfile(font_src):
-        raise RuntimeError("NotoSans-Regular.ttf не найден в комплекте")
-    with open(font_src, "rb") as f:
-        noto = f.read()
+    if font_path:
+        try:
+            with open(font_path, "rb") as f:
+                noto = f.read()
+        except OSError as e:
+            raise RuntimeError(f"Не удалось прочитать свой шрифт: {e}")
+    else:
+        font_src = _bundled_font()
+        if not os.path.isfile(font_src):
+            raise RuntimeError("NotoSans-Regular.ttf не найден в комплекте")
+        with open(font_src, "rb") as f:
+            noto = f.read()
+    custom = bool(font_path)
     game_sub = os.path.join(game_dir, "game")
     if not os.path.isdir(game_sub):
         raise RuntimeError("game/ не найдена")
@@ -194,7 +203,7 @@ def patch_font(game_dir: str) -> dict:
                 continue
             path = os.path.join(root, name)
             rel = os.path.relpath(path, game_sub).replace(os.sep, "/")
-            if font_supports_cyrillic(path):
+            if not custom and font_supports_cyrillic(path):
                 continue
             try:
                 with open(path, "rb") as f:
@@ -239,8 +248,10 @@ def patch_font(game_dir: str) -> dict:
                 data = arch.read(name)
             except Exception:
                 continue
-            if _check_cyr_bytes(data) or data == noto:
-                continue
+            if data == noto:
+                continue  # уже заменён этим же шрифтом
+            if not custom and _check_cyr_bytes(data):
+                continue  # авто: кириллические не трогаем
             try:
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
                 with open(dst, "wb") as f:

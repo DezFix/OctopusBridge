@@ -289,5 +289,44 @@ except engmod.EngineError:
 assert len(calls) == 1, "во время кулдауна запросов быть не должно"
 print("   OK: 429 -> кулдаун 60с, в кулдауне запросы не шлются")
 
+print("10) Отмена: cancel() -> движки бросают InterruptedError без сети...")
+eng3 = engmod.GoogleFreeEngine()
+eng3.cancel()
+try:
+    eng3.translate(["aa", "bb"], "ja", "ru")
+    raise AssertionError("Google должен бросить InterruptedError после cancel")
+except InterruptedError:
+    pass
+try:
+    eng3._translate_one("aa", "ja", "ru")
+    raise AssertionError("построчный перевод тоже должен прерваться")
+except InterruptedError:
+    pass
+eng4 = engmod.BingEngine()
+eng4.cancel()
+try:
+    eng4.translate(["aa"], "ja", "ru")
+    raise AssertionError("Bing должен бросить InterruptedError после cancel")
+except InterruptedError:
+    pass
+eng5 = engmod.RotateEngine()
+eng5.cancel()
+try:
+    eng5.translate(["aa"], "ja", "ru")
+    raise AssertionError("Rotate должен бросить InterruptedError после cancel")
+except InterruptedError:
+    pass
+assert eng5._engines[0].cancelled, "Rotate.cancel должен распространиться на Google"
+eng6 = engmod.AIEngine()
+eng6.cancel()
+try:
+    eng6.translate(["aa"] * 3, "ja", "ru")
+    raise AssertionError("AI должен бросить InterruptedError после cancel")
+except InterruptedError:
+    pass
+# повторная отмена не должна ломать движок (idempotent)
+eng3.cancel()
+print("   OK: все движки прерываются по cancel() до сетевых запросов")
+
 print()
 print("ВСЕ ТЕСТЫ ДВИЖКОВ ПРОШЛИ")

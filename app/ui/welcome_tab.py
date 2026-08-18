@@ -13,7 +13,7 @@ from PySide6.QtCore import (Qt, QTimer,
                              QThread, Signal)
 from PySide6.QtWidgets import (QFileDialog, QFormLayout, QGroupBox,
                                 QHBoxLayout, QLabel, QMessageBox, QPushButton,
-                                QVBoxLayout, QWidget)
+                                QSpinBox, QVBoxLayout, QWidget)
 
 from app.ui.i18n import TR
 from app.ui.icons import icon
@@ -257,6 +257,9 @@ class WelcomeTab(QWidget):
         self.btn_font_patch = QPushButton(TR("res_font"))
         self.btn_font_patch.clicked.connect(self._font_patch)
         cyr_lay.addWidget(self.btn_font_patch, 1)
+        self.btn_font_choose = QPushButton(TR("res_font_choose"))
+        self.btn_font_choose.clicked.connect(self._font_patch_choose)
+        cyr_lay.addWidget(self.btn_font_choose)
         self.btn_font_restore = QPushButton(TR("res_font_restore"))
         self.btn_font_restore.clicked.connect(self._font_restore)
         cyr_lay.addWidget(self.btn_font_restore)
@@ -276,10 +279,13 @@ class WelcomeTab(QWidget):
         self.btn_font_smaller.clicked.connect(
             lambda: self._font_size_change(-2))
         size_lay.addWidget(self.btn_font_smaller)
-        self.lbl_font_size = QLabel("—")
-        self.lbl_font_size.setAlignment(Qt.AlignCenter)
-        self.lbl_font_size.setToolTip(TR("dash_font_size_hint"))
-        size_lay.addWidget(self.lbl_font_size, 1)
+        self.spin_font_size = QSpinBox()
+        self.spin_font_size.setRange(12, 64)
+        self.spin_font_size.setSuffix(" px")
+        self.spin_font_size.setAlignment(Qt.AlignCenter)
+        self.spin_font_size.setToolTip(TR("dash_font_size_hint"))
+        self.spin_font_size.valueChanged.connect(self._font_size_spin)
+        size_lay.addWidget(self.spin_font_size, 1)
         self.btn_font_bigger = QPushButton("A+")
         self.btn_font_bigger.setToolTip(TR("dash_font_bigger"))
         self.btn_font_bigger.clicked.connect(
@@ -351,23 +357,32 @@ class WelcomeTab(QWidget):
             self.size_row.setVisible(False)
             return
         self.size_row.setVisible(True)
-        self.lbl_font_size.setText(f"{cur} px")
+        self._updating_size = True
+        try:
+            self.spin_font_size.setValue(cur)
+        finally:
+            self._updating_size = False
 
     def _font_size_change(self, delta: int):
         p = self.main.project
         mod = self.main.engine_module
         if not p or not mod:
             return
+        self.spin_font_size.setValue(self.spin_font_size.value() + delta)
+
+    def _font_size_spin(self, value: int):
+        p = self.main.project
+        mod = self.main.engine_module
+        if not p or not mod or getattr(self, "_updating_size", False):
+            return
         from app.core import fontsize
         try:
-            engine = self._font_size_engine()
-            cur = fontsize.get_font_size(p.game_dir, engine) or 28
             new = max(fontsize.MIN_SIZE,
-                      min(fontsize.MAX_SIZE, cur + delta))
-            fontsize.set_font_size(p.game_dir, engine, new)
-            self.lbl_font_size.setText(f"{new} px")
+                      min(fontsize.MAX_SIZE, int(value)))
+            fontsize.set_font_size(p.game_dir, self._font_size_engine(), new)
         except (OSError, RuntimeError, FileNotFoundError) as e:
             QMessageBox.critical(self, TR("dash_font_size"), str(e))
+            self._refresh_font_size()
 
     def _refresh_stats(self):
         p = self.main.project
@@ -527,6 +542,34 @@ class WelcomeTab(QWidget):
                 else:
                     QMessageBox.information(
                         self, TR("done"), TR("res_font_already"))
+        except Exception as e:
+            QMessageBox.critical(self, TR("dash_font"), str(e))
+            return
+        self.refresh_dashboard()
+
+    def _font_patch_choose(self):
+        p = self.main.project
+        mod = self.main.engine_module
+        if not p or not mod:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, TR("res_font_choose"), r"C:\Windows\Fonts",
+            "Fonts (*.ttf *.otf *.woff)")
+        if not path:
+            return
+        try:
+            if mod.key == "rpgmaker":
+                from app.core.rpgmaker import fontpatch
+                report = fontpatch.patch_font(p.game_dir, mod.variant, path)
+                QMessageBox.information(
+                    self, TR("done"),
+                    TR("res_font_done", font=report.get("font", "")))
+            else:
+                from app.core.renpy import fontpatch
+                report = fontpatch.patch_font(p.game_dir, path)
+                QMessageBox.information(
+                    self, TR("done"),
+                    TR("res_font_done_renpy", n=report["replaced"]))
         except Exception as e:
             QMessageBox.critical(self, TR("dash_font"), str(e))
             return

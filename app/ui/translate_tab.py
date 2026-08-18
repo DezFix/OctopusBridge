@@ -4,6 +4,8 @@
 статус-пилюли, степпер шагов в топбаре."""
 from __future__ import annotations
 
+import time
+
 from PySide6.QtCore import (QEvent, QPointF, QRectF, QSize, Qt, QThread,
                             QTimer, Signal)
 from PySide6.QtGui import (QAction, QActionGroup, QColor, QFont, QIcon,
@@ -714,7 +716,7 @@ class TranslateTab(QWidget):
         self.btn_translate.setObjectName("step")
         self.btn_translate.setIcon(_step_icon(2))
         self.btn_translate.setIconSize(QSize(16, 16))
-        self.btn_translate.setText(" " + TR("tr_translate"))
+        self.btn_translate.setText(" " + TR("tr_translate") + "   ")
         self.btn_translate.setPopupMode(
             QToolButton.ToolButtonPopupMode.MenuButtonPopup)
         self.btn_translate.setToolButtonStyle(
@@ -1587,16 +1589,18 @@ class TranslateTab(QWidget):
         self._cancel_timer.start(120)
 
     def _poll_cancel(self):
+        """Опрос завершения фонового потока после отмены.
+
+        Никакого terminate(): движок теперь сам выходит по флагу отмены
+        (проверки перед каждым сетевым запросом/ожиданием), поток
+        завершается штатно. terminate() убивал QThread посреди C-кода
+        (requests/SSL/sqlite) и ронял весь процесс — переведённое
+        пропадало без сохранения.
+        """
         self._cancel_elapsed += 120
         busy = (self.worker and self.worker.isRunning()) or (
             self.worker_correct and self.worker_correct.isRunning())
-        if busy and self._cancel_elapsed < 8000:
-            self._cancel_timer.start(120)
-            return
-        if busy:  # зависший поток — принудительно, но без GUI-блокировки
-            for w in (self.worker, self.worker_correct):
-                if w and w.isRunning():
-                    w.terminate()
+        if busy:
             self._cancel_timer.start(120)
             return
         self._finish_cancelled()
@@ -1616,6 +1620,15 @@ class TranslateTab(QWidget):
         text = TR("tr_progress", done=done, total=total)
         self.lbl_status.setText(text)
         self.main.loading.set_text(text)
+        # автосейв во время долгого перевода: при краше процесса
+        # переведённая часть остаётся в проекте
+        now = time.monotonic()
+        if now - getattr(self, "_last_autosave", 0.0) >= 10.0:
+            self._last_autosave = now
+            try:
+                self.main.save_project()
+            except Exception:  # noqa: BLE001 — сейв не должен ломать перевод
+                pass
 
     def _on_translated(self, n, skipped=0):
         if self._cancelling:
