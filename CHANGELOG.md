@@ -2,6 +2,27 @@
 
 All notable changes to the project. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: `X.Y` — `X` is the update number (new features), `Y` fixes for the last update (e.g. `154.6`).
 
+## [7.2] — 2026-08-20
+
+### Added
+- **Twine: live translation over WebSocket** — the bridge payload now ships the project dictionary (`tr_dict` from `.ob.json`) and the request protocol: untranslated visible text is batched to the app (`tr_request`, ≤40 lines / 1800 chars, one in flight) and translated with the **built-in free Google Translate** (no key, no app settings involved), cached per session. Failures (no internet, rate limit) are reported via `tr_status` once per state and clear themselves on recovery; originals are restored on disable. Translation state is reported to the app (`tr_state`) and restored on reconnect (`tr_set`).
+- **Twine: standalone WebView2 window fully supported** — the single bridge payload (state/cheats/saves + live translation) is injected both in the browser and in the app window; the window wrapper page is excluded via an `octopus-wrapper` marker, so live translation works no matter how the game is launched.
+- **Twine: "Game text" tab** (`app/ui/twine_text_tab.py`) — a human-readable viewer of the passages exactly as the player reads them: game code (macros, variables, links, images, scripts) is collapsed into `⟦…⟧` markers; "Copy" and "Save JSON" export the story model (`story_to_json`/`write_story_json`).
+- **Twine: translated copy instead of in-place edits** — `apply()` now writes a new `story_<lang>.html` next to the game and leaves the original untouched (target-language selection per apply run).
+- **Ren'Py: value scan in the Variables tab (Cheat-Engine style)** — scan / refine / reset for variable values: "equals", "changed", "unchanged", "increased", "decreased". The table is now a virtualized `QTableView` (renders only visible rows, scrolling is smooth at tens of thousands of variables; edits revert on failure).
+- **Ren'Py: context hints for Python-strings** — extracted lines now carry a hint (`quest_desc`, `key=q1`, the code line) so the table shows where the string lives instead of an opaque line; `define`/`default`/`dict` assignments are resolved via AST, docstrings are not extracted (they are developer docs, not game text). Dialog f-strings (`f"…"`) are now extracted too; `_PyExpr` parsing works with Ren'Py 8.x `.rpyc` nodes.
+- **Ren'Py: agent variable limit raised** — 2000 → 20000 variables (traversal depth 6 → 8), so all game logic fits into the panel.
+- **New free translator providers**: **MyMemory** (6 parallel requests, 50K chars/day) and **LibreTranslate** (batch API, optional `base_url`/`api_key`; configured with URL/key fields like the AI provider).
+
+### Changed
+- **Twine live translation = a plain free plugin** (the provider-from-settings variant was dropped — it silently produced nothing because the configured file engine is `ai`/LM Studio which may not be running). Visible text is first resolved from the project dictionary (`tr_dict`, whole nodes only — no mixed original/translation nodes), the rest goes through the built-in free Google engine.
+- **Twine parser hardening** (`app/core/twine/parser.py`): print-macro arguments are classified into text vs. keys — passage names, `$variables`, values and CSS selectors are never extracted or applied (`_PRINT_MACROS` as positions map, `_macro_arg_positions`); `<<goto>>`/`<<addclass>>` removed from text macros entirely. Harlowe `(name: …)` macros and `[label->target]`/`[target<-label]` links are masked whole; translations containing `"`, `|`, `->`, `<-` or invented code are rejected at apply.
+- **Twine app window wrapper cleaned**: status bar removed from the wrapper page (status goes to the app log), wrapper is full-screen with the hidden `octopus-wrapper` marker.
+
+### Fixed
+- **Twine apply: duplicate quote in translated macro arguments** — the closing quote was kept twice (`<<link "RU:Open door"" "DoorPassage">>`) because the replacement sliced at the closing quote instead of after it.
+- **Twine apply: damaged lines repaired** — Cyrillic left inside Harlowe macros by old translations is restored from backup; multi-line `[[`-setters are skipped so their continuation lines are not broken.
+
 ## [7.1] — 2026-08-18
 
 ### Changed

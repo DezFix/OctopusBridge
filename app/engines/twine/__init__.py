@@ -60,11 +60,23 @@ class TwineModule(EngineModule):
 
     def extract(self, game_dir: str) -> list:
         from app.core.twine import parser
-        return parser.extract(game_dir)
+        entries = parser.extract(game_dir)
+        # JSON-промежуток: рядом с игрой появляется «игра.json» —
+        # структурированный текст пассажей (см. parser.story_to_json),
+        # его удобно читать/править отдельно, не трогая html.
+        try:
+            parser.write_story_json(game_dir)
+        except OSError:
+            pass
+        return entries
 
     def apply(self, game_dir: str, entries: list, **kwargs) -> dict:
         from app.core.twine import parser
-        return parser.apply(game_dir, entries)
+        # Перевод пишется в НОВУЮ html-копию «имя_<язык>.html» рядом
+        # с игрой (parser.apply target_lang=...): оригинал не трогается
+        # и остаётся бэкапом.
+        return parser.apply(game_dir, entries,
+                            target_lang=kwargs.get("target_lang"))
 
     def restore_original(self, game_dir: str) -> dict:
         from app.core.twine import parser
@@ -72,12 +84,19 @@ class TwineModule(EngineModule):
 
     def ui_tabs(self, main_window) -> list[tuple]:
         from app.ui.save_editor_tab import SaveEditorTab
+        from app.ui.twine_text_tab import TwineTextTab
         translate = main_window.translate_tab
         save_tab = SaveEditorTab(main_window)
-        # Переменные и триггеры для Twine не нужны: живого моста в
-        # webapp-режиме нет, а правка .save — отдельный Save Editor.
+        text_tab = TwineTextTab(main_window)
+        # «Перевод» — обычная вкладка файлового перевода: извлечение
+        # текста с фильтром кода (макросы/переменные/ссылки не
+        # переводятся), перевод провайдером из настроек и внедрение
+        # в НОВУЮ html-копию игры («игра_язык.html»), оригинал не
+        # трогается. «Текст игры» — человекочитаемый просмотр того,
+        # что читает игрок (пассажи по порядку, код свёрнут в ⟦…⟧).
         # (renpy_cheat_tab остаётся за Ren'Py — не трогать.)
         return [
             (translate, TR("tab_translate"), "translate"),
+            (text_tab, TR("tab_twine_text"), "module"),
             (save_tab, TR("tab_save_editor"), "module"),
         ]

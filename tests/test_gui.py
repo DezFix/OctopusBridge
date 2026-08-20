@@ -114,7 +114,11 @@ with tempfile.TemporaryDirectory() as td:
     make_twine(td)
     assert w.open_project(td) == "twine"
     roles = [r for _, r in w._engine_tabs]
-    assert "translate" in roles
+    # вкладка «Перевод» для Twine — файловый перевод в НОВУЮ html-копию
+    # игры (оригинал не трогаем), рядом с ней «Текст игры» — человеко-
+    # читаемый просмотр пассажей (код свёрнут в маркеры ⟦…⟧)
+    assert roles[0] == "translate"
+    assert "module" in roles and roles.count("module") >= 2
 with tempfile.TemporaryDirectory() as td:
     make_tyrano(td)
     assert w.open_project(td) == "tyrano"

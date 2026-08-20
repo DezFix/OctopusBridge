@@ -14,7 +14,8 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QFormLayout,
                                QPushButton, QStackedWidget,
                                QVBoxLayout, QWidget)
 
-from app.core.translate.engines import PROVIDERS, SOURCE_LANGS, TARGET_LANGS
+from app.core.translate.engines import (PROVIDERS, SOURCE_LANGS, TARGET_LANGS,
+                                         LIBRETRANSLATE_DEFAULT_URL)
 from app.ui.i18n import TR, provider_name, set_language
 from app.ui.theme import (C_TEXT, C_TEXT_SECONDARY,
                           AnimatedComboBox)
@@ -257,11 +258,19 @@ class SetupWizard(QDialog):
         return w
 
     def _on_provider_changed(self, *_):
-        is_ai = self.cb_provider.currentData() == "ai"
+        key = self.cb_provider.currentData()
+        need_fields = key in ("ai", "libretranslate")
         for lbl, ed in getattr(self, "_ai_fields", []):
             if lbl is not None:
-                lbl.setVisible(is_ai)
-            ed.setVisible(is_ai)
+                lbl.setVisible(need_fields)
+            ed.setVisible(need_fields)
+        if key == "libretranslate":
+            cur = self.ed_base_url.text().strip()
+            if not cur or cur == PRESET_OPENROUTER:
+                self.ed_base_url.setText(LIBRETRANSLATE_DEFAULT_URL)
+            self.ed_api_key.setPlaceholderText(TR("settings_api_key_lt_ph"))
+        else:
+            self.ed_api_key.setPlaceholderText(TR("settings_api_key_ph"))
 
     # ── шаг 4: поведение ──
     def _build_behavior(self, snap: dict) -> QWidget:

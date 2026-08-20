@@ -48,11 +48,16 @@ class FakeLLM(BaseHTTPRequestHandler):
 
 
 print("1) Реестр провайдеров...")
-assert set(PROVIDERS) == {"google_free", "bing", "rotate", "ai"}
+assert set(PROVIDERS) == {"google_free", "bing", "mymemory",
+                          "libretranslate", "rotate", "ai"}
 assert set(AI_PROVIDERS) == {"ai"}
 for name in PROVIDERS:
-    kwargs = {"base_url": "http://x", "api_key": "k", "model": "m"} \
-        if name == "ai" else {}
+    if name == "ai":
+        kwargs = {"base_url": "http://x", "api_key": "k", "model": "m"}
+    elif name == "libretranslate":
+        kwargs = {"base_url": "http://x", "api_key": "k"}
+    else:
+        kwargs = {}
     get_engine(name, **kwargs)
 # старые настройки (удалённый офлайн-переводчик) -> rotate
 assert get_engine("honyaku").name == "rotate"
@@ -289,7 +294,89 @@ except engmod.EngineError:
 assert len(calls) == 1, "во время кулдауна запросов быть не должно"
 print("   OK: 429 -> кулдаун 60с, в кулдауне запросы не шлются")
 
-print("10) Отмена: cancel() -> движки бросают InterruptedError без сети...")
+print("10) MyMemory: по строке на запрос, фейк-сервер...")
+from app.core.translate.engines import LibreTranslateEngine, MyMemoryEngine
+
+
+class FakeMMLT(BaseHTTPRequestHandler):
+    """/get — MyMemory, /translate — LibreTranslate, /languages — ping LT."""
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        if self.path.startswith("/get"):  # MyMemory ping: dict-ответ
+            self.wfile.write(
+                b'{"responseStatus": 200, "responseData": '
+                b'{"translatedText": "RU:Hello"}}')
+        else:                              # LibreTranslate /languages: список
+            self.wfile.write(b'[{"code": "en", "name": "English"}]')
+
+    def do_POST(self):
+        length = int(self.headers["Content-Length"])
+        body = self.rfile.read(length)
+        if self.path == "/get":  # MyMemory: form data
+            import urllib.parse
+            params = urllib.parse.parse_qs(body.decode("utf-8"))
+            q = params.get("q", [""])[0]
+            # «плохой сервис»: теряет токены <xN/> в переводах
+            resp = {"responseStatus": 200,
+                    "responseData": {"translatedText":
+                                     ("RU:" + q).replace("<x0/>", "")}}
+        elif self.path == "/translate":  # LibreTranslate: JSON batch
+            data = json.loads(body)
+            qs = data["q"]
+            assert isinstance(qs, list), "LibreTranslate: q должен быть массивом"
+            if qs and str(qs[0]).startswith("LOSE:"):
+                # «плохой сервис»: теряет токены <xN/> во всём батче
+                resp = [("RU:" + q).replace("<x0/>", "") for q in qs]
+            else:
+                resp = ["RU:" + q for q in qs]
+        else:
+            resp = {"error": "unknown"}
+        data = json.dumps(resp, ensure_ascii=False).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(data)
+
+
+srv2 = HTTPServer(("127.0.0.1", 0), FakeMMLT)
+threading.Thread(target=srv2.serve_forever, daemon=True).start()
+mm_url = f"http://127.0.0.1:{srv2.server_address[1]}"
+mm = MyMemoryEngine()
+mm.API = mm_url + "/get"
+assert mm.ping()
+out = mm.translate(["Hello", "World"], "en", "ru")
+assert out == ["RU:Hello", "RU:World"], out
+# потерянный токен <x0/> — строка остаётся непереведённой
+mm2 = MyMemoryEngine()
+mm2.API = mm_url + "/get"
+out = mm2.translate(["LOSE:x", "<x0/>Hi"], "en", "ru")
+assert out == ["RU:LOSE:x", "<x0/>Hi"], out
+print("   OK: MyMemory, 2 строки -> 2 запроса, guard токенов")
+
+print("11) LibreTranslate: весь пакет одним запросом...")
+lt = LibreTranslateEngine(base_url=mm_url, api_key="k")
+assert lt.ping()
+out = lt.translate(["Hello", "World"], "en", "ru")
+assert out == ["RU:Hello", "RU:World"], out
+lt2 = LibreTranslateEngine(base_url=mm_url)
+out = lt2.translate(["LOSE:x", "<x0/>Hi"], "en", "ru")
+assert out == ["RU:LOSE:x", "<x0/>Hi"], out
+# ошибка сервера -> EngineError с текстом
+lt3 = LibreTranslateEngine(base_url=mm_url + "/bad")
+try:
+    lt3.translate(["x"], "en", "ru")
+    raise AssertionError("ожидался EngineError")
+except engmod.EngineError:
+    pass
+srv2.shutdown()
+print("   OK: LibreTranslate, 2 строки -> 1 запрос, guard токенов")
+
+print("12) Отмена: cancel() -> движки бросают InterruptedError без сети...")
 eng3 = engmod.GoogleFreeEngine()
 eng3.cancel()
 try:
@@ -322,6 +409,20 @@ eng6.cancel()
 try:
     eng6.translate(["aa"] * 3, "ja", "ru")
     raise AssertionError("AI должен бросить InterruptedError после cancel")
+except InterruptedError:
+    pass
+eng7 = MyMemoryEngine()
+eng7.cancel()
+try:
+    eng7.translate(["aa"], "ja", "ru")
+    raise AssertionError("MyMemory должен бросить InterruptedError после cancel")
+except InterruptedError:
+    pass
+eng8 = LibreTranslateEngine()
+eng8.cancel()
+try:
+    eng8.translate(["aa"], "ja", "ru")
+    raise AssertionError("LibreTranslate должен бросить InterruptedError после cancel")
 except InterruptedError:
     pass
 # повторная отмена не должна ломать движок (idempotent)

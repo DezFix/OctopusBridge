@@ -11,7 +11,8 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QFormLayout,
 
 from app.core import cache as app_cache
 from app.core.translate.engines import (PROVIDERS, AI_PROVIDERS,
-                                         SOURCE_LANGS, TARGET_LANGS)
+                                         SOURCE_LANGS, TARGET_LANGS,
+                                         LIBRETRANSLATE_DEFAULT_URL)
 from app.ui.i18n import TR, provider_name
 from app.ui.icons import icon
 from app.ui.loading_overlay import BusyLabel
@@ -329,9 +330,10 @@ class SettingsDialog(QDialog):
     def _update_provider_visibility(self, eng: dict):
         key = eng["engine"].currentData()
         is_ai = key == "ai"
+        need_url = key in ("ai", "libretranslate")
 
-        eng["base_url"].setVisible(is_ai)
-        eng["api_key"].setVisible(is_ai)
+        eng["base_url"].setVisible(need_url)
+        eng["api_key"].setVisible(need_url)
         eng["model"].setVisible(is_ai)
         eng["preset_row"].setVisible(is_ai)
 
@@ -342,7 +344,13 @@ class SettingsDialog(QDialog):
             if label:
                 label.setVisible(w.isVisible())
 
-        if is_ai:
+        if key == "libretranslate":
+            cur = eng["base_url"].text().strip()
+            if not cur or cur in PRESETS.values():
+                eng["base_url"].setText(LIBRETRANSLATE_DEFAULT_URL)
+            eng["api_key"].setPlaceholderText(
+                TR("settings_api_key_lt_ph"))
+        elif is_ai:
             eng["api_key"].setPlaceholderText(TR("settings_api_key_ph"))
         if self.isVisible():
             self.adjustSize()

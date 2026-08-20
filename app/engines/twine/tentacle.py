@@ -10,12 +10,13 @@
 Поддерживаемые форматы:
   - SugarCube  (State.variables, :passagedisplay)
   - Harlowe    (story.state, tw-passage)
-  - Любой      (MutationObserver + DOM-обход)
+  - Любой      (DOM-обход)
 
 Что даёт мост: состояние игры и переменные (State.variables /
 story.state) в панели приложения, читы (set_variable / exec),
-бэкап и восстановление сейвов. Перевод — НЕ здесь: отдельная
-вкладка перевода работает с файлами игры.
+бэкап и восстановление сейвов. Перевод игры делается в приложении
+(извлечение текста -> перевод -> новая html-копия рядом с игрой),
+в веб-странице перевод не живёт.
 """
 from __future__ import annotations
 
@@ -35,12 +36,17 @@ from app.core.tentacles.base import Tentacle
 
 # ── JS-пэйлоад ────────────────────────────────────────────────────────
 #  {WS_URL} — подставляется HTTP-сервером при инжекции
+#  Единый пэйлоад для обоих режимов (браузер и webapp-окно): мост
+#  состояния/читов/сейвов. Перевода в веб-странице нет — он делается
+#  в приложении (извлечение -> перевод -> новая html-копия игры).
 PAYLOAD_SCRIPT = r"""
 <script>
 if (!window.__octopus || !window.__octopus.twineInjected) {
 (function(){
 var __OT = window.__octopus = window.__octopus || {};
 __OT.twineInjected = true;
+// Обёртка окна (octopus_webapp/index.html) — не игра: не ставим мост
+if (document.getElementById('octopus-wrapper')) return;
 
 // ── WebSocket ──
 var _ws = null;
@@ -210,6 +216,7 @@ class _InjectingHTTPHandler(http_server.SimpleHTTPRequestHandler):
     _game_html_rel: str = ""  # относительный путь к .html файлу игры
     _inject_html: bool = True # True — мост-пэйлоад; False — webapp-режим
     _shield_html: bool = False # webapp-режим: глушить ошибки игры (диалог WebView2)
+    _tr_dict_json: str = "{}"  # словарь live-перевода (из проекта .ob.json)
     directory: str = ""       # устанавливается перед созданием сервера
 
     # Синк сейвов (webapp-режим): плагин окна присылает слоты игры,
@@ -280,6 +287,15 @@ class _InjectingHTTPHandler(http_server.SimpleHTTPRequestHandler):
                             content = content[:idx] + shield + content[idx:]
                     else:
                         content = shield + content
+                    # Единый пэйлоад (мост + live-перевод) и в webapp-режиме:
+                    # окно игры — это WebView2 с тем же origin.
+                    payload = PAYLOAD_SCRIPT.replace(
+                        "{WS_URL}", self._ws_url).encode("utf-8")
+                    if b"</body>" in content:
+                        content = content.replace(b"</body>",
+                                                  payload + b"</body>")
+                    else:
+                        content = content + payload
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(content)))
@@ -564,6 +580,39 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
+def build_tr_dict(entries) -> dict:
+    """Словарь original->translation для live-перевода (пустые пропущены)."""
+    tr: dict = {}
+    for e in entries:
+        if isinstance(e, dict):
+            orig = e.get("original", "")
+            text = e.get("translation", "") or ""
+            status = e.get("status", "")
+        else:
+            orig = getattr(e, "original", "")
+            text = getattr(e, "translation", "") or ""
+            status = getattr(e, "status", "")
+        if orig and text.strip() and status != "skip":
+            tr[orig] = text
+    return tr
+
+
+def load_tr_dict(game_dir: str, projects_root: str | None = None) -> dict:
+    """Словарь original->translation из проекта .ob.json этой игры.
+
+    Проект — единственный источник переводов для live-перевода: файлы
+    игры не изменяются вообще. Пустой словарь, если проекта нет.
+    """
+    from app.core.models import Project, project_file_for
+    try:
+        with open(project_file_for(game_dir, projects_root),
+                  encoding="utf-8") as f:
+            project = Project.from_dict(json.load(f))
+    except (json.JSONDecodeError, OSError, KeyError):
+        return {}
+    return build_tr_dict(project.entries)
+
+
 # ── Щупальце ─────────────────────────────────────────────────────────
 
 
@@ -586,6 +635,13 @@ class TwineTentacle(Tentacle):
         self._restore_sent = False
         self._last_save_backup = ""
         self._webapp_proc = None          # процесс окна WebView2 (webapp-режим)
+        self._tr_dict: dict = {}          # словарь live-перевода (проект)
+        self._tr_state: dict = {          # состояние live-перевода (панель в игре)
+            "from": "auto", "to": "ru", "enabled": True}
+        self._tr_cb = self._default_tr_cb   # переводчик: бесплатный Google
+        self._tr_lock = threading.Lock()  # один перевод в момент времени
+        self._tr_last_status: str | None = None  # последний статус провайдера
+        self._tr_default_translator = None  # Translator (лентяй-создание)
 
     def set_port_hint(self, port: int):
         """Зафиксировать порт HTTP-сервера (стабильный origin браузера)."""
@@ -622,6 +678,14 @@ class TwineTentacle(Tentacle):
             self.error.emit(f"Файл игры не найден: {self._game_path}")
             return False
 
+        # Live-перевод: словарь из проекта .ob.json уходит в игру
+        # по WebSocket (tr_dict) при подключении страницы. Файлы игры
+        # не изменяются вообще.
+        self._tr_dict = load_tr_dict(self._game_dir)
+        if self._tr_dict:
+            self.log.emit(
+                f"Live-перевод: {len(self._tr_dict)} строк из проекта.")
+
         # HTTP-сервер
         rel = os.path.relpath(self._game_path, self._game_dir)
         rel = rel.replace("\\", "/")
@@ -629,18 +693,19 @@ class TwineTentacle(Tentacle):
         if not self._start_http(rel):
             return False
 
+        # Единый мост (состояние, читы, сейвы, live-перевод) — в обоих
+        # режимах: браузер и окно WebView2.
+        if not self._start_ws():
+            return False
+        ws_url = f"ws://127.0.0.1:{self._ws_server.port}"
+        _InjectingHTTPHandler._ws_url = ws_url
+        _InjectingHTTPHandler._game_html_rel = rel
+
         if self._use_webapp_window:
             return self._launch_webapp(rel)
 
         _InjectingHTTPHandler._inject_html = True
         _InjectingHTTPHandler._shield_html = False
-        if not self._start_ws():
-            return False
-
-        # Настраиваем URL в пэйлоаде
-        ws_url = f"ws://127.0.0.1:{self._ws_server.port}"
-        _InjectingHTTPHandler._ws_url = ws_url
-        _InjectingHTTPHandler._game_html_rel = rel
 
         url = f"http://127.0.0.1:{self._http_port}/{quote(rel, safe='/')}"
         self.log.emit(f"Игра: {url}")
@@ -670,8 +735,8 @@ class TwineTentacle(Tentacle):
     def _launch_webapp(self, rel: str) -> bool:
         """WebView2-режим запуска: обёртка ставится в папку игры
         (octopus_webapp/) и раздаётся этим же HTTP-сервером, игра
-        открывается в окне приложения. Мост и инжекция пэйлоада не
-        нужны — работает только синк сейвов."""
+        открывается в окне приложения. Полный мост (состояние, читы,
+        сейвы, live-перевод) работает через WebSocket — как в браузере."""
         from app.engines.twine import webapp as _webapp
 
         _InjectingHTTPHandler._inject_html = False
@@ -815,7 +880,7 @@ class TwineTentacle(Tentacle):
     def _start_ws(self) -> bool:
         self._ws_server = _WSServer(
             self._on_ws_message,
-            lambda: self.log.emit("WebSocket: клиент подключился"),
+            self._on_ws_connect,
             lambda: self.log.emit("WebSocket: клиент отключился"),
             port_hint=self._ws_port_hint())
         if not self._ws_server.start():
@@ -835,6 +900,19 @@ class TwineTentacle(Tentacle):
             self._ws_server = None
 
     # ── Обработка сообщений из игры ──
+    def _on_ws_connect(self):
+        self.log.emit("WebSocket: клиент подключился")
+        # Состояние live-перевода (панель приложения) и словарь проекта
+        # передаём при каждом подключении — перезагрузка страницы их
+        # сбрасывает.
+        if not self._ws_server:
+            return
+        st = self._tr_state
+        self._ws_server.send({"type": "tr_set", "enabled": st["enabled"],
+                              "from": st["from"], "to": st["to"]})
+        if self._tr_dict:
+            self._ws_server.send({"type": "tr_dict", "data": self._tr_dict})
+
     def _on_ws_message(self, msg: dict):
         mtype = msg.get("type")
         if mtype == "state":
@@ -853,6 +931,98 @@ class TwineTentacle(Tentacle):
                                 str(msg.get("error", "")),
                                 json.dumps(msg.get("value", ""),
                                            ensure_ascii=False))
+        elif mtype == "tr_state":
+            # Пользователь поменял языки/вкл-выкл прямо в игре — запоминаем,
+            # чтобы при переподключении страницы tr_set вернул тот же выбор.
+            st = self._tr_state
+            st["enabled"] = bool(msg.get("enabled", st["enabled"]))
+            st["from"] = str(msg.get("from") or st["from"])
+            st["to"] = str(msg.get("to") or st["to"])
+        elif mtype == "tr_request":
+            self._on_tr_request(msg)
+
+    # ── Live-перевод ──
+    def _on_tr_request(self, msg: dict):
+        """Батч видимого текста игры → провайдер приложения → tr_result.
+
+        Вызывается из потоков WS-пула; колбэк сериализуется локом.
+        Нет колбэка или сбой провайдера — отвечаем оригиналами и
+        один раз сообщаем странице причину (tr_status), чтобы панель
+        в игре показала, почему перевод не работает."""
+        texts = msg.get("texts") or []
+        if not isinstance(texts, list):
+            texts = []
+        results = list(texts)
+        cb = self._tr_cb
+        if cb and texts:
+            try:
+                with self._tr_lock:
+                    results = cb(list(texts),
+                                 str(msg.get("lang_from", "auto")),
+                                 str(msg.get("lang_to", "ru")))
+                if len(results) != len(texts):
+                    results = list(texts)
+                self._send_tr_status(None)
+            except Exception as e:  # noqa: BLE001 — провайдер упал
+                results = list(texts)
+                self._send_tr_status(f"Провайдер перевода недоступен: {e}")
+        else:
+            self._send_tr_status("Движок перевода не настроен (настройки)")
+        if self._ws_server:
+            self._ws_server.send({
+                "type": "tr_result",
+                "id": msg.get("id"),
+                "results": results})
+
+    def _send_tr_status(self, msg: str | None) -> None:
+        """Шлёт странице статус провайдера (однажды на изменение)."""
+        if msg == self._tr_last_status:
+            return
+        self._tr_last_status = msg
+        if self._ws_server:
+            self._ws_server.send({"type": "tr_status", "msg": msg})
+
+    def _default_tr_cb(self, texts: list, lang_from: str,
+                       lang_to: str) -> list:
+        """Переводчик по умолчанию: встроенный бесплатный Google Translate.
+
+        Работает всегда, даже если игру запустили без приложения-окна
+        (webapp напрямую): никаких настроек пользователя, без ключа.
+        main_window может переопределить через set_tr_callback, если
+        захочет свой движок/память переводов."""
+        translator = self._tr_default_translator
+        if translator is None:
+            from app.core.translate.engines import GoogleFreeEngine
+            from app.core.translate.service import Translator
+            translator = Translator(GoogleFreeEngine())
+            self._tr_default_translator = translator
+        return translator.translate_texts(list(texts), lang_from, lang_to)
+
+    def set_tr_callback(self, cb) -> None:
+        """Колбэк автоперевода текстов игры (вызывается из потоков WS):
+        cb(texts: list[str], lang_from: str, lang_to: str) -> list[str].
+        Возвращает ровно столько же строк; None — вернуть переводчик
+        по умолчанию (бесплатный Google)."""
+        self._tr_cb = cb or self._default_tr_cb
+
+    def set_tr_state(self, lang_from: str, lang_to: str,
+                     enabled: bool) -> None:
+        """Языки и вкл/выкл live-перевода из панели приложения.
+
+        Изменение сразу уходит в игру: страница сбрасывает кеш
+        перевода и восстанавливает оригиналы перед применением новых."""
+        st = self._tr_state
+        st["from"] = lang_from or "auto"
+        st["to"] = lang_to or "ru"
+        st["enabled"] = bool(enabled)
+        if self._ws_server and self._ws_server.has_client():
+            self._ws_server.send({"type": "tr_set",
+                                  "enabled": st["enabled"],
+                                  "from": st["from"], "to": st["to"]})
+
+    def tr_state(self) -> dict:
+        """Текущее состояние live-перевода (для панели приложения)."""
+        return dict(self._tr_state)
 
     # ── Сейвы: бэкап/восстановление ──
     def _send_save_restore(self):
@@ -915,3 +1085,15 @@ class TwineTentacle(Tentacle):
         else:
             self.cheat_ack.emit(cmd, False, "send failed", "")
         return ok
+
+    def push_tr_dict(self, entries) -> bool:
+        """Обновить словарь live-перевода (новые переводы в проекте).
+
+        Словарь сразу передаётся в подключённую игру; перезагрузка
+        страницы подхватит его при подключении по WebSocket.
+        """
+        self._tr_dict = build_tr_dict(entries)
+        if self._ws_server and self._ws_server.has_client():
+            return self._ws_server.send({
+                "type": "tr_dict", "data": self._tr_dict})
+        return False

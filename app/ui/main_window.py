@@ -6,7 +6,6 @@
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 
@@ -19,7 +18,7 @@ from app.core import cache as app_cache
 from app.core.session import GameSession
 from app.core.tentacles import create_tentacle
 from app.core.models import Project
-from app.core.translate.engines import get_engine
+from app.core.translate.engines import GoogleFreeEngine, get_engine
 from app.core.translate.glossary import Glossary
 from app.core.translate.memory import TranslationMemory
 from app.engines.registry import detect_engine
@@ -219,10 +218,8 @@ class MainWindow(QMainWindow):
 
     # ---------- проект ----------
     def _project_file(self, game_dir: str) -> str:
-        name = hashlib.md5(os.path.abspath(game_dir).encode()).hexdigest()[:12]
-        base = os.path.basename(os.path.normpath(game_dir)) or "game"
-        safe = "".join(c if c.isalnum() else "_" for c in base)[:40]
-        return os.path.join(PROJECTS_DIR, f"{safe}_{name}.ob.json")
+        from app.core.models import project_file_for
+        return project_file_for(game_dir)
 
     def open_project(self, game_dir: str) -> str:
         # Если это .html файл — для проекта берём родительскую папку
@@ -385,6 +382,13 @@ class MainWindow(QMainWindow):
                                       "https://openrouter.ai/api/v1"),
                                   api_key=s.value(f"api_key_{pfx}", ""),
                                   model=model)
+            if name == "libretranslate":
+                from app.core.translate.engines import LIBRETRANSLATE_DEFAULT_URL
+                return get_engine("libretranslate",
+                                  base_url=s.value(
+                                      f"base_url_{pfx}",
+                                      LIBRETRANSLATE_DEFAULT_URL),
+                                  api_key=s.value(f"api_key_{pfx}", ""))
             return get_engine(name)
         except Exception:  # noqa: BLE001
             return None
@@ -440,6 +444,28 @@ class MainWindow(QMainWindow):
         t = self.session.tentacle
         return t if (t and t.is_attached()) else None
 
+    def _live_translate(self, texts: list, lang_from: str,
+                        lang_to: str) -> list:
+        """Live-перевод текстов игры (простой бесплатный плагин).
+
+        Вызывается из потоков WS-сервера щупальца Twine. Переводим
+        встроенным бесплатным Google Translate (без ключа, без настроек
+        пользователя — движки для файлов тут не участвуют). Кешируем
+        движок/переводчика на время сессии; при любой ошибке щупальце
+        покажет причину в панели игры через tr_status, текст останется
+        оригиналом.
+        """
+        translator = getattr(self, "_live_translator", None)
+        if translator is None \
+                or getattr(translator, "engine", None).__class__ \
+                is not GoogleFreeEngine:
+            from app.core.translate.service import Translator
+            translator = Translator(GoogleFreeEngine(), tm=self.tm,
+                                    glossary=self.glossary)
+            self._live_translator = translator
+        return translator.translate_texts(list(texts),
+                                          lang_from, lang_to)
+
     def start_session(self, target: str,
                       attach_pid: int | None = None,
                       port_hint: int = 0) -> bool:
@@ -452,6 +478,8 @@ class MainWindow(QMainWindow):
         tentacle.setParent(self)
         if port_hint and hasattr(tentacle, "set_port_hint"):
             tentacle.set_port_hint(port_hint)
+        if key == "twine":
+            tentacle.set_tr_callback(self._live_translate)
         if attach_pid is not None:
             ok = self.session.attach(tentacle, attach_pid)
         else:

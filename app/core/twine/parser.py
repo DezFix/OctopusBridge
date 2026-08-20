@@ -10,13 +10,24 @@ Twine-игра — это .html с элементом <tw-storydata>, внутр
 переводятся, а таргеты (имена пассажей) маскируются токенами и не
 изменяются. HTML-сущности раскрываются при извлечении
 и экранируются обратно при внедрении.
+
+Защита кода игры (перевод НЕ ломает игру):
+- Аргументы-КЛЮЧИ печатающих макросов (имена пассажей, $переменные,
+  значения, CSS-селекторы) не извлекаются и не внедряются — перевод
+  ключа убивает кнопку/ссылку/картинку (см. _PRINT_MACROS).
+- Harlowe: (имя: …) и [подпись->таргет] маскируются целиком — картинки
+  (image:), переходы (goto:) и условия не переводятся.
+- Кавычка/|/-> в переведённой подписи не ломает макрос/ссылку:
+  такие переводы отбрасываются при внедрении.
 """
 from __future__ import annotations
 
 import html as html_mod
+import json
 import os
 import re
 import shutil
+from dataclasses import dataclass
 
 from app.core.models import TranslationEntry
 
@@ -210,6 +221,15 @@ def _attrs(attr_text: str) -> dict[str, str]:
     return {m.group(1): m.group(2) for m in RE_ATTR.finditer(attr_text)}
 
 
+def _story_format(text: str) -> str:
+    """Формат истории из тега <tw-storydata>: 'SugarCube', 'Harlowe', ''."""
+    m = re.search(r"<tw-storydata\b[^>]*>", text, re.DOTALL)
+    if not m:
+        return ""
+    attrs = _attrs(m.group(0)[len("<tw-storydata"):-1])
+    return attrs.get("format", "").strip()
+
+
 # ── сегменты строки ──
 # Каждая строка пассажа разбивается на сегменты: text (переводим),
 # link [[...]] (переводим только подпись), macro <<...>> (не переводим,
@@ -223,12 +243,74 @@ _RE_VAR = re.compile(
     r"|\[[^\]\n]{0,120}\]){0,4}")
 
 # печатающие макросы SugarCube 1/2: их строковые аргументы — видимый
-# текст (кнопки, ссылки, выборы) и должны переводиться
-_PRINT_MACROS = {
-    "button", "link", "label", "radio", "checkbox", "select", "option",
-    "click", "hover", "menu", "prompt", "textbox", "textarea",
-    "input", "linkappend", "linkprepend", "linkreplace", "goto", "addclass",
+# текст (кнопки, ссылки, выборы) и должны переводиться. НО не каждый
+# строковый аргумент — текст: у части макросов есть аргументы-КЛЮЧИ —
+# имена пассажей (переходы), $переменные (приёмники ввода), значения.
+# Перевод ключа ломает игру («перевод убивает игры»): кнопка ведёт в
+# несуществующий пассаж, сломанное имя переменной, битая картинка.
+# Поэтому для каждого макроса заданы ПОЗИЦИИ аргументов:
+#   text — строка для перевода (подпись кнопки/ссылки, промпт);
+#   key  — идентификатор игры: не извлекаем и в apply не внедряем
+#          (защита старых проектов, где ключи уже извлечены).
+# Позиции — SugarCube 2 (доминирующий формат); позиции $переменных
+# дополнительно защищены проверкой «аргумент начинается с $» в
+# _extract_segment (перекрывает и SugarCube 1, где переменная первая:
+# <<textbox "$var" "label">>).
+# goto/display/include/widget/addclass — ВСЕ аргументы ключи (имена
+# пассажей, CSS-селекторы) — их в списке нет, они не переводятся вовсе.
+_PRINT_MACROS: dict[str, tuple[frozenset[int], frozenset[int]]] = {
+    "button":      (frozenset({0}), frozenset({1})),   # SC1: [[...]]-ссылка
+    "link":        (frozenset({0}), frozenset({1})),   # SC1: 2-й арг — пассаж
+    "label":       (frozenset({0}), frozenset()),
+    "click":       (frozenset({0}), frozenset({1})),
+    "hover":       (frozenset({0}), frozenset({1})),
+    "linkappend":  (frozenset({0}), frozenset({1})),   # «текст» «пассаж»
+    "linkprepend": (frozenset({0}), frozenset({1})),
+    "linkreplace": (frozenset({0}), frozenset({1})),
+    "menu":        (frozenset({0}), frozenset()),
+    "option":      (frozenset({0}), frozenset({1})),   # SC2: 2-й арг — пассаж
+    "radio":       (frozenset({0}), frozenset({1, 2})),  # SC1: подписи — значения
+    "checkbox":    (frozenset({0}), frozenset({1, 2})),
+    "select":      (frozenset({0}), frozenset({1})),
+    "textbox":     (frozenset({0}), frozenset({1, 2})),
+    "textarea":    (frozenset({0}), frozenset({1, 2})),
+    "input":       (frozenset({0}), frozenset({1, 2})),
+    "prompt":      (frozenset({0}), frozenset({1, 2})),  # default — значение
 }
+
+
+def _macro_arg_positions(name: str
+                         ) -> tuple[frozenset[int], frozenset[int]]:
+    """(текстовые позиции, ключевые позиции) аргументов макроса."""
+    return _PRINT_MACROS.get(name.lower(), (frozenset(), frozenset()))
+
+
+# печатающие макросы, у которых ВСЕ строковые аргументы — видимый текст
+# (ключей-имён пассажей у них нет): print печатает аргументы, dialog —
+# заголовок и содержимое окна (модальное сообщение в игре). Перевод
+# аргумента-ключа (имени пассажа/$переменной) ломает игру, поэтому
+# только эти два — «всё текст».
+_ALL_TEXT_MACROS = {"print", "dialog"}
+
+
+def _macro_text_positions(name: str, macro_body: str,
+                          n_args: int) -> frozenset[int]:
+    """Позиции строковых аргументов макроса, которые переводятся.
+
+    «=» (<<= expr>>) — печатающее выражение: строковые литералы — это
+    текст для игрока, если выражение выбирает фразу (<<= either('…',
+    '…')>> — случайный выбор реплики — частый паттерн в играх). Прочие
+    <<= …>>-выражения (replace/split/match с литералами) не трогаем:
+    их «аргументы» — код, перевод сломает логику.
+    print/dialog — все строковые аргументы — видимый текст.
+    """
+    if name == "=":
+        if "either(" in macro_body:
+            return frozenset(range(n_args))
+        return frozenset()
+    if name.lower() in _ALL_TEXT_MACROS:
+        return frozenset(range(n_args))
+    return _macro_arg_positions(name)[0]
 
 
 def _find_macro_end(line: str, start: int) -> int:
@@ -251,12 +333,53 @@ def _find_macro_end(line: str, start: int) -> int:
     return -1
 
 
-def _split_segments(line: str) -> list[tuple[str, str, int, int]]:
+# Harlowe: макрос — «(имя: …)» (имя всегда с двоеточием). Строка с
+# (имя:) внутри — код игры: картинки (image:), переходы (goto:), условия
+# (if:), присваивания (set:) и т.п. Перевод таких строк ломает игру
+# («(изображение: …)» не макрос — картинка/ссылка умирает), поэтому они
+# маскируются токенами как и SugarCube-код. Скобки в скобках (вложенные
+# макросы (either: "a", (link: "b")) и кавычки )/«)» — экранируются.
+_RE_HARLOWE_NAME = re.compile(r"\([A-Za-z][A-Za-z0-9-]*:")
+# Harlowe-ссылки: [подпись->таргет], [таргет<-подпись] (одинарные скобки).
+RE_HARLOWE_LINK = re.compile(
+    r"\[([^\[\]\n]{1,1000}?(?:->|<-)[^\[\]\n]{1,1000})\]")
+
+
+def _find_harlowe_end(line: str, start: int) -> int:
+    """Индекс ) закрывающего Harlowe-макроса (вложенные скобки, кавычки)."""
+    depth = 0
+    i, n = start, len(line)
+    quote: str | None = None
+    while i < n:
+        c = line[i]
+        if quote:
+            if c == "\\":
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+        elif c in "\"'":
+            quote = c
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
+
+
+def _split_segments(line: str, harlowe: bool = False
+                    ) -> list[tuple[str, str, int, int]]:
     """Разбивает строку пассажа на сегменты (тип, текст, start, end).
 
     Типы: text, link ([[...]]), img ([img[...]]), macro (<<...>>),
     tag (<...>), var ($var). Последний сегмент может быть обрезан
     (незакрытый макрос — продолжается на следующей строке).
+    Для Harlowe (harlowe=True) к macro добавляются (имя: …) и
+    [подпись->таргет] — это код игры (картинки, переходы, условия),
+    перевод ломает игру, поэтому они не извлекаются вовсе.
     """
     segs: list[tuple[str, str, int, int]] = []
     i, n = 0, len(line)
@@ -269,6 +392,15 @@ def _split_segments(line: str) -> list[tuple[str, str, int, int]]:
                 break
             segs.append(("macro", line[i:end + 2], i, end + 2))
             i = end + 2
+            continue
+        if harlowe and c == "(" and i + 1 < n \
+                and _RE_HARLOWE_NAME.match(line, i):
+            end = _find_harlowe_end(line, i)
+            if end < 0:
+                segs.append(("macro", line[i:], i, n))
+                break
+            segs.append(("macro", line[i:end + 1], i, end + 1))
+            i = end + 1
             continue
         if line.startswith("[img[", i):
             end = line.find("]]", i + 5)
@@ -285,6 +417,13 @@ def _split_segments(line: str) -> list[tuple[str, str, int, int]]:
             # незакрытая [[ (многострочная ссылка/сеттер) — код-структура
             segs.append(("macro", line[i:], i, n))
             break
+        if harlowe and c == "[" and not line.startswith("[[", i):
+            end = line.find("]", i + 1)
+            if end > 0 and ("->" in line[i + 1:end]
+                            or "<-" in line[i + 1:end]):
+                segs.append(("macro", line[i:end + 1], i, end + 1))
+                i = end + 1
+                continue
         if c == "$" and i + 1 < n and _RE_VAR.match(line, i):
             m = _RE_VAR.match(line, i)
             segs.append(("var", m.group(0), i, m.end()))
@@ -303,6 +442,9 @@ def _split_segments(line: str) -> list[tuple[str, str, int, int]]:
             nc = line[j]
             if (line.startswith("<<", j) or line.startswith("[[", j)
                     or line.startswith("[img[", j)
+                    or (harlowe and line.startswith("(", j)
+                        and j + 1 < n and _RE_HARLOWE_NAME.match(line, j))
+                    or (harlowe and nc == "[" and not line.startswith("[[", j))
                     or (nc == "$" and j + 1 < n and _RE_VAR.match(line, j))
                     or (nc == "<" and not line.startswith("<<", j)
                         and j + 1 < n
@@ -329,13 +471,17 @@ def _macro_args(macro: str) -> list[tuple[str, int, str]]:
 
 
 def _extract_segment(seg_type: str, seg_text: str,
-                     codes: list[str]) -> list[tuple[str, str, int]]:
+                     codes: list[str], harlowe: bool = False
+                     ) -> list[tuple[str, str, int]]:
     """Переводимые фрагменты сегмента: (текст, вид, индекс).
 
     Возвращает список (фрагмент, вид, idx):
     вид 'text' — текст сегмента (замаскированный, без отступов),
     idx = -1; вид 'link' — подпись ссылки, idx = -1; вид 'arg' —
     строка-аргумент печатающего макроса, idx — номер аргумента.
+    Аргументы-КЛЮЧИ (имена пассажей, $переменные, значения) и
+    аргументы, начинающиеся с $ (SugarCube 1: переменная первой),
+    не извлекаются: перевод ключа ломает кнопку/ссылку/картинку.
     """
     out: list[tuple[str, str, int]] = []
     if seg_type == "text":
@@ -345,7 +491,7 @@ def _extract_segment(seg_type: str, seg_text: str,
         # комментарий в коде (/* … */) — не текст для игрока
         if _is_code_comment(stripped):
             return out
-        masked, _ = mask_codes(stripped)
+        masked, _ = mask_codes(stripped, harlowe)
         if _has_translatable_text(masked):
             out.append((masked, "text", -1))
     elif seg_type == "link":
@@ -355,17 +501,26 @@ def _extract_segment(seg_type: str, seg_text: str,
                 and _has_letters(label):
             out.append((label, "link", -1))
     elif seg_type == "macro":
-        name_m = re.match(r"<<\s*([A-Za-z_]+)", seg_text)
-        if name_m and name_m.group(1).lower() in _PRINT_MACROS:
+        name_m = re.match(r"<<\s*([A-Za-z_]+|\=)", seg_text)
+        if name_m:
             args = _macro_args(seg_text)
-            for i, (arg, _off, _q) in enumerate(args):
-                # аргумент со вложенными макросами (например подпись
-                # кнопки с <<if>>-условием) — код: LLM переведёт условие
-                # и сломает логику; apply их всё равно не внедрит
-                if _has_letters(arg) \
-                        and not RE_MACRO_ANY.search(arg) \
-                        and not RE_LINK_CODE.search(arg):
-                    out.append((arg, "arg", i))
+            text_positions = _macro_text_positions(
+                name_m.group(1), seg_text, len(args))
+            if text_positions:
+                for i, (arg, _off, _q) in enumerate(args):
+                    # Ключ (имя пассажа/$var/значение) — не текст:
+                    # перевод сломает переход, картинку или логику.
+                    # Позиции $переменных в SugarCube 1 (переменная
+                    # первой) ловятся проверкой на «$» в начале.
+                    if i not in text_positions:
+                        continue
+                    # аргумент со вложенными макросами (например подпись
+                    # кнопки с <<if>>-условием) — код: LLM переведёт условие
+                    # и сломает логику; apply их всё равно не внедрит
+                    if _has_letters(arg) \
+                            and not RE_MACRO_ANY.search(arg) \
+                            and not RE_LINK_CODE.search(arg):
+                        out.append((arg, "arg", i))
     return out
 
 
@@ -416,13 +571,18 @@ def is_translatable_line(line: str) -> bool:
     return _has_translatable_text(masked)
 
 
-def mask_codes(text: str) -> tuple[str, list[str]]:
+def mask_codes(text: str, harlowe: bool = False) -> tuple[str, list[str]]:
     """Заменяет Twine-коды (<<..>>, $var, HTML-теги, таргеты ссылок
-    [[..]]) на <xN/>.
+    [[..]]; для Harlowe — (имя: …) и [подпись->таргет]) на <xN/>.
 
     Подпись ссылки [[подпись|таргет]] остаётся текстом — её переводит
     LLM, а таргет (имя пассажа) замаскирован. Ссылки без разделителя
     ([[таргет]]) и с кодом в подписи уходят в токен целиком.
+
+    Harlowe-конструкции (картинки (image:), переходы (goto:), ссылки
+    [a->b]) маскируются ЦЕЛИКОМ: их перевод ломает игру, а маскирование
+    защищает и legacy-путь в apply (строки старых проектов без
+    сегментов), где маска пересчитывается по текущему файлу.
 
     Возвращает (замаскированный текст, список кодов) — порядок
     и число кодов детерминированы: одинаковый вход → одинаковые
@@ -433,6 +593,31 @@ def mask_codes(text: str) -> tuple[str, list[str]]:
     def repl(m: re.Match) -> str:
         codes.append(m.group(0))
         return f"<x{len(codes) - 1}/>"
+
+    # Harlowe-макросы (name: …): сканер со скобками/кавычками, до общего
+    # прохода — иначе $var внутри (set: $x to …) маскировался бы отдельно
+    # и переводчик увидел бы код. Токены пишутся в codes сразу (первые).
+    if harlowe:
+        harlowe_map: list[tuple[str, str]] = []
+        i = 0
+        while i < len(text):
+            m = _RE_HARLOWE_NAME.search(text, i)
+            if not m:
+                break
+            end = _find_harlowe_end(text, m.start())
+            if end < 0:
+                break
+            idx = len(codes)
+            codes.append(text[m.start():end + 1])
+            sentinel = f"\x00H{len(harlowe_map)}\x00"
+            harlowe_map.append((sentinel, f"<x{idx}/>"))
+            text = text[:m.start()] + sentinel + text[end + 1:]
+            i = m.start() + len(sentinel)
+        # Harlowe-ссылки [подпись->таргет] — код целиком.
+        temp = RE_HARLOWE_LINK.sub(repl, text)
+        for sentinel, tok in harlowe_map:
+            temp = temp.replace(sentinel, tok)
+        text = temp
 
     # ссылки заменяем sentinel'ами до общего прохода: токены <xN/> внутри
     # ссылок не должны быть повторно замаскированы как HTML-теги, а коды
@@ -475,6 +660,8 @@ def extract(game_dir: str) -> list[TranslationEntry]:
     rel = os.path.basename(story)
     with open(story, encoding="utf-8", errors="ignore") as f:
         text = f.read()
+    # Harlowe: (имя: …) и [подпись->таргет] — код игры, в сегменты macro
+    harlowe = _story_format(text).lower().startswith("harlowe")
     entries: list[TranslationEntry] = []
     next_id = 1
     for m in RE_PASSAGE.finditer(text):
@@ -491,6 +678,7 @@ def extract(game_dir: str) -> list[TranslationEntry]:
         # первого пассажа не может продолжать макрос второго.
         in_script = False
         mac_open = False
+        link_open = False
         for n, line in enumerate(m.group(2).split("\n")):
             u = html_mod.unescape(line)
             low = u.lower()
@@ -503,6 +691,13 @@ def extract(game_dir: str) -> list[TranslationEntry]:
                 if "</script" in low:
                     in_script = False
                 continue
+            # многострочная ссылка/сеттер ([[…]…] разбитый на строки):
+            # строки-«продолжения» (например 'to true] ]') — код-структура,
+            # их перевод ломает ссылку. Скипаем до строки, закрывающей ]
+            if link_open:
+                link_open = not (u.rstrip().endswith("]")
+                                 or u.rstrip().endswith("]]"))
+                continue
             # многострочный макрос (<<set $x = { ... }>> разбитый на
             # строки): строки-«продолжения» — код, не текст. Пока
             # макрос открыт (mac_open) — каждая строка — код, пока
@@ -514,6 +709,16 @@ def extract(game_dir: str) -> list[TranslationEntry]:
             if u.count("<<") != u.count(">>"):
                 mac_open = u.count("<<") > u.count(">>")
                 continue
+            # висячая [[ без закрывающей ]] на строке — многострочная
+            # ссылка/сеттер (код-структура): не извлекаем саму строку
+            # и включаем режим пропуска строк-продолжений
+            if "[[" in u:
+                rest = RE_LINK.sub("", u)
+                rest = re.sub(r"\[\[[^\]\n]{0,1000}\]\[[^\]\n]{0,1000}\]\]",
+                              "", rest)
+                if "[[" in rest:
+                    link_open = True
+                    continue
             # line continuation '\' склеивает строки — перевод ломает
             # структуру: такие строки не извлекаем вовсе
             if _RE_LINE_CONT.search(u):
@@ -523,9 +728,9 @@ def extract(game_dir: str) -> list[TranslationEntry]:
             # только текстовые (текст, подписи ссылок, аргументы
             # кнопок/ссылок); код-сегменты не извлекаем вовсе.
             for k, (stype, stext, _s0, _s1) in enumerate(
-                    _split_segments(u)):
-                for frag, kind, arg_idx in _extract_segment(stype, stext,
-                                                            None):
+                    _split_segments(u, harlowe)):
+                for frag, kind, arg_idx in _extract_segment(
+                        stype, stext, None, harlowe):
                     path = f"passage[{pid}].line[{n}].seg[{k}]"
                     if kind == "arg":
                         path += f".arg[{arg_idx}]"
@@ -602,7 +807,8 @@ def _load_backup_lines(game_dir: str, story_name: str
 
 
 def _apply_seg(stype: str, stext: str, arg_idx: int,
-               original: str, translation: str) -> str | None:
+               original: str, translation: str,
+               harlowe: bool = False) -> str | None:
     """Перевод одного сегмента строки (или None — сегмент изменился /
     тип не тот / перевод опасен). Вид определяется по типу сегмента:
     text — текст, link — подпись ссылки, macro+arg_idx — аргумент
@@ -613,11 +819,11 @@ def _apply_seg(stype: str, stext: str, arg_idx: int,
         stripped = stext.strip()
         if not stripped:
             return None
-        masked, codes = mask_codes(stripped)
+        masked, codes = mask_codes(stripped, harlowe)
         if masked != original:
             return None
         text = unmask_codes(translation, codes)
-        if mask_codes(text)[1] != codes:
+        if mask_codes(text, harlowe)[1] != codes:
             return None
         ls = len(stext) - len(stext.lstrip())
         rs = len(stext) - len(stext.rstrip())
@@ -630,29 +836,82 @@ def _apply_seg(stype: str, stext: str, arg_idx: int,
         label, sep, target = _link_parts(inner)
         if not sep or RE_LINK_CODE.search(label) or label != original:
             return None
-        if RE_LINK_CODE.search(translation):
+        # Кавычки/скобки/код в подписи — сломают синтаксис ссылки;
+        # разделители | -> <- в переводе переставят подпись/таргет
+        # ([[a->b|c]] разберётся как подпись a, таргет b|c) — не внедряем
+        if RE_LINK_CODE.search(translation) \
+                or "|" in translation or "->" in translation \
+                or "<-" in translation:
             return None
         if sep == "<-":
             return f"[[{target}{sep}{translation}]]"
         return f"[[{translation}{sep}{target}]]"
     if stype == "macro":
-        name_m = re.match(r"<<\s*([A-Za-z_]+)", stext)
-        if arg_idx < 0 or not name_m \
-                or name_m.group(1).lower() not in _PRINT_MACROS:
-            return None
-        args = _macro_args(stext)
-        if arg_idx >= len(args):
-            return None
-        arg, off, q = args[arg_idx]
-        if arg != original:
-            return None
-        return stext[:off] + q + translation + q + stext[off + len(q) + len(arg):]
+        return _apply_macro_arg(stext, arg_idx, original, translation)
     return None
 
 
+def _apply_macro_arg(stext: str, arg_idx: int, original: str,
+                     translation: str) -> str | None:
+    """Перевод одного строкового аргумента макроса; возвращает макрос
+    целиком или None, если аргумент — ключ/код или перевод опасен."""
+    name_m = re.match(r"<<\s*([A-Za-z_]+|\=)", stext)
+    if arg_idx < 0 or not name_m:
+        return None
+    args = _macro_args(stext)
+    text_positions = _macro_text_positions(
+        name_m.group(1), stext, len(args))
+    # Аргумент-КЛЮЧ (имя пассажа, $переменная, значение) — перевод
+    # сломает игру. Запись может прийти из старого проекта, где
+    # ключи ещё извлекались — не внедряем ни при каких условиях.
+    if arg_idx not in text_positions:
+        return None
+    if arg_idx >= len(args):
+        return None
+    arg, off, q = args[arg_idx]
+    if arg != original:
+        return None
+    # Кавычка в переводе закроет строковый литерал макроса раньше
+    # времени (сломанный JS); $/<[/<< — переводчик изобрёл код.
+    if q in translation or RE_LINK_CODE.search(translation):
+        return None
+    # off — позиция ОТКРЫВАЮЩЕЙ кавычки; закрывающая идёт сразу
+    # после аргумента — её не трогаем, подставляем свою пару.
+    return stext[:off] + q + translation + q \
+        + stext[off + len(q) + len(arg) + len(q):]
+
+
+def _apply_macro_args(stext: str,
+                      ws: list[tuple[int, str, str]]) -> str | None:
+    """Применяет переводы НЕСКОЛЬКИХ строковых аргументов одного макроса
+    (например <<= either('…', '…', …)>>). Сплайс с конца, чтобы смещения
+    остальных аргументов не сдвигались. None — ни один не применился."""
+    repls: list[tuple[int, str, str, str]] = []
+    for arg_idx, original, translation in ws:
+        r = _apply_macro_arg(stext, arg_idx, original, translation)
+        if r is None:
+            continue
+        arg, off, q = _macro_args(stext)[arg_idx]
+        repls.append((off, q, arg, translation))
+    if not repls:
+        return None
+    out = stext
+    for off, q, arg, translation in sorted(repls, key=lambda x: x[0],
+                                           reverse=True):
+        out = out[:off] + q + translation + q \
+            + out[off + len(q) + len(arg) + len(q):]
+    return out
+
+
 def apply(game_dir: str, entries: list[TranslationEntry],
-          backup_root: str | None = None, on_skip=None) -> dict:
-    """Внедряет переводы построчно обратно в .html истории (с бэкапом)."""
+          backup_root: str | None = None, on_skip=None,
+          target_lang: str | None = None) -> dict:
+    """Внедряет переводы построчно обратно в .html истории.
+
+    По умолчанию — в сам файл (с бэкапом в backup/). Если задан
+    target_lang — перевод пишется в НОВЫЙ файл «имя_<язык>.html»
+    рядом с игрой: оригинал не трогается и остаётся бэкапом.
+    """
     story = find_story(game_dir)
     if not story:
         return {"files": 0, "strings": 0, "backups": []}
@@ -679,12 +938,21 @@ def apply(game_dir: str, entries: list[TranslationEntry],
     with open(story, encoding="utf-8", errors="ignore") as f:
         text = f.read()
 
+    # Harlowe: (имя: …) и [подпись->таргет] — код игры; маскирование и
+    # ремонт работают по тому же правилу, что и в extract.
+    harlowe = _story_format(text).lower().startswith("harlowe")
+
     if backup_root is None:
         backup_root = _backup_dir(game_dir)
-    os.makedirs(backup_root, exist_ok=True)
-    backup_path = os.path.join(backup_root, os.path.basename(story))
-    if not os.path.exists(backup_path):
-        shutil.copy2(story, backup_path)
+    backup_path: str | None = None
+    if not target_lang:
+        # Одноразовый бэкап до первого перевода: нужен только при
+        # правке самого файла. Для новой копии («имя_язык.html»)
+        # оригинал и есть бэкап — ничего не копируем.
+        os.makedirs(backup_root, exist_ok=True)
+        backup_path = os.path.join(backup_root, os.path.basename(story))
+        if not os.path.exists(backup_path):
+            shutil.copy2(story, backup_path)
 
     written = 0
 
@@ -727,6 +995,24 @@ def apply(game_dir: str, entries: list[TranslationEntry],
             if RE_MACRO_SUGARCUBE.match(u) and RE_CYR.search(u):
                 saved = backup_lines.get((pid, idx))
                 if saved is not None:
+                    lines[idx] = saved
+                    written += 1
+                continue
+            # Harlowe: кириллица ВНУТРИ (имя: …) — прошлый перевод сломал
+            # код (переведённый путь картинки, имя пассажа, условие) —
+            # восстанавливаем строку из backup/. Кириллица вне макроса
+            # (хук [Текст]) — легальный перевод, не трогаем.
+            hl_damaged = False
+            if harlowe:
+                for hm in _RE_HARLOWE_NAME.finditer(u):
+                    hend = _find_harlowe_end(u, hm.start())
+                    if hend > hm.start() \
+                            and RE_CYR.search(u[hm.start():hend + 1]):
+                        hl_damaged = True
+                        break
+            if hl_damaged:
+                saved = backup_lines.get((pid, idx))
+                if saved is not None and saved != lines[idx]:
                     lines[idx] = saved
                     written += 1
                 continue
@@ -817,7 +1103,7 @@ def apply(game_dir: str, entries: list[TranslationEntry],
                     # восстанавливаем коды в переводе. Если переводчик
                     # потерял токен — строку не трогаем, чтобы не
                     # сломать игру.
-                    _, codes = mask_codes(cur_unesc)
+                    _, codes = mask_codes(cur_unesc, harlowe)
                     if codes and _TOKEN_RE.search(orig) \
                             and not codes_intact(translation, len(codes)):
                         continue
@@ -837,7 +1123,7 @@ def apply(game_dir: str, entries: list[TranslationEntry],
                     # исходной строки — иначе переводчик что-то
                     # добавил/сломал (путь к картинке, тег, переменную)
                     # — не внедряем, игра останется рабочей.
-                    if mask_codes(text)[1] != codes:
+                    if mask_codes(text, harlowe)[1] != codes:
                         continue
                     lines[idx] = lead + html_mod.escape(text, quote=False)
                     written += 1
@@ -864,18 +1150,28 @@ def apply(game_dir: str, entries: list[TranslationEntry],
                         lines[idx] = saved
                         written += 1
                     continue
-                seg_list = _split_segments(cur_unesc)
-                want = {k: (arg_idx, orig, trans)
-                        for k, arg_idx, orig, trans in segs}
+                seg_list = _split_segments(cur_unesc, harlowe)
+                want: dict[int, list[tuple[int, str, str]]] = {}
+                for k, arg_idx, orig, trans in segs:
+                    want.setdefault(k, []).append((arg_idx, orig, trans))
                 parts: list[str] = []
                 any_changed = False
                 for k, (stype, stext, s0, s1) in enumerate(seg_list):
-                    w = want.get(k)
-                    if w is None:
+                    ws = want.get(k)
+                    if not ws:
                         parts.append(cur_unesc[s0:s1])
                         continue
-                    arg_idx, orig, trans = w
-                    repl = _apply_seg(stype, stext, arg_idx, orig, trans)
+                    if stype == "macro" and len(ws) > 1:
+                        repl = _apply_macro_args(stext, ws)
+                        if repl is None:
+                            parts.append(cur_unesc[s0:s1])
+                            continue
+                        parts.append(repl)
+                        any_changed = True
+                        continue
+                    arg_idx, orig, trans = ws[0]
+                    repl = _apply_seg(stype, stext, arg_idx, orig, trans,
+                                      harlowe)
                     if repl is None:
                         parts.append(cur_unesc[s0:s1])
                         continue
@@ -888,10 +1184,22 @@ def apply(game_dir: str, entries: list[TranslationEntry],
             "</tw-passagedata>"
 
     new_text = RE_PASSAGE.sub(replace_passage, text)
+    if target_lang:
+        base = os.path.splitext(story)[0]
+        out_path = f"{base}_{target_lang}.html"
+        if not written:
+            return {"files": 0, "strings": 0, "backups": [],
+                    "out_file": out_path,
+                    "out_dir": os.path.dirname(out_path)}
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(new_text)
+        return {"files": 1, "strings": written, "backups": [],
+                "out_file": out_path,
+                "out_dir": os.path.dirname(out_path)}
     with open(story, "w", encoding="utf-8") as f:
         f.write(new_text)
     return {"files": 1 if written else 0, "strings": written,
-            "backups": [backup_path]}
+            "backups": [backup_path] if backup_path else []}
 
 
 def restore_original(game_dir: str) -> dict:
@@ -925,3 +1233,233 @@ def restore_original(game_dir: str) -> dict:
         except OSError:
             continue
     return {"restored": 0}
+
+
+# ── человекочитаемый текст игры (для просмотра в приложении) ──
+# Пассажи по порядку, код игры свёрнут в маркеры ⟦…⟧: видно только то,
+# что реально читает игрок. Нужно, чтобы посмотреть на текст игры
+# «как он выглядит для человека» и настроить перевод до внедрения.
+@dataclass
+class Passage:
+    pid: str
+    name: str
+    tags: str
+    text: str          # человекочитаемый текст пассажа (код свёрнут)
+
+
+_MACRO_NAME_RE = re.compile(r"<<\s*([A-Za-z_]+)")
+
+
+def _collapse_line(line: str, harlowe: bool) -> str:
+    """Сворачивает код одной строки в маркеры ⟦…⟧, оставляя читаемый текст."""
+    u = html_mod.unescape(line)
+    # Harlowe-макрос (имя: …) — код целиком (картинка/переход/условие)
+    if harlowe:
+        m = _RE_HARLOWE_NAME.search(u)
+        if m:
+            end = _find_harlowe_end(u, m.start())
+            if end > m.start():
+                name = m.group(0)[1:-1].split(":", 1)[0].strip()
+                u = u[:m.start()] + f"⟦макрос: {name}⟧" + u[end + 1:]
+    # SugarCube-макросы <<...>> (включая оставшиеся многострочные)
+    def macro_repl(m: re.Match) -> str:
+        nm = _MACRO_NAME_RE.match(m.group(0))
+        return f"⟦макрос: {nm.group(1)}⟧" if nm else "⟦макрос⟧"
+    u = re.sub(r"<<.*?>>", macro_repl, u, flags=re.S)
+    # картинки [img[...]] — код (путь/селектор), не текст
+    u = re.sub(r"\[img\[.*?\]\]", "⟦картинка⟧", u, flags=re.S)
+    # ссылки с сеттером [[label|target][$var to ...]] — сеттер это код
+    def setter_repl(m: re.Match) -> str:
+        label, sep, _t = _link_parts(m.group(1))
+        return f"⟦ссылка: {label.strip()}⟧" if sep else "⟦ссылка⟧"
+    u = re.sub(r"\[\[([^\]\n]{1,1000})\]\[[^\]\n]*\]\]", setter_repl, u)
+    # ссылки [[...]]: подпись видна, таргет/сеттер скрыты
+    def link_repl(m: re.Match) -> str:
+        label, sep, _t = _link_parts(m.group(1))
+        if sep:
+            return f"⟦ссылка: {label.strip()}⟧"
+        return "⟦ссылка⟧"
+    u = re.sub(r"\[\[([^\]\n]{1,1000})\]\]", link_repl, u)
+    # переменные $var — имя видно (это то, что подставит игра)
+    u = _RE_VAR.sub(lambda m: f"⟦{m.group(0)}⟧", u)
+    # HTML-теги убираем — в игре их не видно
+    u = re.sub(r"<[^>]+>", "", u)
+    return u.strip()
+
+
+def _clean_passage_body(body: str, harlowe: bool) -> str:
+    """Человекочитаемый текст пассажа: скрипты и многострочные макросы
+    сворачиваются в маркеры, остальной код — в ⟦…⟧; строки-код целиком
+    пропускаются. Текст, который читает игрок, остаётся как есть."""
+    out: list[str] = []
+    in_script = False
+    script_lines = 0
+    macro_open = False
+    link_open = False
+    for line in body.split("\n"):
+        low = line.lower()
+        if "<script" in low:
+            in_script = "</script" not in low
+            continue
+        if in_script:
+            script_lines += 1
+            if "</script" in low:
+                in_script = False
+            continue
+        u = html_mod.unescape(line)
+        if link_open:
+            link_open = not (u.rstrip().endswith("]")
+                             or u.rstrip().endswith("]]"))
+            continue
+        if u.count("<<") != u.count(">>"):
+            was_open = macro_open
+            macro_open = u.count("<<") > u.count(">>")
+            if not was_open:
+                out.append("⟦макрос⟧")
+            continue
+        if macro_open:
+            continue
+        if _RE_LINE_CONT.search(u):
+            out.append("⟦продолжение строки⟧")
+            continue
+        # висячая [[ (многострочная ссылка/сеттер) — код-структура.
+        # Однострочные ссылки [[...]] и [[...][...]] сначала убираются —
+        # иначе они ошибочно считаются висячими.
+        if "[[" in u:
+            rest = RE_LINK.sub("", u)
+            rest = re.sub(r"\[\[[^\]\n]{0,1000}\]\[[^\]\n]{0,1000}\]\]",
+                          "", rest)
+            if "[[" in rest:
+                out.append("⟦ссылка⟧")
+                link_open = True
+                continue
+        # строки-код целиком (макрос/тег/комментарий) — маркер
+        if RE_MACRO_SUGARCUBE.match(u) or RE_MACRO_HARLOWE.match(u) \
+                or RE_COMMENT.match(u) or RE_PURE_TAG.match(u) \
+                or _is_code_comment(u):
+            nm = _MACRO_NAME_RE.match(u)
+            out.append(f"⟦макрос: {nm.group(1)}⟧" if nm else "⟦код⟧")
+            continue
+        cleaned = _collapse_line(line, harlowe)
+        if cleaned:
+            out.append(cleaned)
+    text = "\n".join(out)
+    if script_lines:
+        text += f"\n⟦скрипт: {script_lines} строк кода пропущено⟧"
+    return text
+
+
+def read_passages(game_dir: str) -> list[Passage]:
+    """Пассажи игры по порядку с человекочитаемым текстом (код свёрнут).
+    Служебные пассажи (StoryInit, widget, script и т.п.) пропускаются."""
+    story = find_story(game_dir)
+    if not story:
+        return []
+    with open(story, encoding="utf-8", errors="ignore") as f:
+        text = f.read()
+    harlowe = _story_format(text).lower().startswith("harlowe")
+    passages: list[Passage] = []
+    for m in RE_PASSAGE.finditer(text):
+        attrs = _attrs(m.group(1))
+        if _is_service_passage(attrs):
+            continue
+        passages.append(Passage(
+            pid=attrs.get("pid", "?"),
+            name=html_mod.unescape(attrs.get("name", "")),
+            tags=attrs.get("tags", ""),
+            text=_clean_passage_body(m.group(2), harlowe)))
+    return passages
+
+
+def format_passages(passages: list[Passage]) -> str:
+    """Человекочитаемый вид текста игры: пассажи по порядку с заголовками,
+    код свёрнут в маркеры ⟦…⟧ — видно, что именно читает игрок."""
+    lines: list[str] = []
+    for i, p in enumerate(passages):
+        if i:
+            lines.append("")
+        head = f"ПАССАЖ «{p.name}» (pid {p.pid})"
+        if p.tags:
+            head += f"  [теги: {p.tags}]"
+        lines.append(head)
+        lines.append("─" * len(head))
+        lines.append(p.text or "(нет текста)")
+    return "\n".join(lines)
+
+
+# ── JSON-промежуток ──
+# Конвертация html игры в структурированный JSON: пассажи по порядку,
+# каждый разбит на сегменты (text/link/macro/img/var/tag). У сегмента —
+# raw (код игры как есть) и translatable — список фрагментов, которые
+# реально видит игрок и которые можно переводить (текст, подписи
+# ссылок, аргументы кнопок/ссылок). Ссылки, картинки, макросы,
+# переменные и теги в translatable не попадают — перевод их ломает
+# игру. JSON удобно читать/править/передавать переводчику отдельно,
+# не трогая html.
+
+
+def story_to_json(game_dir: str) -> dict:
+    """Структурированная модель игры: метаданные + пассажи с сегментами.
+
+    Служебные пассажи (StoryInit, widget, script и т.п.) пропускаются —
+    их содержимое — код игры, а не текст для игрока.
+    """
+    story = find_story(game_dir)
+    if not story:
+        return {"game": "", "format": "", "name": "", "startnode": "",
+                "passages": []}
+    with open(story, encoding="utf-8", errors="ignore") as f:
+        text = f.read()
+    harlowe = _story_format(text).lower().startswith("harlowe")
+    m = re.search(r"<tw-storydata\b[^>]*>", text, re.DOTALL)
+    attrs = _attrs(m.group(0)[len("<tw-storydata"):-1]) if m else {}
+    doc: dict = {
+        "game": os.path.basename(story),
+        "format": attrs.get("format", ""),
+        "name": html_mod.unescape(attrs.get("name", "")),
+        "startnode": attrs.get("startnode", ""),
+        "passages": [],
+    }
+    for pm in RE_PASSAGE.finditer(text):
+        a = _attrs(pm.group(1))
+        if _is_service_passage(a):
+            continue
+        segments: list[dict] = []
+        for n, line in enumerate(pm.group(2).split("\n")):
+            for k, (stype, stext, _s0, _s1) in enumerate(
+                    _split_segments(line, harlowe)):
+                frags = _extract_segment(stype, stext, None, harlowe)
+                segments.append({
+                    "line": n,
+                    "seg": k,
+                    "type": stype,
+                    "raw": stext,
+                    "translatable": [f[0] for f in frags],
+                })
+        doc["passages"].append({
+            "pid": a.get("pid", "?"),
+            "name": html_mod.unescape(a.get("name", "")),
+            "tags": a.get("tags", ""),
+            "segments": segments,
+        })
+    return doc
+
+
+def write_story_json(game_dir: str, out_path: str | None = None) -> str:
+    """Пишет JSON-модель игры рядом с ней: «игра.json». Возвращает путь.
+
+    Файл — тот же структурированный документ, что строит story_to_json:
+    его можно открыть и прочитать/отредактировать отдельно от html,
+    а перевод применится к новой html-копии (см. apply target_lang=...).
+    """
+    doc = story_to_json(game_dir)
+    if out_path is None:
+        story = find_story(game_dir)
+        if story:
+            base = os.path.splitext(story)[0]
+            out_path = base + ".json"
+        else:
+            out_path = os.path.join(game_dir, "story.json")
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(doc, f, ensure_ascii=False, indent=2)
+    return out_path

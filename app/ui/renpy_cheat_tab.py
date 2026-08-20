@@ -8,6 +8,10 @@ SugarCube State.variables, вложенные — dot-path), правки при
 Режим сейва (Twine): переменные читаются из .save-файла SugarCube и
 правятся прямо в нём — когда игра не запущена или live недоступен.
 
+Таблица — QTableView с виртуальной моделью: при десятках тысяч
+переменных Qt рендерит только видимые строки, прокрутка не лагает;
+повторный сброс модели делается только при реальном изменении данных.
+
 Вкладка «Переменные» дополнительно имеет консоль (exec/eval в игре).
 """
 from __future__ import annotations
@@ -15,16 +19,125 @@ from __future__ import annotations
 import json
 import os
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QFileDialog,
-                               QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-                               QPushButton, QTableWidget, QTableWidgetItem,
+from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QTimer
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox,
+                               QFileDialog, QHBoxLayout, QHeaderView, QLabel,
+                               QLineEdit, QPushButton, QTableView,
                                QVBoxLayout, QWidget)
 
 from app.ui.i18n import TR
 from app.ui.icons import icon
 
 AUTOREFRESH_MS = 1000
+
+# режимы поиска по значению (как Cheat Engine: первый скан — «равно»,
+# уточнение — по изменению)
+SCAN_EQ = "eq"
+SCAN_CHANGED = "changed"
+SCAN_UNCHANGED = "unchanged"
+SCAN_INCREASED = "increased"
+SCAN_DECREASED = "decreased"
+
+_SCAN_MODES = [
+    (SCAN_EQ, "rpy_scan_eq"),
+    (SCAN_CHANGED, "rpy_scan_changed"),
+    (SCAN_UNCHANGED, "rpy_scan_unchanged"),
+    (SCAN_INCREASED, "rpy_scan_increased"),
+    (SCAN_DECREASED, "rpy_scan_decreased"),
+]
+
+
+class _VarsTableModel(QAbstractTableModel):
+    """Виртуальная модель списка переменных (2 колонки: имя, значение).
+
+    Данные хранятся как list[dict] с ключами name/value; setData
+    принимает правку и уведомляет вкладку (dataChanged) — применение
+    к игре делает вкладка, при неудаче вызывается revert().
+    """
+
+    COL_NAME, COL_VALUE = 0, 1
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.rows: list[dict] = []
+
+    def set_rows(self, rows: list[dict]):
+        self.beginResetModel()
+        self.rows = rows
+        self.endResetModel()
+
+    def rowCount(self, parent=QModelIndex()):
+        return 0 if parent.isValid() else len(self.rows)
+
+    def columnCount(self, parent=QModelIndex()):
+        return 2
+
+    def headerData(self, section, orientation, role=Qt.DisplayRole):
+        if orientation == Qt.Horizontal and role == Qt.DisplayRole:
+            return TR("rpy_var_name") if section == self.COL_NAME \
+                else TR("rpy_var_value")
+        return None
+
+    def flags(self, index):
+        if not index.isValid():
+            return Qt.NoItemFlags
+        if index.column() == self.COL_VALUE:
+            value = self.rows[index.row()].get("value")
+            if isinstance(value, bool):
+                return Qt.ItemIsEnabled | Qt.ItemIsUserCheckable
+            return Qt.ItemIsEnabled | Qt.ItemIsEditable
+        return Qt.ItemIsEnabled
+
+    def data(self, index, role=Qt.DisplayRole):
+        if not index.isValid() or not (0 <= index.row() < len(self.rows)):
+            return None
+        v = self.rows[index.row()]
+        if index.column() == self.COL_NAME:
+            if role in (Qt.DisplayRole, Qt.EditRole, Qt.UserRole):
+                return str(v["name"])
+            if role == Qt.ToolTipRole:
+                return repr(v.get("value"))
+            return None
+        # колонка значения
+        value = v.get("value")
+        if role == Qt.DisplayRole or role == Qt.EditRole:
+            return "" if isinstance(value, bool) else str(value)
+        if role == Qt.ToolTipRole:
+            return type(value).__name__
+        if role == Qt.UserRole:
+            return str(v["name"])
+        if role == Qt.CheckStateRole and isinstance(value, bool):
+            return Qt.Checked if value else Qt.Unchecked
+        if role == Qt.TextAlignmentRole:
+            return int(Qt.AlignLeft | Qt.AlignVCenter)
+        return None
+
+    def setData(self, index, value, role=Qt.EditRole):
+        if not index.isValid() or index.column() != self.COL_VALUE:
+            return False
+        row = index.row()
+        if not (0 <= row < len(self.rows)):
+            return False
+        old = self.rows[row].get("value")
+        if isinstance(old, bool) and role == Qt.CheckStateRole:
+            self.rows[row]["value"] = (value == Qt.Checked)
+        elif not isinstance(old, bool) and role == Qt.EditRole:
+            self.rows[row]["value"] = value
+        else:
+            return False
+        self.dataChanged.emit(index, index)
+        return True
+
+    def revert(self, row: int, old):
+        if 0 <= row < len(self.rows):
+            self.rows[row]["value"] = old
+            idx = self.index(row, self.COL_VALUE)
+            self.dataChanged.emit(idx, idx)
+
+    def apply_edit(self, row: int, value):
+        """Правка без сигнала (после успешного применения к игре)."""
+        if 0 <= row < len(self.rows):
+            self.rows[row]["value"] = value
 
 
 class _VarsBaseTab(QWidget):
@@ -40,13 +153,17 @@ class _VarsBaseTab(QWidget):
         self._save_path: str | None = None
         self._save_data: dict | None = None
         self._hide_text = True
+        self._scan_mode: str | None = None      # активный поиск по значению
+        self._scan_value = None
+        self._scan_prev: dict[str, object] = {}  # снимок на момент скана
+        self._scan_hits: set[str] | None = None  # имена после «Уточнить»
 
         lay = QVBoxLayout(self)
         self.lbl_status = QLabel(TR("cheat_hint"))
         self.lbl_status.setWordWrap(True)
         lay.addWidget(self.lbl_status)
 
-        # ── поиск + управление ──
+        # ── поиск по имени + управление ──
         bar = QHBoxLayout()
         bar.addWidget(QLabel(TR("cheat_item_search")))
         self.var_search = QLineEdit()
@@ -69,15 +186,37 @@ class _VarsBaseTab(QWidget):
         bar.addWidget(btn_refresh)
         lay.addLayout(bar)
 
-        # ── таблица ──
-        self.vars_table = QTableWidget(0, 2)
-        self.vars_table.setHorizontalHeaderLabels(
-            [TR("rpy_var_name"), TR("rpy_var_value")])
+        # ── поиск по значению (как Cheat Engine) ──
+        scan_bar = QHBoxLayout()
+        scan_bar.addWidget(QLabel(TR("rpy_scan_value")))
+        self.scan_value_edit = QLineEdit()
+        self.scan_value_edit.setPlaceholderText("10000")
+        self.scan_value_edit.returnPressed.connect(self._scan_start)
+        scan_bar.addWidget(self.scan_value_edit, 1)
+        self.scan_mode_combo = QComboBox()
+        for _key, _label in _SCAN_MODES:
+            self.scan_mode_combo.addItem(TR(_label), _key)
+        scan_bar.addWidget(self.scan_mode_combo)
+        btn_scan = QPushButton(TR("rpy_scan_go"))
+        btn_scan.clicked.connect(self._scan_start)
+        scan_bar.addWidget(btn_scan)
+        btn_next = QPushButton(TR("rpy_scan_next"))
+        btn_next.clicked.connect(self._scan_next)
+        scan_bar.addWidget(btn_next)
+        btn_reset = QPushButton(TR("rpy_scan_reset"))
+        btn_reset.clicked.connect(self._scan_reset)
+        scan_bar.addWidget(btn_reset)
+        lay.addLayout(scan_bar)
+
+        # ── таблица (виртуальная модель — 20k+ строк без лагов) ──
+        self._model = _VarsTableModel(self)
+        self._model.dataChanged.connect(self._on_model_edit)
+        self.vars_table = QTableView()
+        self.vars_table.setModel(self._model)
         self.vars_table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.Stretch)
-        self.vars_table.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.Stretch)
-        self.vars_table.itemChanged.connect(self._on_var_edit)
+            QHeaderView.Stretch)
+        self.vars_table.setEditTriggers(
+            QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
         lay.addWidget(self.vars_table, 1)
 
         self.lbl_hint = QLabel(TR("rpy_vars_hint"))
@@ -138,6 +277,7 @@ class _VarsBaseTab(QWidget):
         self._vars = []
         self._save_path = None
         self._save_data = None
+        self._scan_reset()
         self._fill_vars()
 
     # ── живой приём ──
@@ -190,7 +330,7 @@ class _VarsBaseTab(QWidget):
             TR("vars_save_loaded", path=os.path.basename(path),
                n=len(self._vars)))
 
-    # ── таблица ──
+    # ── фильтр + заполнение ──
     def _passes(self, v: dict) -> bool:
         if self.want_bool is None:
             pass  # no filter on bool/non-bool
@@ -198,7 +338,15 @@ class _VarsBaseTab(QWidget):
             return False
         if self._hide_text and isinstance(v.get("value"), str):
             return False
+        if self._scan_mode is not None and not self._scan_match(v):
+            return False
         return True
+
+    @staticmethod
+    def _row_key(v: dict):
+        value = v.get("value")
+        return (str(v["name"]), value if not isinstance(value, bool)
+                else ("__b__" if value else "__b0__"))
 
     def _fill_vars(self):
         self._loading = True
@@ -208,83 +356,74 @@ class _VarsBaseTab(QWidget):
             rows = [v for v in self._vars if self._passes(v)
                     and (not q or q in str(v["name"]).lower()
                          or q in str(v.get("value")).lower())]
-            self.vars_table.setRowCount(len(rows))
-            for r, v in enumerate(rows):
-                name = str(v["name"])
-                value = v.get("value")
-                it_n = QTableWidgetItem(name)
-                it_n.setFlags(it_n.flags() & ~Qt.ItemIsEditable)
-                it_n.setData(Qt.UserRole, name)
-                it_n.setToolTip(repr(value))
-                self.vars_table.setItem(r, 0, it_n)
-                if isinstance(value, bool):
-                    it_v = QTableWidgetItem()
-                    it_v.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
-                    it_v.setCheckState(Qt.Checked if value else Qt.Unchecked)
-                    it_v.setToolTip("bool")
-                else:
-                    it_v = QTableWidgetItem(str(value))
-                    it_v.setToolTip(type(value).__name__)
-                it_v.setData(Qt.UserRole, name)
-                self.vars_table.setItem(r, 1, it_v)
+            keys = [self._row_key(v) for v in rows]
+            old_keys = [self._row_key(v) for v in self._model.rows]
+            # сброс модели только при реальном изменении — прокрутка и
+            # авторефреш не пересоздают таблицу без необходимости
+            if keys != old_keys:
+                self._model.set_rows(rows)
+            if self._scan_mode is not None:
+                self.lbl_status.setText(TR("rpy_scan_found", n=len(rows)))
         finally:
             self._loading = False
 
-    # ── применение ──
-    def _on_var_edit(self, item):
-        if self._loading or item.column() != 1:
+    # ── применение правок ──
+    def _on_model_edit(self, top_left, bottom_right):
+        if self._loading:
             return
-        name = item.data(Qt.UserRole)
+        index = top_left
+        if index.column() != _VarsTableModel.COL_VALUE:
+            return
+        row = index.row()
+        if not (0 <= row < len(self._model.rows)):
+            return
+        name = str(self._model.rows[row]["name"])
+        value = self._model.rows[row]["value"]
         var = next((v for v in self._vars if str(v["name"]) == name), None)
         old = var.get("value") if var else None
         if isinstance(old, bool):
-            value = item.checkState() == Qt.Checked
+            # галочка: bool значение уже проставлено моделью
+            pass
         else:
-            value = self._coerce(item.text(), old)
+            value = self._coerce(value, old)
             if value is _INVALID:
                 self.lbl_status.setText(TR("rpy_bad_value", name=name))
-                self._revert_cell(item, old)
+                self._model.revert(row, old)
                 return
         if self._is_save_mode():
-            self._apply_to_save(name, value, item, var, old)
+            self._apply_to_save(name, value, row, var, old)
         else:
-            self._apply_to_game(name, value, item, var, old)
+            self._apply_to_game(name, value, row, var, old)
 
-    def _apply_to_game(self, name, value, item, var, old):
+    def _apply_to_game(self, name, value, row, var, old):
         if self._cheat("var_set", name=name, value=value):
+            self._model.apply_edit(row, value)
             if var is not None:
                 var["value"] = value
             self.lbl_status.setText(TR("rpy_applied", name=name, value=value))
         else:
             self.lbl_status.setText(TR("cheat_no_bridge"))
-            self._revert_cell(item, old)
+            self._model.revert(row, old)
 
-    def _apply_to_save(self, name, value, item, var, old):
+    def _apply_to_save(self, name, value, row, var, old):
         from app.core.twine import savefile
         try:
             savefile.set_variables(self._save_data, {name: value})
             savefile.write_save(self._save_path, self._save_data)
         except (ValueError, OSError) as e:
             self.lbl_status.setText(str(e))
-            self._revert_cell(item, old)
+            self._model.revert(row, old)
             return
+        self._model.apply_edit(row, value)
         if var is not None:
             var["value"] = value
         self.lbl_status.setText(
             TR("vars_saved", name=name, value=value))
 
-    def _revert_cell(self, item, old):
-        self._loading = True
-        try:
-            if isinstance(old, bool):
-                item.setCheckState(Qt.Checked if old else Qt.Unchecked)
-            else:
-                item.setText(str(old))
-        finally:
-            self._loading = False
-
     @staticmethod
-    def _coerce(text: str, old):
+    def _coerce(text, old):
+        if not isinstance(text, str):
+            return text
         text = text.strip()
         try:
             if isinstance(old, int) and not isinstance(old, bool):
@@ -300,6 +439,76 @@ class _VarsBaseTab(QWidget):
     def _on_ack(self, cmd: str, ok: bool, error: str, value: str):
         if not ok and cmd == "var_set":
             self.lbl_status.setText(TR("cheat_error", cmd=cmd, err=error))
+
+    # ── поиск по значению (как Cheat Engine) ──
+    def _scan_start(self):
+        text = self.scan_value_edit.text().strip()
+        if not text:
+            self.lbl_status.setText(TR("rpy_scan_need_value"))
+            return
+        self._scan_value = self._coerce_scan(text)
+        self._scan_prev = {str(v["name"]): v.get("value")
+                           for v in self._vars}
+        self._scan_hits = None
+        self._scan_mode = SCAN_EQ
+        self._fill_vars()
+
+    def _scan_next(self):
+        if self._scan_mode is None:
+            self.lbl_status.setText(TR("rpy_scan_no_active"))
+            return
+        mode = self.scan_mode_combo.currentData() or SCAN_CHANGED
+        # сравниваем текущий снимок с базой прошлого скана
+        hits: set[str] = set()
+        for v in self._vars:
+            name = str(v["name"])
+            if self._match_change(name, v.get("value"), mode):
+                hits.add(name)
+        self._scan_mode = mode
+        self._scan_hits = hits
+        self._scan_prev = {str(v["name"]): v.get("value")
+                           for v in self._vars}
+        self._fill_vars()
+
+    def _scan_reset(self):
+        self._scan_mode = None
+        self._scan_value = None
+        self._scan_prev = {}
+        self._scan_hits = None
+
+    @staticmethod
+    def _coerce_scan(text: str):
+        """1000 → int, 3.14 → float, иначе строка (как в Cheat Engine)."""
+        text = text.strip()
+        try:
+            return int(text)
+        except ValueError:
+            pass
+        try:
+            return float(text)
+        except ValueError:
+            return text
+
+    def _match_change(self, name: str, cur, mode: str) -> bool:
+        old = self._scan_prev.get(name)
+        if name not in self._scan_prev:
+            return False
+        if mode == SCAN_CHANGED:
+            return old != cur
+        if mode == SCAN_UNCHANGED:
+            return old == cur
+        if mode in (SCAN_INCREASED, SCAN_DECREASED):
+            if isinstance(old, bool) or not isinstance(old, (int, float)):
+                return False
+            if isinstance(cur, bool) or not isinstance(cur, (int, float)):
+                return False
+            return (cur > old) if mode == SCAN_INCREASED else (cur < old)
+        return True
+
+    def _scan_match(self, v: dict) -> bool:
+        if self._scan_mode == SCAN_EQ:
+            return v.get("value") == self._scan_value
+        return str(v["name"]) in (self._scan_hits or set())
 
 
 class _Invalid:

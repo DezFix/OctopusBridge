@@ -20,6 +20,7 @@ import os
 import pickle
 import re
 import struct
+import textwrap
 import zlib
 
 from app.core.models import TranslationEntry
@@ -91,7 +92,7 @@ _DLG_SKIP_RE = re.compile(
     r'(?:\s|$)')
 
 RE_DIALOGUE = re.compile(
-    r'^\s*(?:[a-zA-Z_][\w.]*\s+)?' + _STR + r'(?:\s|$)')
+    r'^\s*(?:[a-zA-Z_][\w.]*\s+)?[fF]?' + _STR + r'(?:\s|:|$)')
 
 # начало python-блока: python:, init python:, init -1 python:, python hide:
 RE_PY_BLOCK_HEADER = re.compile(
@@ -116,8 +117,10 @@ class _PyCode:
 
 class _PyExpr:
     def __init__(self, *args):
+        # astsupport.PyExpr.__reduce__ → (source, filename, linenumber,
+        # py, hashcode, column) — исходник python-выражения в args[0].
         self._args = args
-        src = args[1] if len(args) > 1 else ""
+        src = args[0] if args else ""
         self.source = src if isinstance(src, str) else str(src)
 
 class _MockPyExpr(str):
@@ -334,52 +337,116 @@ def _regex_literals(src: str) -> list[str]:
     return out
 
 
-def _py_string_literals(src: str) -> list[str]:
+def _py_string_literals(src: str) -> list[tuple[str, str]]:
     """Строковые литералы из python-исходника (init python:, $, define,
     default и Python-узлы .rpyc). Именно здесь живут тексты квестов/
     заданий, описания предметов, промпты renpy.input, уведомления —
     то, что не видно через Say/Menu/Screen и раньше не попадало в
     выгрузку (покрытие ~75-85% -> больше).
+
+    Возвращает (текст, подсказка-контекст): имя переменной («gold_text»),
+    ключ словаря («key=q1») или исходная строка кода — чтобы в таблице
+    было видно, что это за строка, а не «непонятный набор вещей».
+
+    Docstring'и (документация функций/классов) НЕ извлекаются — это не
+    текст игры, а служебные комментарии разработчика.
     """
     if not src or not src.strip():
         return []
-    out: list[str] = []
+    out: list[tuple[str, str]] = []
+    # исходник из .rpy-блоков и PyCode хранится С отступами — без внешнего
+    # контекста ast.parse упадёт (IndentationError) и уйдёт в regex-fallback
+    # без фильтра докстрингов; dedent выравнивает блок к колонке 0
+    src = textwrap.dedent(src)
 
-    def _collect(node: ast.AST):
+    def _line_hint(node) -> str:
+        try:
+            ln = src.splitlines()[node.lineno - 1].strip()
+        except Exception:
+            return ""
+        return ln[:60]
+
+    def _node_slice(node) -> str:
+        """Точный фрагмент исходника узла: col_offset/end_col_offset
+        относительны СВОЕЙ строки, а не всего src."""
+        try:
+            lines = src.splitlines(keepends=True)
+            start = sum(len(x) for x in lines[:node.lineno - 1]) \
+                + node.col_offset
+            end = sum(len(x) for x in lines[:node.end_lineno - 1]) \
+                + node.end_col_offset
+            return src[start:end]
+        except Exception:
+            return ""
+
+    def _collect(node: ast.AST, hint: str = ""):
         if isinstance(node, ast.JoinedStr):
             # f-строка: берём шаблон целиком из исходника по офсетам
             # (фрагменты-Constant внутри не нужны)
-            try:
-                s = src[node.col_offset:node.end_col_offset]
-            except Exception:
-                s = ""
+            s = _node_slice(node)
             if s:
-                out.extend(_regex_literals(s))
+                for t in _regex_literals(s):
+                    if _looks_like_text(t):
+                        out.append((t, hint or _line_hint(node)))
             return
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            out.append(node.value)
+            out.append((node.value, hint or _line_hint(node)))
+            return
+        if isinstance(node, ast.Dict):
+            for k, v in zip(node.keys, node.values):
+                if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                    _collect(v, f"key={k.value}")
+                else:
+                    _collect(v, hint)
+            return
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef)):
+            body = node.body
+            if body and isinstance(body[0], ast.Expr) \
+                    and isinstance(getattr(body[0], "value", None),
+                                   ast.Constant) \
+                    and isinstance(body[0].value.value, str):
+                body = body[1:]  # docstring — документация, не текст игры
+            for st in body:
+                _collect(st, hint)
+            return
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.AST):
+            names = [t.id for t in node.targets
+                     if isinstance(t, ast.Name) and t.id]
+            _collect(node.value, hint or (names[0] if names else ""))
             return
         for _f, value in ast.iter_fields(node):
             if isinstance(value, ast.AST):
-                _collect(value)
+                _collect(value, hint)
             elif isinstance(value, list):
                 for v in value:
                     if isinstance(v, ast.AST):
-                        _collect(v)
+                        _collect(v, hint)
 
     try:
         tree = ast.parse(src)
     except (SyntaxError, ValueError):
         tree = None
     if tree is not None:
-        _collect(tree)
+        body = tree.body
+        # module-docstring пропускаем только если за ним есть код:
+        # одиночная голая строка может быть текстом (Default.value =
+        # PyExpr('"Найди меч"') — выражение-литерал, а не документация)
+        if len(body) > 1 and isinstance(body[0], ast.Expr) \
+                and isinstance(body[0].value, ast.Constant) \
+                and isinstance(body[0].value.value, str):
+            body = body[1:]
+        for st in body:
+            _collect(st)
+        return [(t, h) for t, h in out if _looks_like_text(t)]
     else:
         # py2-синтаксис (Ren'Py 7) или кривой блок — регулярками
-        out = _regex_literals(src)
-    return [t for t in out if _looks_like_text(t)]
+        return [(t, "") for t in _regex_literals(src)
+                if _looks_like_text(t)]
+    return out
 
 
-def _code_literals(code) -> list[str]:
+def _code_literals(code) -> list[tuple[str, str]]:
     """Строковые литералы из Python-узла .rpyc: PyCode (RPC2, Ren'Py
     7.1+/8.x — исходник в state), PyExpr (str-подкласс со значением ==
     python-исходнику, напр. Default.value) или code-объект (co_consts)."""
@@ -388,8 +455,10 @@ def _code_literals(code) -> list[str]:
         return _py_string_literals(src)
     if isinstance(code, str) and getattr(type(code), "_ob_py_expr", False):
         return _py_string_literals(code)
+    name = getattr(code, "co_name", "")
     consts = getattr(code, "co_consts", ())
-    return [c for c in consts if isinstance(c, str) and _looks_like_text(c)]
+    return [(c, name) for c in consts
+            if isinstance(c, str) and _looks_like_text(c)]
 
 
 def _walk_ast(stmts) -> list[tuple[str, str]]:
@@ -448,18 +517,18 @@ def _walk_ast(stmts) -> list[tuple[str, str]]:
                 result.append(("translated_string", old))
 
         elif nt == "Define":
-            for s in _code_literals(getattr(nodes, "code", None)):
-                result.append(("python", s))
+            for s, hint in _code_literals(getattr(nodes, "code", None)):
+                result.append((f"python:{hint}" if hint else "python", s))
 
         elif nt == "Default":
-            for s in _code_literals(
+            for s, hint in _code_literals(
                     getattr(nodes, "code", None)
                     or getattr(nodes, "value", None)):
-                result.append(("python", s))
+                result.append((f"python:{hint}" if hint else "python", s))
 
         elif nt == "Python":
-            for s in _code_literals(getattr(nodes, "code", None)):
-                result.append(("python", s))
+            for s, hint in _code_literals(getattr(nodes, "code", None)):
+                result.append((f"python:{hint}" if hint else "python", s))
 
         elif nt == "Screen":
             # SL2 (Ren'Py 6.99+): Screen.screen → slast.SLScreen с
@@ -482,8 +551,8 @@ def _walk_ast(stmts) -> list[tuple[str, str]]:
                         result.append(("screen", v))
 
         elif base == "SLPython":
-            for s in _code_literals(getattr(nodes, "code", None)):
-                result.append(("python", s))
+            for s, hint in _code_literals(getattr(nodes, "code", None)):
+                result.append((f"python:{hint}" if hint else "python", s))
 
         # SL2-деревья: дети блоков (SLBlock.children), ветки if/showif
         # (SLIf.entries — пары (условие, блок)), блоки use (SLUse.block).
@@ -718,20 +787,28 @@ def extract(game_dir: str, extract_lang: str | None = None
                                 break
                             buf.append(nxt)
                             j += 1
-                        for lit in _py_string_literals("\n".join(buf)):
-                            add(rel, f"{rel}:python", lit)
+                        for lit, hint in _py_string_literals("\n".join(buf)):
+                            add(rel, f"{rel}:python:{hint}" if hint
+                                else f"{rel}:python", lit)
                         i = j
                         continue
                     # ── $ однострочный python ──
                     if re.match(r'^\s*\$', line):
-                        for lit in _py_string_literals(line[line.index("$") + 1:]):
-                            add(rel, f"{rel}:python", lit)
+                        for lit, hint in _py_string_literals(
+                                line[line.index("$") + 1:]):
+                            add(rel, f"{rel}:python:{hint}" if hint
+                                else f"{rel}:python", lit)
                         i += 1
                         continue
                     # ── define / default (python-выражение в одну строку) ──
                     if RE_PY_DEF.match(line) and not RE_COMMENT.match(line):
-                        for lit in _py_string_literals(line):
-                            add(rel, f"{rel}:python", lit)
+                        # define/default — синтаксис Ren'Py, а не python:
+                        # срезаем ключевое слово, иначе ast.parse падает
+                        body = re.sub(r'^\s*(?:define|default)\b\s*', '',
+                                      line, count=1)
+                        for lit, hint in _py_string_literals(body):
+                            add(rel, f"{rel}:python:{hint}" if hint
+                                else f"{rel}:python", lit)
                     # Многострочная строка-диалог (кавычка не закрыта на
                     # строке): склеиваем физические строки в логическую,
                     # пока нечётное число неэкранированных кавычек не

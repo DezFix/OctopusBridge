@@ -2,9 +2,11 @@
 """Ren'Py и Twine: детект, извлечение, внедрение (tl/HTML), дедупликация,
 патч шрифтов Ren'Py, LZ-сейвы Twine."""
 import io
+import json
 import os
 import pickle
 import random
+import re
 import shutil
 import sys
 import tempfile
@@ -13,9 +15,9 @@ import zlib
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from app.core.models import TranslationEntry
 from app.core.renpy import parser as renpy
 from app.core.twine import parser as twine
-from app.core.models import TranslationEntry
 
 # ── Ren'Py ──
 
@@ -374,12 +376,23 @@ class PyExpr(str):
 '''
 
 _RENPY_ASTSUPPORT_STUB = '''
-class PyExpr(object):
-    """Ren'Py 7.0-7.3: PyExpr — объект с атрибутом source."""
-    __slots__ = ["source", "loc"]
-    def __init__(self, source, loc=("<none>", 1)):
-        self.source = source
-        self.loc = loc
+class PyExpr(str):
+    """Ren'Py 8.x (astsupport.pyx): PyExpr — str-подкласс с __reduce__,
+    возвращающим (PyExpr, (source, filename, linenumber, py, hashcode,
+    column)) — исходник python-выражения первым аргументом."""
+    __slots__ = ["filename", "linenumber", "py", "hashcode", "column"]
+    def __new__(cls, source, filename="<none>", linenumber=1, py=3,
+                hashcode=0, column=0):
+        self = str.__new__(cls, source)
+        self.filename = filename
+        self.linenumber = linenumber
+        self.py = py
+        self.hashcode = hashcode
+        self.column = column
+        return self
+    def __reduce__(self):
+        return (PyExpr, (str(self), self.filename, self.linenumber,
+                         self.py, self.hashcode, self.column))
 '''
 
 _RENPY_SLAST_STUB = '''
@@ -443,9 +456,9 @@ def build_rpyc_stmts():
     """Скрипт как после парсинга Ren'Py 8.x: Say/Menu/Define с
     интерполированными списками (PyExpr — str-подкласс) и экран SL2
     с text/textbutton."""
+    import importlib
     import pickle
     import sys
-    import importlib
 
     stub_dir = os.path.join(tempfile.gettempdir(), "ob_renpy_stub_tests")
     make_renpy_stub(stub_dir)
@@ -456,8 +469,9 @@ def build_rpyc_stmts():
     importlib.import_module("renpy.sl2.slast")
     importlib.import_module("renpy.text.text")
     importlib.import_module("renpy.ui")
-    from renpy.ast import Say, Menu, Define, PyCode, Screen, PyExpr
-    from renpy.sl2.slast import SLScreen, SLDisplayable
+    from renpy.ast import Define, Menu, PyCode, PyExpr, Say, Screen
+    from renpy.astsupport import PyExpr as AstPyExpr
+    from renpy.sl2.slast import SLDisplayable, SLScreen
     from renpy.text.text import Text
     from renpy.ui import _textbutton
 
@@ -504,7 +518,9 @@ def build_rpyc_stmts():
     ]
     tb = SLDisplayable()
     tb.displayable = _textbutton
-    tb.positional = [PyExpr('"Параметры"', "script.rpy", 12)]
+    # реальные Ren'Py 8.x хранят позиционные аргументы как
+    # renpy.astsupport.PyExpr (6-аргументный __reduce__)
+    tb.positional = [AstPyExpr('"Параметры"', "script.rpy", 12, 3, 0, 0)]
     tb.children = []
     slscreen.children.append(tb)
     scr.screen = slscreen
@@ -575,33 +591,46 @@ with tempfile.TemporaryDirectory() as td:
         '    url = "https://example.com"\n'
         '    color = "#ff8800"\n'
         '    count = 42\n'
+        '    def helper():\n'
+        '        """Секретный докстринг разработчика"""\n'
+        '        return None\n'
         '$ renpy.notify("Выбор сделан")\n'
     )
     with open(os.path.join(td, "game", "script.rpy"), "w",
               encoding="utf-8") as f:
         f.write(script)
-    texts = [e.original for e in renpy.extract(td)]
+    extracted = renpy.extract(td)
+    texts = [e.original for e in extracted]
     for want in ("Найди меч в пещере", "Золото: {gold}",
                  "Победи дракона", "Спаси принцессу из башни",
                  "Квест принят", "Как тебя зовут?", "HP: {hp}",
                  "Выбор сделан"):
         assert want in texts, (want, texts)
     for bad in ("q1", "quest_1", "images/logo.png", "https://example.com",
-                "#ff8800", "42", "gold_text"):
+                "#ff8800", "42", "gold_text",
+                "Секретный докстринг разработчика"):
         assert bad not in texts, (bad, texts)
+    # подсказки-контекст: видно, что это за строка
+    ctx = {e.original: e.context for e in extracted}
+    assert "quest_desc" in ctx["Найди меч в пещере"], ctx["Найди меч в пещере"]
+    assert "key=q1" in ctx["Победи дракона"], ctx["Победи дракона"]
+    assert "key=quest_1" in ctx["Спаси принцессу из башни"], \
+        ctx["Спаси принцессу из башни"]
+    assert "renpy.notify" in ctx["Выбор сделан"], ctx["Выбор сделан"]
+    assert "gold_text" in ctx["Золото: {gold}"], ctx["Золото: {gold}"]
 print("   OK")
 
 print("2m) Ren'Py: python-узлы в .rpyc (Python/Default) извлекаются...")
 with tempfile.TemporaryDirectory() as td:
     os.makedirs(os.path.join(td, "game"))
-    import sys as _sys
     import importlib as _importlib
+    import sys as _sys
     stub_dir = os.path.join(tempfile.gettempdir(), "ob_renpy_stub_2m")
     make_renpy_stub(stub_dir)
     if stub_dir not in _sys.path:
         _sys.path.insert(0, stub_dir)
     _importlib.import_module("renpy.ast")
-    from renpy.ast import Python, Default, PyCode, PyExpr
+    from renpy.ast import Default, PyCode, PyExpr, Python
 
     def build_py_rpyc():
         import pickle as _pickle
@@ -610,6 +639,9 @@ with tempfile.TemporaryDirectory() as td:
         code.source = ('quests = {\n'
                        '    "q1": "Победи дракона",\n'
                        '}\n'
+                       'def helper():\n'
+                       '    """Служебный докстринг"""\n'
+                       '    return None\n'
                        'renpy.notify("Квест принят")')
         code.location = ("script.rpy", 1)
         code.mode = "exec"
@@ -621,10 +653,14 @@ with tempfile.TemporaryDirectory() as td:
 
     with open(os.path.join(td, "game", "script.rpyc"), "wb") as f:
         f.write(build_rpc2_rpyc(build_py_rpyc()))
-    texts = [e.original for e in renpy.extract(td)]
+    extracted = renpy.extract(td)
+    texts = [e.original for e in extracted]
     for want in ("Победи дракона", "Квест принят", "Найди меч"):
         assert want in texts, (want, texts)
     assert "q1" not in texts, texts
+    assert "Служебный докстринг" not in texts, texts
+    ctx = {e.original: e.context for e in extracted}
+    assert "key=q1" in ctx["Победи дракона"], ctx["Победи дракона"]
 print("   OK")
 
 
@@ -676,6 +712,7 @@ print("   OK")
 
 print("2h) Ren'Py: детект по .rpyc/.rpa без .rpy...")
 from app.engines.renpy import RenPyModule
+
 with tempfile.TemporaryDirectory() as td:
     os.makedirs(os.path.join(td, "game"))
     with open(os.path.join(td, "game", "script.rpyc"), "wb") as f:
@@ -692,6 +729,7 @@ print("   OK")
 
 print("2i) Ren'Py: .rpa v2 (RPA-2.0 hex, Ren'Py 6.99-7.3) и v1 (zlib, Ren'Py 6.x)...")
 from app.core.renpy import rpa as rpa_mod
+
 blob = build_rpc2_rpyc(build_rpyc_stmts())
 
 # v2: 'RPA-2.0 ' + offset(16 hex), индекс zlib(pickle) без XOR
@@ -773,8 +811,9 @@ with tempfile.TemporaryDirectory() as td:
 print("   OK")
 
 print("2k) Ren'Py: dual-dialect агент — ветки py2 (Ren'Py 7) и py3 (Ren'Py 8)...")
-from app.engines.renpy.agent import agent_source, agent_rpy_source
+from app.engines.renpy.agent import agent_rpy_source, agent_source
 from app.engines.renpy.offsets import RenpyOffsetDB
+
 db = RenpyOffsetDB()
 assert db.get_abi_branch("7.4.11") == "py2", db.get_abi_branch("7.4.11")
 assert db.get_abi_branch("8.2.3") == "py3"
@@ -925,8 +964,10 @@ with tempfile.TemporaryDirectory() as td:
         e.translation = "RU:" + e.original
     stats = twine.apply(td, entries)
     # счётчик считает изменённые СТРОКИ: «You grab» и «from the shelf.»
-    # лежат на одной строке (seg[0] и seg[2]) — 17 записей = 15 строк
-    assert stats["strings"] == 15, stats
+    # лежат на одной строке (seg[0] и seg[2]). Строка-продолжение
+    # многострочного сеттера ('to true] ]') — код, не извлекается —
+    # 19 записей = 14 строк
+    assert stats["strings"] == 14, stats
     text = open(story, encoding="utf-8").read()
     assert "RU:You wake up in a forest." in text
     assert "<<set $gold to 100>>" in text
@@ -948,7 +989,7 @@ with tempfile.TemporaryDirectory() as td:
     assert "<<set $x to 1>>" not in text
     # grab-скип не меняет счётчик: строка всё равно меняется сегментом
     # seg[2] («from the shelf.») той же строки
-    assert stats["strings"] == 15, stats
+    assert stats["strings"] == 14, stats
     assert stats["backups"]
     # переводчик испортил макрос (перевёл текст внутри <<= either(...)>>,
     # сломав кавычки) — перевод не внедряется, строка остаётся исходной
@@ -961,9 +1002,10 @@ with tempfile.TemporaryDirectory() as td:
     assert "Потерялся" not in text, text
     assert "&lt;b&gt;You are lost.&lt;/b&gt;" in text
     # строка с испорченным макросом не меняется — счётчик на 1 меньше
-    assert stats["strings"] == 14, stats
-    # длинный макрос <<= either(…)>> (>200 символов) маскируется целиком
-    # и остаётся целым после перевода — иначе кавычки/смысл ломаются
+    assert stats["strings"] == 13, stats
+    # длинный макрос <<= either(…)>> (>200 символов): строковые аргументы
+    # (варианты фраз) — видимый текст для игрока, теперь переводятся
+    # по-аргументно; структура макроса (either('…', '…')) остаётся целой
     either_e = next(e for e in entries
                     if e.original == "Talk with her:")
     either_e.translation = "RU:" + either_e.original
@@ -971,7 +1013,7 @@ with tempfile.TemporaryDirectory() as td:
     stats = twine.apply(td, entries)
     text = open(story, encoding="utf-8").read()
     import html as html_mod
-    assert "<<= either('Option number one: very long text to exceed" \
+    assert "<<= either('RU:Option number one: very long text" \
         in html_mod.unescape(text), text[-400:]
     # переводчик добавил свой тег (<br>) — коды сегмента не совпадают,
     # перевод не внедряется
@@ -1074,8 +1116,128 @@ with tempfile.TemporaryDirectory() as td:
     assert "[[Go home->Home]]" in text, text
 print("   OK")
 
+print("4c) Twine: кнопки — ключи (имена пассажей, $переменные, селекторы) не переводятся...")
+STORY_BTNS = """<!DOCTYPE html>
+<html><head><title>Btns</title></head>
+<body><tw-storydata name="Btns" startnode="1" creator="Twine"
+  creator-version="2.3.9" format="SugarCube" format-version="2.36.1"
+  hidestoryicons=""><tw-passagedata pid="1" name="Start" tags="">Shop:
+<<link "Open door" "DoorPassage">>
+<<button "Buy sword">>
+<<goto "Start">>
+<<radio "Choose" "$choice">>
+<<select "Which?" "$answer">>
+<<textbox "Your name" "$name">>
+<<linkappend "More" "MorePassage">>
+<<addclass "#dialog">>
+<<option "Pick" "PickPassage">>
+<<prompt "Ask" "$answer" "no">>
+[[Enter the cave|cave2]]
+</tw-passagedata></tw-storydata></body></html>
+"""
+with tempfile.TemporaryDirectory() as td:
+    story = os.path.join(td, "index.html")
+    with open(story, "w", encoding="utf-8") as f:
+        f.write(STORY_BTNS)
+    entries = twine.extract(story)
+    originals = [e.original for e in entries]
+    # тексты кнопок/полей извлекаются
+    for o in ("Shop:", "Open door", "Buy sword", "Choose", "Which?",
+              "Your name", "More", "Pick", "Ask", "Enter the cave"):
+        assert o in originals, (o, originals)
+    # ключи — никогда (перевод ключа убивает кнопку/ссылку/картинку)
+    for bad in ("DoorPassage", "Start", "$choice", "$answer", "$name",
+                "MorePassage", "#dialog", "PickPassage", "no", "cave2"):
+        assert not any(bad in o for o in originals), bad
+    for e in entries:
+        e.translation = "RU:" + e.original
+    stats = twine.apply(td, entries)
+    text = open(story, encoding="utf-8").read()
+    assert '&lt;&lt;link "RU:Open door" "DoorPassage"&gt;&gt;' in text, text
+    assert '<<goto "Start">>' in text, text
+    assert '&lt;&lt;radio "RU:Choose" "$choice"&gt;&gt;' in text, text
+    assert '&lt;&lt;prompt "RU:Ask" "$answer" "no"&gt;&gt;' in text, text
+    assert '<<addclass "#dialog">>' in text, text
+    assert "[[RU:Enter the cave|cave2]]" in text, text
+    assert stats["strings"] == 10, stats
+    # Саботаж: записи, указывающие на ключи/селекторы или с ломающими
+    # символами (кавычка, |) — не внедряются вообще
+    shutil.copy2(stats["backups"][0], story)
+    for e in entries:
+        if e.original == "Enter the cave":
+            e.translation = "RU:Enter|cave"  # | сломает ссылку
+        else:
+            e.translation = "RU:" + e.original
+    crafted = [
+        TranslationEntry(0, "", "passage[1].line[3].seg[0].arg[0]", "",
+                         "Start", 'RU:"Старт'),
+        TranslationEntry(0, "", "passage[1].line[8].seg[0].arg[0]", "",
+                         "#dialog", "Диалог"),
+    ]
+    stats = twine.apply(td, entries + crafted)
+    text = open(story, encoding="utf-8").read()
+    assert 'RU:"Старт' not in text, text
+    assert "Диалог" not in text, text
+    assert "[[Enter the cave|cave2]]" in text, text   # | — не внедрён
+    assert '<<goto "Start">>' in text, text
+    assert '<<addclass "#dialog">>' in text, text
+    assert stats["strings"] == 9, stats   # 10 линий − подпись с |
+print("   OK")
+
+print("4d) Twine: Harlowe — (имя:) и [подпись->таргет] не переводятся...")
+STORY_HARLOWE = """<!DOCTYPE html>
+<html><head><title>H</title></head>
+<body><tw-storydata name="H" startnode="1" creator="Twine"
+  creator-version="2.9.2" format="Harlowe" format-version="3.3.9"
+  hidestoryicons=""><tw-passagedata pid="1" name="Start" tags="">You see a cat.
+Open (link: "the door")[(goto: "Door")].
+Here is (image: "photo.png").
+(if: $x > 3)[Too many.]
+[go home->Home]
+(link-goto: "Run", "Forest")
+(display: "Intro")
+</tw-passagedata></tw-storydata></body></html>
+"""
+with tempfile.TemporaryDirectory() as td:
+    story = os.path.join(td, "index.html")
+    with open(story, "w", encoding="utf-8") as f:
+        f.write(STORY_HARLOWE)
+    entries = twine.extract(story)
+    originals = [e.original for e in entries]
+    assert "You see a cat." in originals, originals
+    assert "Here is" in originals, originals
+    assert "[Too many.]" in originals, originals   # текст хука переводится
+    for bad in ("the door", "Door", "photo", "go home", "Home", "Run",
+                "Forest", "Intro", "("):
+        assert not any(bad in o for o in originals), bad
+    assert not any("->" in o for o in originals)
+    for e in entries:
+        e.translation = "RU:" + e.original
+    stats = twine.apply(td, entries)
+    text = open(story, encoding="utf-8").read()
+    assert 'RU:Open (link: "the door")[(goto: "Door")].' in text, text
+    assert '(image: "photo.png")' in text, text
+    assert "[go home->Home]" in text, text
+    assert '(link-goto: "Run", "Forest")' in text, text
+    assert '(display: "Intro")' in text, text
+    assert "(if: $x &gt; 3)RU:[Too many.]" in text, text
+    assert "RU:You see a cat." in text, text
+    assert stats["strings"] == 4, stats
+    # legacy-запись из старого проекта (целая строка с картинкой):
+    # макрос в переводе не совпадает с маской — не внедряется
+    shutil.copy2(stats["backups"][0], story)
+    legacy = TranslationEntry(
+        0, "", "passage[1].line[2]", "", 'Here is (image: "photo.png").',
+        "Вот (изображение: «фото.png»).")
+    stats = twine.apply(td, [legacy])
+    text = open(story, encoding="utf-8").read()
+    assert "изображение" not in text, text
+    assert stats["strings"] == 0, stats
+print("   OK")
+
 print("5) Twine: LZ-сейвы (round-trip + delta)...")
 from app.core.twine import savefile
+
 sample = '{"id":"x","state":{"index":1,"history":[{"variables":{"a":1}}]}}'
 assert savefile.lz_decompress_base64(savefile.lz_compress_base64(sample)) == sample
 save_obj = {"type": "saved", "id": "t", "state": {"index": 2, "delta": [
@@ -1094,6 +1256,139 @@ with tempfile.TemporaryDirectory() as td:
         savefile.get_variables(savefile.load_save(p)))["player.money"] == 999
     assert os.path.exists(p + ".ob_backup")
 print("   OK")
+
+print("6) Twine: единый WS-пэйлоад — мост состояния/читов/сейвов...")
+from app.core.models import Project, project_file_for
+from app.engines.twine.tentacle import PAYLOAD_SCRIPT, build_tr_dict, load_tr_dict
+
+# Единый пэйлоад моста (браузер и webapp-окно): состояние/переменные,
+# читы, бэкап/восстановление сейвов. Перевод игры делается в приложении
+# (извлечение -> перевод -> новая html-копия), в веб-странице его нет.
+assert "{TR_DICT}" not in PAYLOAD_SCRIPT
+assert "{WS_URL}" in PAYLOAD_SCRIPT
+for marker in ("collectState", "save_backup", "save_restore",
+               "octopus-wrapper"):
+    assert marker in PAYLOAD_SCRIPT, marker
+for marker in ("_trLT", "_trMM", "trApply", "octopus-tr-bar"):
+    assert marker not in PAYLOAD_SCRIPT, marker
+es = [
+    TranslationEntry(0, "", "", "", "Open door", "Открыть дверь"),
+    TranslationEntry(0, "", "", "", "Skip me", "", "skip"),
+    TranslationEntry(0, "", "", "", "Empty tr", "   "),
+    TranslationEntry(0, "", "", "", "No tr", ""),
+]
+d = build_tr_dict(es)
+assert d == {"Open door": "Открыть дверь"}, d
+assert build_tr_dict([]) == {}
+with tempfile.TemporaryDirectory() as td:
+    game = os.path.join(td, "game")
+    os.makedirs(game)
+    proj = Project(game_dir=game, engine="twine", entries=es)
+    projects_root = os.path.join(td, "projects")
+    os.makedirs(projects_root)
+    pf = project_file_for(game, projects_root=projects_root)
+    assert pf.startswith(projects_root) and pf.endswith(".ob.json"), pf
+    with open(pf, "w", encoding="utf-8") as f:
+        json.dump(proj.to_dict(), f, ensure_ascii=False)
+    assert load_tr_dict(game, projects_root=projects_root) == \
+        {"Open door": "Открыть дверь"}
+    assert load_tr_dict(os.path.join(td, "no_game"),
+                        projects_root=projects_root) == {}
+print("   OK")
+
+print("7) Twine: человекочитаемый текст игры (код свёрнут в маркеры)...")
+from app.core.twine.parser import format_passages, read_passages
+with tempfile.TemporaryDirectory() as td:
+    make_twine(td)
+    passages = read_passages(td)
+    # служебные пассажи (widget/StoryInit/init) пропущены
+    names = [p.name for p in passages]
+    assert "Start" in names and "forest2" in names and "WikiForms" in names
+    assert "GameTime" not in names and "StoryInit" not in names
+    assert "CodePass" not in names
+    start = [p for p in passages if p.name == "Start"][0]
+    assert "You wake up in a forest." in start.text
+    # макросы/переменные/скрипты свёрнуты в маркеры, текста кода нет
+    assert "<<set" not in start.text and "<<$item_name>>" not in start.text
+    assert "window.CLOCK" not in start.text
+    assert "⟦макрос" in start.text and "⟦$gold⟧" in start.text
+    assert "⟦скрипт: 3 строк" in start.text
+    # подписи ссылок видны, таргеты скрыты
+    wf = [p for p in passages if p.name == "WikiForms"][0]
+    assert "⟦ссылка: Go home⟧" in wf.text
+    assert "⟦картинка⟧" in wf.text
+    assert "$bought to" not in wf.text.replace("⟦", "")  # сеттер скрыт
+    # человекочитаемая разметка: заголовки пассажей
+    out = format_passages(passages)
+    assert "ПАССАЖ «Start» (pid 1)" in out
+    assert out.index("ПАССАЖ «Start»") < out.index("ПАССАЖ «forest2»")
+    print("   OK:", len(passages), "пассажей,", len(out), "символов")
+
+print("8) Twine: JSON-промежуток и перевод в НОВУЮ html-копию...")
+import json as _json
+from app.engines.twine import TwineModule
+from app.core.twine.parser import story_to_json, write_story_json
+with tempfile.TemporaryDirectory() as td:
+    make_twine(td)
+    module = TwineModule(td)
+    # TwineModule.extract дополнительно пишет «игра.json» рядом с игрой
+    es = module.extract(td)
+    story = os.path.join(td, "index.html")
+    jp = os.path.join(td, "index.json")
+    assert os.path.isfile(jp), "extract должен писать JSON рядом с игрой"
+    doc = story_to_json(td)
+    assert doc["game"] == "index.html" and doc["format"] == "SugarCube"
+    names = [p["name"] for p in doc["passages"]]
+    assert names[0] == "Start" and "forest2" in names and "WikiForms" in names
+    assert "GameTime" not in names and "StoryInit" not in names
+    start = doc["passages"][0]
+    seg0 = start["segments"][0]
+    assert seg0["type"] == "text"
+    assert seg0["translatable"] == ["You wake up in a forest."]
+    macro = [s for s in start["segments"] if s["line"] == 1][0]
+    assert macro["type"] == "macro" and macro["translatable"] == []
+    link = [s for s in start["segments"] if s["line"] == 2][0]
+    assert link["type"] == "link" and link["translatable"] == ["Go deeper"]
+    with open(jp, encoding="utf-8") as f:
+        saved = _json.load(f)
+    assert saved["passages"][0]["segments"][0]["translatable"] == \
+        ["You wake up in a forest."]
+    jp2 = write_story_json(td)
+    assert jp2 == jp and os.path.isfile(jp2)
+    # перевод в новую копию: оригинал не трогается
+    originals = {e.original: e for e in es}
+    for orig, trans in [("You wake up in a forest.", "Ты просыпаешься в лесу."),
+                        ("Go deeper", "Идти глубже"),
+                        ("starts now.", "начинается сейчас.")]:
+        e = originals[orig]
+        e.translation = trans
+        e.status = "translated"
+    with open(story, "rb") as f:
+        original_bytes = f.read()
+    stats = module.apply(td, es, target_lang="ru")
+    assert stats["files"] == 1 and stats["strings"] == 3
+    out = stats["out_file"]
+    assert os.path.isfile(out) and out.endswith("index_ru.html")
+    with open(story, "rb") as f:
+        assert f.read() == original_bytes, "оригинал не должен меняться"
+    with open(out, encoding="utf-8") as f:
+        out_text = f.read()
+    assert "Ты просыпаешься в лесу." in out_text
+    assert "Идти глубже" in out_text
+    assert "начинается сейчас." in out_text
+    # код игры цел: макросы, ссылки с таргетами, картинки, скрипты
+    assert "<<set $gold to 100>>" in out_text
+    assert "[[Идти глубже|forest2]]" in out_text
+    assert "[[Go home->Home]]" in out_text
+    assert "[img[Go home|home.png][Home][$done to true]]" in out_text
+    assert "<script" in out_text and "</script>" in out_text
+    # кириллица не залезла внутрь макросов и тегов
+    for m in re.findall(r"<<[^>]*>>", out_text):
+        assert not re.search(r"[А-Яа-яЁё]", m), m
+    for m in re.findall(r"<[^>]+>", out_text):
+        assert "Ты" not in m and "Идти" not in m, m
+    print("   OK: index_ru.html создан, оригинал цел,",
+          stats["strings"], "строк")
 
 print()
 print("ВСЕ ТЕСТЫ RENPY + TWINE ПРОШЛИ")

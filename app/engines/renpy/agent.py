@@ -234,15 +234,15 @@ def _ob_bootstrap():
         _send({"type": "state", "gold": _get_gold(),
                "label": _current_label()})
 
-    _OB_VARS_MAX = 2000
+    _OB_VARS_MAX = 20000
     _OB_VARS_SKIP = ("config", "game", "interface", "style",
                      "translation", "persistent", "renpy", "store")
 
     def _flatten(node, prefix, depth, out):
         # store у реальной игры огромный (config, game, классы и т.п.) —
-        # полный обход вешает канал, читы/триггеры перестают работать.
-        # Не ходим в модули и служебные объекты, обрезаем по лимиту.
-        if depth > 6 or len(out) >= _OB_VARS_MAX:
+        # полный обход вешает канал. Не ходим в модули и служебные
+        # объекты, обрезаем по лимиту (20k — вся игровая логика).
+        if depth > 8 or len(out) >= _OB_VARS_MAX:
             return
         if isinstance(node, dict):
             items = node.items()

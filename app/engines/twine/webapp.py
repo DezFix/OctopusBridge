@@ -35,16 +35,12 @@ WRAPPER_HTML = r"""<!DOCTYPE html>
 <title>{GAME_TITLE}</title>
 <style>
   body {{ margin:0; font-family: system-ui, sans-serif; background:#111; color:#ddd; }}
-  #bar {{ display:flex; align-items:center; gap:10px; padding:6px 12px; background:#1d1d1d; border-bottom:1px solid #333; flex-wrap:wrap; }}
-  #status {{ font-size:12px; color:#8a8; }}
-  #frame-wrap {{ position:fixed; inset:42px 0 0 0; }}
+  #frame-wrap {{ position:fixed; inset:0; }}
   iframe {{ width:100%; height:100%; border:0; background:#fff; }}
 </style>
 </head>
 <body>
-  <div id="bar">
-    <span id="status">…</span>
-  </div>
+  <div id="octopus-wrapper" hidden></div>
   <div id="frame-wrap"><iframe id="game" src="{IFRAME_URL}"></iframe></div>
   <script src="plugin.js"></script>
 </body>
@@ -60,8 +56,8 @@ PLUGIN_JS = r"""/* Плагин окна Twine-игры: синк сейвов �
     var iframe = document.getElementById('game');
 
     function setStatus(s) {
-        var el = document.getElementById('status');
-        if (el) el.textContent = s;
+        // статус-бар убран из обёртки — статус пишем в консоль
+        if (s) console.log('[octopus]', s);
     }
 
     // ── Синк сейвов с приложением ──

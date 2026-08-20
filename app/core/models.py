@@ -7,7 +7,23 @@
 """
 from __future__ import annotations
 
+import hashlib
+import os
 from dataclasses import dataclass, field, asdict
+
+
+def project_file_for(game_dir: str, projects_root: str | None = None) -> str:
+    """Путь .ob.json проекта для папки игры (общий с UI).
+
+    Имя детерминированное: <базовое имя, очищенное>_<md5 пути>.
+    projects_root — переопределение каталога проектов (тесты).
+    """
+    from app import projects_dir
+    root = projects_root or projects_dir()
+    name = hashlib.md5(os.path.abspath(game_dir).encode()).hexdigest()[:12]
+    base = os.path.basename(os.path.normpath(game_dir)) or "game"
+    safe = "".join(c if c.isalnum() else "_" for c in base)[:40]
+    return os.path.join(root, f"{safe}_{name}.ob.json")
 
 
 @dataclass

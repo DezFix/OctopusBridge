@@ -312,6 +312,10 @@ _STRINGS = {
         "ru": "Папка: {path}",
         "en": "Folder: {path}",
     },
+    "tr_apply_newfile": {
+        "ru": "Создан файл: {path}\nОригинал не тронут.",
+        "en": "Created file: {path}\nOriginal left untouched.",
+    },
     "tr_apply_orphans": {
         "ru": "Удалено устаревших файлов: {n}",
         "en": "Removed stale files: {n}",
@@ -605,6 +609,10 @@ _STRINGS = {
         "ru": "API-ключ для выбранного пресета",
         "en": "API key for selected preset",
     },
+    "settings_api_key_lt_ph": {
+        "ru": "необязателен (нужен только своему серверу)",
+        "en": "optional (self-hosted server only)",
+    },
     "settings_ui_lang": {
         "ru": "Язык интерфейса:",
         "en": "UI Language:",
@@ -638,6 +646,7 @@ _STRINGS = {
     "lang_tr": {"ru": "Турецкий", "en": "Turkish"},
     "lang_nl": {"ru": "Нидерландский", "en": "Dutch"},
     "lang_sv": {"ru": "Шведский", "en": "Swedish"},
+
     "settings_show_wizard": {
         "ru": "Показать мастер настройки заново",
         "en": "Show setup wizard again",
@@ -716,6 +725,14 @@ _STRINGS = {
         "ru": "Bing Translator — бесплатный (без ключа)",
         "en": "Bing Translator — free (no key)",
     },
+    "prov_mymemory": {
+        "ru": "MyMemory — бесплатный API (50 000 символов/день, без ключа)",
+        "en": "MyMemory — free API (50,000 chars/day, no key)",
+    },
+    "prov_libretranslate": {
+        "ru": "LibreTranslate — открытый и бесплатный (публичный сервер или свой)",
+        "en": "LibreTranslate — open-source and free (public or self-hosted)",
+    },
     "prov_rotate": {
         "ru": "Google + Bing — чередование (быстрее)",
         "en": "Google + Bing — round-robin (faster)",
@@ -726,6 +743,8 @@ _STRINGS = {
     },
     "prov_short_google_free": {"ru": "Google Translate", "en": "Google Translate"},
     "prov_short_bing": {"ru": "Bing Translator", "en": "Bing Translator"},
+    "prov_short_mymemory": {"ru": "MyMemory", "en": "MyMemory"},
+    "prov_short_libretranslate": {"ru": "LibreTranslate", "en": "LibreTranslate"},
     "prov_short_rotate": {
         "ru": "Google + Bing (чередование)",
         "en": "Google + Bing (round-robin)",
@@ -750,6 +769,32 @@ _STRINGS = {
     "tab_resources": {"ru": "Ресурсы", "en": "Resources"},
     "tab_maps": {"ru": "Карты", "en": "Maps"},
     "tab_save_editor": {"ru": "Редактор сейвов", "en": "Save Editor"},
+    "tab_twine_text": {"ru": "Текст игры", "en": "Game text"},
+
+    # ── Twine game text tab ──
+    "twine_text_title": {
+        "ru": "Текст игры — как его читает игрок (код свёрнут в ⟦…⟧)",
+        "en": "Game text — as the player reads it (code collapsed into ⟦…⟧)",
+    },
+    "twine_text_refresh": {"ru": "Обновить", "en": "Refresh"},
+    "twine_text_copy": {"ru": "Копировать", "en": "Copy"},
+    "twine_text_no_project": {
+        "ru": "Откройте игру, чтобы увидеть её текст.",
+        "en": "Open a game to see its text.",
+    },
+    "twine_text_empty": {
+        "ru": "Пассажей с текстом не найдено.",
+        "en": "No passages with text found.",
+    },
+    "twine_text_info": {"ru": "{n} пассажей", "en": "{n} passages"},
+    "twine_text_json": {
+        "ru": "Сохранить JSON",
+        "en": "Save JSON",
+    },
+    "twine_text_json_saved": {
+        "ru": "JSON-модель игры сохранена:\n{path}",
+        "en": "Game JSON model saved:\n{path}",
+    },
 
     # ── Map triggers ──
     "map_trigger_0": {"ru": "Кнопка", "en": "Button"},
@@ -1294,6 +1339,27 @@ _STRINGS = {
         "en": "{name}: value type mismatch",
     },
     "rpy_exec_go": {"ru": "Запуск", "en": "Run"},
+    "rpy_scan_value": {"ru": "Значение:", "en": "Value:"},
+    "rpy_scan_eq": {"ru": "равно", "en": "equals"},
+    "rpy_scan_changed": {"ru": "изменилось", "en": "changed"},
+    "rpy_scan_unchanged": {"ru": "не изменилось", "en": "unchanged"},
+    "rpy_scan_increased": {"ru": "увеличилось", "en": "increased"},
+    "rpy_scan_decreased": {"ru": "уменьшилось", "en": "decreased"},
+    "rpy_scan_go": {"ru": "Сканировать", "en": "Scan"},
+    "rpy_scan_next": {"ru": "Уточнить", "en": "Next scan"},
+    "rpy_scan_reset": {"ru": "Сброс", "en": "Reset"},
+    "rpy_scan_found": {
+        "ru": "Найдено: {n} — измените значение в игре и нажмите «Уточнить»",
+        "en": "Found: {n} — change the value in game, then press \"Next scan\"",
+    },
+    "rpy_scan_need_value": {
+        "ru": "Введите значение для поиска (число или текст)",
+        "en": "Enter a value to scan for (number or text)",
+    },
+    "rpy_scan_no_active": {
+        "ru": "Сначала нажмите «Сканировать»",
+        "en": "Run a scan first",
+    },
 
     # ── Generic ──
     "btn_yes": {"ru": "Да", "en": "Yes"},
@@ -1357,6 +1423,8 @@ def TR(key: str, **fmt) -> str:
 _PROVIDER_KEYS = {
     "google_free": ("prov_google_free", "prov_short_google_free"),
     "bing": ("prov_bing", "prov_short_bing"),
+    "mymemory": ("prov_mymemory", "prov_short_mymemory"),
+    "libretranslate": ("prov_libretranslate", "prov_short_libretranslate"),
     "rotate": ("prov_rotate", "prov_short_rotate"),
     "ai": ("prov_ai", "prov_short_ai"),
 }

@@ -14,7 +14,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core.twine import savefile
 from app.engines.twine.tentacle import (
-    _InjectingHTTPHandler, _ThreadedHTTPServer, TwineTentacle)
+    TwineTentacle,
+    _InjectingHTTPHandler,
+    _ThreadedHTTPServer,
+)
 
 GAME_HTML = '''<!DOCTYPE html>
 <html><head><title>Test</title></head><body>
@@ -138,12 +141,15 @@ with tempfile.TemporaryDirectory() as td:
         with _InjectingHTTPHandler._import_lock:
             assert _InjectingHTTPHandler._import_payload == {}
 
-        # файл игры отдаётся с экраном ошибок, без пэйлоада
+        # файл игры отдаётся с экраном ошибок и ЕДИНЫМ пэйлоадом моста
+        # (состояние/читы/сейвы + live-перевод) — как в браузере
         with urllib.request.urlopen(base + "/index.html", timeout=5) as r:
             html = r.read().decode("utf-8")
         assert "error" in html.lower()
         assert "onerror" in html
-        assert "__octopus" not in html
+        assert "twineInjected" in html
+        assert "__octopus" in html
+        assert "octopus-wrapper" in html  # гард обёртки окна в пэйлоаде
     finally:
         srv.shutdown()
         srv.server_close()
@@ -164,6 +170,114 @@ assert _InjectingHTTPHandler._save_sync_cb is None
 # браузерный режим не умеет пушить
 tent2 = TwineTentacle(use_webapp_window=False)
 assert tent2.push_save_to_game("X", None) is False
+print("   OK")
+
+print("3b) Live-перевод по WebSocket: tr_set/tr_dict/tr_state/tr_request...")
+
+
+class FakeWS:
+    """Замена _WSServer: ловит исходящие сообщения."""
+
+    def __init__(self):
+        self.sent = []
+
+    def send(self, obj):
+        self.sent.append(obj)
+        return True
+
+    def has_client(self):
+        return True
+
+    def stop(self):
+        pass
+
+
+tent = TwineTentacle(use_webapp_window=False)
+fake = FakeWS()
+tent._ws_server = fake
+
+# подключение страницы: состояние перевода + словарь проекта
+tent._tr_dict = {"Open door": "Открыть дверь"}
+tent._on_ws_connect()
+msgs = [m["type"] for m in fake.sent]
+assert msgs == ["tr_set", "tr_dict"], fake.sent
+assert fake.sent[0]["from"] == "auto" and fake.sent[0]["to"] == "ru"
+assert fake.sent[0]["enabled"] is True
+assert fake.sent[1]["data"] == {"Open door": "Открыть дверь"}
+
+# смена языка программно → tr_set в игру
+fake.sent.clear()
+tent.set_tr_state("ja", "ru", True)
+assert len(fake.sent) == 1 and fake.sent[0]["type"] == "tr_set"
+assert fake.sent[0]["from"] == "ja"
+assert tent.tr_state() == {"from": "ja", "to": "ru", "enabled": True}
+
+# пользователь поменял язык/выключил прямо в игре → tr_state запоминается
+# и уйдёт tr_set при следующем подключении страницы
+tent._on_ws_message({"type": "tr_state", "enabled": False,
+                     "from": "ja", "to": "en"})
+assert tent.tr_state() == {"from": "ja", "to": "en", "enabled": False}
+# частичное сообщение не ломает состояние
+tent._on_ws_message({"type": "tr_state", "from": "zh"})
+assert tent.tr_state() == {"from": "zh", "to": "en", "enabled": False}
+fake.sent.clear()
+tent._on_ws_connect()
+assert fake.sent[0]["type"] == "tr_set"
+assert fake.sent[0]["from"] == "zh" and fake.sent[0]["to"] == "en"
+assert fake.sent[0]["enabled"] is False
+
+# батч-перевод: колбэк приложения -> tr_result, статус ошибки очищен
+calls = []
+fake.sent.clear()
+tent.set_tr_callback(lambda texts, f, t: calls.append((texts, f, t)) or [
+    "Дверь открыта" if x == "Open door" else x for x in texts])
+tent._on_ws_message({"type": "tr_request", "id": 7,
+                     "lang_from": "auto", "lang_to": "ru",
+                     "texts": ["Open door", "Hello"]})
+assert calls == [(["Open door", "Hello"], "auto", "ru")], calls
+tr = [m for m in fake.sent if m["type"] == "tr_result"]
+assert tr and tr[0]["id"] == 7, fake.sent
+assert tr[0]["results"] == ["Дверь открыта", "Hello"], tr[0]
+
+# колбэк вернул неверное число строк -> оригиналами
+fake.sent.clear()
+tent.set_tr_callback(lambda texts, f, t: ["x"])
+tent._on_ws_message({"type": "tr_request", "id": 8, "texts": ["a", "b"]})
+tr = [m for m in fake.sent if m["type"] == "tr_result"]
+assert tr[0]["results"] == ["a", "b"], tr[0]
+
+# сбой провайдера -> оригиналами + один tr_status с причиной
+def boom(texts, f, t):
+    raise RuntimeError("LM Studio не запущен")
+
+fake.sent.clear()
+tent.set_tr_callback(boom)
+tent._on_ws_message({"type": "tr_request", "id": 9, "texts": ["Hi"]})
+tr = [m for m in fake.sent if m["type"] == "tr_result"]
+st = [m for m in fake.sent if m["type"] == "tr_status"]
+assert tr[0]["results"] == ["Hi"], tr[0]
+assert st and "недоступен" in st[0]["msg"] and "LM Studio" in st[0]["msg"], st
+# повторный сбой не спамит статус
+tent._on_ws_message({"type": "tr_request", "id": 10, "texts": ["Hi"]})
+assert len([m for m in fake.sent if m["type"] == "tr_status"]) == 1
+
+# без колбэка -> дефолтный бесплатный Google (щупальце самодостаточно),
+# а не «переводчик не настроен»
+fake.sent.clear()
+tent.set_tr_callback(None)
+assert tent._tr_cb is not None and callable(tent._tr_cb)
+# подменяем дефолт заглушкой, чтобы не ходить в сеть
+orig_cb = tent._tr_cb
+tent._tr_cb = lambda texts, f, t: ["Привет" if x == "Hi" else x
+                                   for x in texts]
+tent._on_ws_message({"type": "tr_request", "id": 11, "texts": ["Hi"]})
+tr = [m for m in fake.sent if m["type"] == "tr_result"]
+assert tr[0]["results"] == ["Привет"], tr[0]
+tent._tr_cb = orig_cb
+
+# мусорные типы сообщений не роняют
+tent._on_ws_message({"type": "tr_applied", "count": 5})
+tent.detach()
 print("   OK")
 
 print("4) flatten_variables: ВСЕ параметры (списки/глубина) + set по индексам...")

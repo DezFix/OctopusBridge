@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """Движки машинного перевода: AI (LLM), Google Free, Bing, Rotate."""
 from __future__ import annotations
 
@@ -13,6 +13,10 @@ import requests
 
 # сколько секунд Google «отдыхает» после 429/капчи (страница /sorry/)
 _RATE_LIMIT_COOLDOWN = 60.0
+
+# адрес публичного сервера LibreTranslate по умолчанию (можно заменить
+# на свой в настройках; ключ необязателен)
+LIBRETRANSLATE_DEFAULT_URL = "https://libretranslate.com"
 
 LANG_NAMES = {
     "ja": "Japanese", "zh": "Chinese", "en": "English",
@@ -570,6 +574,119 @@ class BingEngine(BaseEngine):
             f"Bing Translator unavailable: {last_err}") from last_err
 
 
+class MyMemoryEngine(BaseEngine):
+    """MyMemory — официальный бесплатный API перевода (без ключа).
+
+    Лимит: 50 000 символов/день на IP, честный и публичный сервис
+    (api.mymemory.translated.net) — в отличие от неофициальных
+    эндпоинтов Google не ловит капчу/429, но качество RU ниже.
+    API принимает по одному тексту за запрос — строки переводятся
+    параллельно, результат склеивается в порядке исходного списка.
+    """
+
+    name = "mymemory"
+    API = "https://api.mymemory.translated.net/get"
+    _WORKERS = 6
+
+    def __init__(self, api_key: str = ""):
+        self.api_key = api_key or ""
+
+    def ping(self) -> bool:
+        try:
+            self._check_cancel()
+            r = requests.get(self.API, params={"q": "Hello", "langpair": "en|ru"},
+                             timeout=8)
+            data = r.json()
+            return bool(data.get("responseStatus") == 200
+                        and data.get("responseData"))
+        except (requests.RequestException, ValueError):
+            return False
+
+    def translate(self, texts, source, target, context_before=None,
+                  context_after=None) -> list[str]:
+        if not texts:
+            return []
+        try:
+            pair = ("Autodetect" if source == "auto" else source) + "|" + target
+            with ThreadPoolExecutor(max_workers=self._WORKERS) as ex:
+                futs = [ex.submit(self._translate_one, t, pair)
+                        for t in texts]
+                out = [f.result() for f in futs]
+        except InterruptedError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            raise EngineError(f"MyMemory unavailable: {e}") from e
+        return self._guard_tokens(texts, out)
+
+    def _translate_one(self, text: str, pair: str) -> str:
+        self._check_cancel()
+        r = requests.post(self.API, data={"q": text, "langpair": pair},
+                          timeout=20)
+        data = r.json()
+        self._check_cancel()
+        if not isinstance(data, dict) or data.get("responseStatus") != 200:
+            raise EngineError("MyMemory: bad response")
+        rd = data.get("responseData") or {}
+        out = rd.get("translatedText")
+        if out is None:
+            raise EngineError("MyMemory: no translatedText")
+        return out
+
+    def _check_cancel(self):
+        if self.cancelled:
+            raise InterruptedError
+
+
+class LibreTranslateEngine(BaseEngine):
+    """LibreTranslate — открытый бесплатный переводчик (публичный сервер
+    или свой в Docker). Весь пакет уходит одним запросом (q: массив),
+    ключ не обязателен; source 'auto' — автоопределение сервера."""
+
+    name = "libretranslate"
+    DEFAULT_URL = "https://libretranslate.com"
+
+    def __init__(self, base_url: str = "", api_key: str = ""):
+        self.base_url = (base_url or self.DEFAULT_URL).rstrip("/")
+        self.api_key = api_key or ""
+
+    def ping(self) -> bool:
+        try:
+            self._check_cancel()
+            r = requests.get(f"{self.base_url}/languages", timeout=8)
+            return r.status_code == 200
+        except requests.RequestException:
+            return False
+
+    def translate(self, texts, source, target, context_before=None,
+                  context_after=None) -> list[str]:
+        if not texts:
+            return []
+        payload = {"q": list(texts), "source": source, "target": target,
+                   "format": "text"}
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        try:
+            self._check_cancel()
+            r = requests.post(f"{self.base_url}/translate", json=payload,
+                              headers=headers, timeout=30)
+            self._check_cancel()
+            data = r.json()
+        except InterruptedError:
+            raise
+        except (requests.RequestException, ValueError) as e:
+            raise EngineError(f"LibreTranslate unavailable: {e}") from e
+        if isinstance(data, dict) and data.get("error"):
+            raise EngineError(f"LibreTranslate: {data['error']}")
+        if not isinstance(data, list) or len(data) != len(texts):
+            raise EngineError("LibreTranslate: wrong response length")
+        return self._guard_tokens(texts, [str(t) for t in data])
+
+    def _check_cancel(self):
+        if self.cancelled:
+            raise InterruptedError
+
+
 class RotateEngine(BaseEngine):
     """Google пакетно + Bing в фолбэке.
 
@@ -651,6 +768,8 @@ class RotateEngine(BaseEngine):
 PROVIDERS = {
     "google_free": "Google Translate — бесплатный (без ключа)",
     "bing": "Bing Translator — бесплатный (без ключа)",
+    "mymemory": "MyMemory — бесплатный API (50K символов/день, без ключа)",
+    "libretranslate": "LibreTranslate — открытый и бесплатный (публичный или свой сервер)",
     "rotate": "Google + Bing — Google пакетами, фолбэк на Bing (быстрее)",
     "ai": "AI — OpenAI/Ollama/LM Studio (требуется API или локальный сервер)",
 }
@@ -668,6 +787,8 @@ def get_engine(name: str, **kwargs) -> BaseEngine:
         "openai_compat": AIEngine,
         "google_free": GoogleFreeEngine,
         "bing": BingEngine,
+        "mymemory": MyMemoryEngine,
+        "libretranslate": LibreTranslateEngine,
         "rotate": RotateEngine,
     }
     if name not in engines:

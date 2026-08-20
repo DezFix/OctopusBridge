@@ -1817,6 +1817,8 @@ class TranslateTab(QWidget):
                      strings=stats["strings"])]
         if stats.get("backups"):
             parts.append(TR("tr_apply_backup", n=len(stats["backups"])))
+        if stats.get("out_file"):
+            parts.append(TR("tr_apply_newfile", path=stats["out_file"]))
         if stats.get("out_dir"):
             parts.append(TR("tr_apply_folder", path=stats["out_dir"]))
         if stats.get("removed_orphans"):
