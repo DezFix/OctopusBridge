@@ -157,11 +157,76 @@ def build_plugin_source(cheats_payload: str, tr_payload: str,
         + _BRIDGE_SERVER_JS + "\n")
 
 
+def js_json(obj) -> str:
+    """JSON для встраивания в исходник JS-плагина.
+
+    JSON.parse справился бы с U+2028/U+2029, но это литерал в коде:
+    в Chromium 65 (MV) они считаются разделителями строк и ломают
+    синтаксис — экранируем как \\u2028/\\u2029.
+    """
+    return json.dumps(obj, ensure_ascii=False).replace(
+        "\u2028", "\\u2028").replace("\u2029", "\\u2029")
+
+
+def _tr_dict_span(src: str) -> tuple[int, int] | None:
+    """(start, end) — промежуток JSON словаря в __octopus_trInstall(...);
+    end — позиция закрывающей скобки ')' (не включая её: span охватывает
+    только JSON).
+
+    Сканер строк-чувствительный: кавычки/скобки ВНУТРИ значений словаря
+    (включая последовательности ");") не считаются структурой — никакой
+    regex не обрезает словарь на тексте перевода.
+    """
+    m = re.search(r"__octopus_trInstall\(", src)
+    if not m:
+        return None
+    start = m.end()
+    i = start
+    depth = 0
+    in_str = esc = False
+    while i < len(src):
+        c = src[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                j = i + 1
+                while j < len(src) and src[j] in " \t\r\n":
+                    j += 1
+                if j < len(src) and src[j] == ")":
+                    return start, j
+                return None
+        i += 1
+    return None
+
+
+def _dict_ok(src: str) -> bool:
+    """True — словарь в __octopus_trInstall(...) валидный JSON."""
+    span = _tr_dict_span(src)
+    if not span:
+        return False
+    try:
+        json.loads(src[span[0]:span[1]].strip())
+        return True
+    except ValueError:
+        return False
+
+
 def _existing_dict(src: str) -> str:
     """JSON словаря из уже развёрнутого плагина (для регенерации)."""
-    m = re.search(r"__octopus_trInstall\((.*?)\);", src, re.S)
-    if m:
-        blob = m.group(1).strip()
+    span = _tr_dict_span(src)
+    if span:
+        blob = src[span[0]:span[1]].strip()
         try:
             json.loads(blob)
             return blob
@@ -193,8 +258,9 @@ def ensure_bridge_registered(game_dir: str, cheats_payload: str,
     plugins.js.
 
     Идемпотентно: актуальный плагин и запись не перезаписываются.
-    Устаревший (другая версия пейлоадов/моста, маркер __TR_DICT__)
-    перегенерируется с сохранением уже развёрнутого словаря.
+    Устаревший (другая версия пейлоадов/моста, маркер __TR_DICT__,
+    битый словарь от старых багов) перегенерируется с сохранением уже
+    развёрнутого словаря.
     """
     ok = True
     plugin_path = os.path.join(game_dir, *plugin_rel(game_dir).split("/"))
@@ -208,7 +274,8 @@ def ensure_bridge_registered(game_dir: str, cheats_payload: str,
             src = ""
         need_write = ("__TR_DICT__" in src or
                       f"__octopusBridgeVersion = {BRIDGE_PLUGIN_VERSION}"
-                      not in src)
+                      not in src or
+                      ("__octopus_trInstall" in src and not _dict_ok(src)))
         old_dict = _existing_dict(src)
     if need_write:
         try:
@@ -286,14 +353,14 @@ def update_tr_dict(game_dir: str, entries: list) -> int:
             src = f.read()
     except OSError:
         return 0
-    tr_json = json.dumps(tr, ensure_ascii=False)
+    tr_json = js_json(tr)
     if "__TR_DICT__" in src:
         new_src = src.replace("__TR_DICT__", tr_json)
     else:
-        m = re.search(r"__octopus_trInstall\((.*?)\);", src, re.S)
-        if not m:
+        span = _tr_dict_span(src)
+        if not span:
             return 0
-        new_src = (src[:m.start(1)] + tr_json + src[m.end(1):])
+        new_src = src[:span[0]] + tr_json + src[span[1]:]
     try:
         with open(path, "w", encoding="utf-8", newline="\n") as f:
             f.write(new_src)

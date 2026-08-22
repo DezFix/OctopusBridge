@@ -49,6 +49,23 @@ def _is_code_token(text: str) -> bool:
     return False
 
 
+def _resolve_src(text: str, declared_src: str, tgt_lang: str) -> str | None:
+    """Реальный язык источника строки для движка.
+
+    Смешанные игры (часть текста на японском, часть на английском):
+    детекция по строке важнее заявленного языка проекта, иначе
+    английские строки уходят движку как «японские» и остаются без
+    перевода. Возвращает None — строка уже на целевом языке.
+    """
+    detected = detect_lang(text)
+    if detected == tgt_lang:
+        return None
+    if declared_src == "auto":
+        # как раньше: не распознано — переводить нечего
+        return detected
+    return detected or declared_src
+
+
 def _reattach(text: str, lead: list[str], trail: list[str]) -> str:
     """Приклеивает краевые коды, если переводчик их не сохранил.
 
@@ -95,11 +112,10 @@ class Translator:
     def translate_text(self, text: str, src_lang: str, tgt_lang: str,
                        overwrite: bool = False) -> str:
         """Переводит одну строку: TM -> глоссарий-сегменты -> движок."""
-        if src_lang == "auto":
-            detected = detect_lang(text)
-            if not detected or detected == tgt_lang:
-                return text
-            src_lang = detected
+        src = _resolve_src(text, src_lang, tgt_lang)
+        if not src:
+            return text
+        src_lang = src
 
         # одиночный знак алфавита (кана/кириллица/латиница) — не слово,
         # перевода не имеет; раньше чем TM: старый мусор «Домой» не должен
@@ -191,13 +207,10 @@ class Translator:
             if not text.strip():
                 out[i] = text
                 continue
-            src = src_lang
-            if src_lang == "auto":
-                detected = detect_lang(text)
-                if not detected or detected == tgt_lang:
-                    out[i] = text
-                    continue
-                src = detected
+            src = _resolve_src(text, src_lang, tgt_lang)
+            if not src:
+                out[i] = text
+                continue
             if is_single_letter(text):
                 out[i] = text
                 continue
@@ -296,8 +309,20 @@ class Translator:
                                       overwrite)
             return done[0] - skipped
 
-        self._translate_group(targets, src_lang, tgt_lang, done, report,
-                              overwrite)
+        # явный исходный язык: всё равно группируем по реальному языку
+        # строки — в смешанных играх (часть текста ja, часть en) иначе
+        # английские строки уходят движку как «японские» без перевода
+        groups: dict[str, list[TranslationEntry]] = {}
+        for e in targets:
+            lang = _resolve_src(e.original, src_lang, tgt_lang)
+            if not lang:
+                continue
+            groups.setdefault(lang, []).append(e)
+        for lang, group in groups.items():
+            if self.cancelled:
+                break
+            self._translate_group(group, lang, tgt_lang, done, report,
+                                  overwrite)
         return done[0]
 
     def _translate_group(self, targets: list[TranslationEntry],

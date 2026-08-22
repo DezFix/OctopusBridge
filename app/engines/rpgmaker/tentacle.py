@@ -351,6 +351,125 @@ if (!window.__octopus_trInit) {
         return window.__octopus_trApply(obDName.call(this));
       };
     });
+
+    // ── перевод на уровне данных ──
+    // Меню/предметы/скиллы/термины рисуются напрямую из таблиц $data*
+    // мимо convertEscapeCharacters, поэтому проходим сами таблицы
+    // в ПАМЯТИ и подменяем точные совпадения. Файлы игры не трогаем.
+    // Команды событий ({code, parameters}) обходим по белому списку
+    // ТОЛЬКО отображаемых позиций: комментарии 108/408 и скрипты
+    // 355/655 плагины часто читают как теги — их не трогаем.
+    var obDict = window.__octopus_tr;
+
+    function obHas(s) {
+      return Object.prototype.hasOwnProperty.call(obDict, s)
+        && typeof obDict[s] === "string";
+    }
+    function obSubst(node, key) {
+      var v = node[key];
+      if (typeof v === "string" && obHas(v)) node[key] = obDict[v];
+    }
+    window.__octopus_trWalk = function (node, depth) {
+      if (!node || typeof node !== "object" || depth > 12) return;
+      if (Array.isArray(node)) {
+        for (var ai = 0; ai < node.length; ai++) {
+          var av = node[ai];
+          if (av && typeof av === "object") {
+            window.__octopus_trWalk(av, depth + 1);
+          } else if (typeof av === "string") {
+            if (obHas(av)) node[ai] = obDict[av];
+          }
+        }
+        return;
+      }
+      // команда события? ({code:Number, parameters:Array})
+      if (typeof node.code === "number"
+          && Object.prototype.hasOwnProperty.call(node, "parameters")) {
+        obWalkCmd(node);
+        return;
+      }
+      for (var k in node) {
+        if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
+        if (k === "note" || k === "meta") continue; // теги плагинов
+        var v2 = node[k];
+        if (v2 && typeof v2 === "object") {
+          window.__octopus_trWalk(v2, depth + 1);
+        } else {
+          obSubst(node, k);
+        }
+      }
+    };
+    // белые списки: код команды -> индексы параметров с текстом
+    var obTextCodes = {
+      101: [4],   // заголовок диалога (имя говорящего)
+      102: [0],   // выбор вариантов (массив строк)
+      320: [1],   // сменить имя актора
+      324: [1],   // сменить прозвище
+      356: [0],   // MV-команда плагина (строка целиком)
+      357: [3],   // MZ-команда плагина (аргументы)
+      401: [0],   // строки диалога
+      402: [1],   // ветка выбора (When)
+      405: [0]    // прокручиваемый текст
+    };
+    function obWalkCmd(cmd) {
+      var idxs = obTextCodes[cmd.code];
+      if (!idxs) return;
+      var ps = cmd.parameters || [];
+      for (var q = 0; q < idxs.length; q++) {
+        var i = idxs[q];
+        if (i >= ps.length) continue;
+        var v = ps[i];
+        if (typeof v === "string") {
+          if (obHas(v)) ps[i] = obDict[v];
+        } else if (v && typeof v === "object") {
+          // выбор 102[0]: массив строк; аргументы 357: вложенные структуры
+          window.__octopus_trWalk(v, 0);
+        }
+      }
+    }
+
+    var obDbTables = ["$dataActors", "$dataClasses", "$dataSkills",
+      "$dataItems", "$dataWeapons", "$dataArmors", "$dataEnemies",
+      "$dataTroops", "$dataStates", "$dataSystem", "$dataMapInfos",
+      "$dataCommonEvents"];
+    function obRefreshData() {
+      for (var i = 0; i < obDbTables.length; i++) {
+        try { window.__octopus_trWalk(window[obDbTables[i]], 0); }
+        catch (e) {}
+      }
+      try { window.__octopus_trWalk(window["$dataMap"], 0); }
+      catch (e) {}
+    }
+    // база грузится асинхронно — ждём все основные таблицы
+    var _dbPoll = setInterval(function () {
+      for (var j = 0; j < obDbTables.length; j++) {
+        if (!window[obDbTables[j]]) return;
+      }
+      clearInterval(_dbPoll);
+      obRefreshData();
+    }, 400);
+    // карты подгружаются по ходу игры — переобход после каждой загрузки
+    trSafePatch(Game_Map.prototype.setup, function () {
+      var obSetup = Game_Map.prototype.setup;
+      Game_Map.prototype.setup = function (mapId) {
+        var r = obSetup.call(this, mapId);
+        try { obRefreshData(); } catch (e) {}
+        return r;
+      };
+    });
+    // словарь могли залить позже (live-режим через мост) — если база
+    // уже загружена, обходим её сразу
+    var obInstallBase = window.__octopus_trInstall;
+    window.__octopus_trInstall = function (obj) {
+      var n = obInstallBase(obj);
+      try {
+        if (typeof $dataSystem !== "undefined" && $dataSystem
+            && window.__octopus_trWalk) {
+          obRefreshData();
+        }
+      } catch (e) {}
+      return n;
+    };
   }, 400);
 }
 
@@ -778,7 +897,7 @@ class RpgMakerTentacle(CDPTentacle):
         if not tr:
             return False
         code = _TRANSLATION_PAYLOAD.replace(
-            "__TR_DICT__", json.dumps(tr, ensure_ascii=False))
+            "__TR_DICT__", mv_bridge.js_json(tr))
         ok, _val = self.evaluate(code)
         return bool(ok)
 

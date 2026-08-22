@@ -774,6 +774,46 @@ with tempfile.TemporaryDirectory() as td:
     assert "__octopus_trInstall({});" not in src
     assert '"Привет": "Hello"' in src
     assert mv_bridge.update_tr_dict(td, []) == 0
+    # ядовитый словарь: ");" внутри перевода ломал regex __octopus_trInstall
+    # -> битый JS-синтаксис (SyntaxError: Unexpected identifier в игре)
+    nasty = [
+        TranslationEntry(id=10, file="f", json_path="p", context="",
+                         original="a", translation="см. п.2); и далее"),
+        TranslationEntry(id=11, file="f", json_path="p", context="",
+                         original="b", translation='кавычки " и } скобки {'),
+        TranslationEntry(id=12, file="f", json_path="p", context="",
+                         original="c", translation="бэкслеш \\ и конец);"),
+    ]
+    n = mv_bridge.update_tr_dict(td, nasty)
+    assert n == 3, n
+    with open(plugin, encoding="utf-8") as f:
+        src = f.read()
+    span = mv_bridge._tr_dict_span(src)
+    assert span, "словарь не найден после update"
+    assert src[span[1]:span[1] + 2] == ");", "вызов словаря обрезан"
+    assert "unexpected" not in src.lower()
+    got = json.loads(mv_bridge._existing_dict(src))
+    assert got["a"] == "см. п.2); и далее"
+    assert got["b"] == 'кавычки " и } скобки {'
+    assert got["c"] == "бэкслеш \\ и конец);"
+    # структурно: сканер находит словарь и в реальном файле
+    assert mv_bridge._tr_dict_span(src) is not None
+    # build_plugin_source + регенерация со словарём, где есть U+2028/2029
+    dirty = {"a": "до\u2028после", "b": "\u2029"}
+    built = mv_bridge.build_plugin_source(_cheats, _tr_p,
+                                          mv_bridge.js_json(dirty))
+    assert "\u2028" not in built and "\\u2028" in built
+    assert json.loads(mv_bridge._existing_dict(built)) == dirty
+    assert mv_bridge._existing_dict(
+        "__octopus_trInstall({bad});") == "{}"
+    # битый словарь (как от старого regex-бага) перегенерируется
+    with open(plugin, "w", encoding="utf-8") as f:
+        f.write("window.__octopusBridgeVersion = 2;\n"
+                "window.__octopus_trInstall({\"a\": \"b{\"x\": \"y\"}); c\"});\n")
+    assert mv_bridge.ensure_bridge_registered(td, _cheats, _tr_p)
+    with open(plugin, encoding="utf-8") as f:
+        src = f.read()
+    assert "__octopus_trInstall({});" in src, "битый словарь не вылечен"
     # устаревший шаблон с маркером __TR_DICT__ переписывается (маркер
     # обрывал скрипт ReferenceError до старта HTTP-сервера)
     with open(plugin, "w", encoding="utf-8") as f:

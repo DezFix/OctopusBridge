@@ -99,44 +99,57 @@ class RpgMakerModule(EngineModule):
             return parser.extract(proj, variant=self.variant)
 
     def apply(self, game_dir: str, entries: list, **kwargs) -> dict:
-        if self._asar:
-            return self._apply_asar(game_dir, entries, **kwargs)
-        from . import parser
-        stats = parser.apply(game_dir, entries,
-                             target_lang=kwargs.get("target_lang", "ru"))
-        if self.variant == "mv":
-            self._apply_mv_bridge(game_dir, entries, stats)
-        return stats
+        """Вариант 3 — runtime-overlay: не трогаем data/*.json.
 
-    def _apply_mv_bridge(self, game_dir: str, entries: list, stats: dict):
-        """MV-профиль: внедряет плагин-мост и статический словарь.
-
-        Официальный рантайм MV не имеет CDP — чит-канал и live-перевод
-        идут через HTTP-мост в игре (octopus_ob.js). Словарь кладётся
-        прямо в плагин, поэтому работает даже без запуска через
-        OctopusBridge. MZ этот путь не затрагивает.
+        Переводы пишутся в ob_translation/<lang>.json (Twine-style,
+        изолированный JSON — только текст, без кода), рантайм-плагин
+        ob_runtime.js подменяет текст в памяти. Оригинальные файлы игры
+        остаются нетронутыми — игры не ломаются.
+        Legacy file-патч (parser.apply) оставлен только для отката.
         """
-        from app.core.rpgmaker import mv_bridge
-        from .tentacle import PAYLOAD, _TRANSLATION_PAYLOAD
+        from app.core.rpgmaker import runtime as rt
+        # мигрируем legacy file-патч если он был: откатываем один раз
+        # чтобы не оставлять игру в поломанном состоянии
         try:
-            if mv_bridge.ensure_bridge_registered(
-                    game_dir, PAYLOAD, _TRANSLATION_PAYLOAD):
-                n = mv_bridge.update_tr_dict(game_dir, entries)
-                if n:
-                    stats["bridge"] = n
+            from app.core.rpgmaker import parser as parser_mod
+            bak = os.path.join(game_dir, "backup")
+            if os.path.isdir(bak):
+                # есть бэкапы data/*.json — откатываем их
+                parser_mod.restore_original(game_dir)
         except Exception:  # noqa: BLE001
             pass
-
-    def restore_original(self, game_dir: str) -> dict:
-        if self._asar:
-            return self._restore_asar(game_dir)
-        from . import parser
-        stats = parser.restore_original(game_dir)
+        stats = rt.install_runtime(
+            game_dir, entries,
+            target_lang=kwargs.get("target_lang", "ru"))
+        # MV: мост для читов/live остаётся, но без вшивания словаря
+        # (словарь теперь в ob_runtime.js)
         if self.variant == "mv":
             try:
                 from app.core.rpgmaker import mv_bridge
-                if mv_bridge.unregister_bridge(game_dir):
-                    stats["bridge_removed"] = True
+                from .tentacle import PAYLOAD, _TRANSLATION_PAYLOAD
+                mv_bridge.ensure_bridge_registered(
+                    game_dir, PAYLOAD, _TRANSLATION_PAYLOAD)
+            except Exception:  # noqa: BLE001
+                pass
+        return stats
+
+    def restore_original(self, game_dir: str) -> dict:
+        from app.core.rpgmaker import runtime as rt
+        stats = rt.uninstall_runtime(game_dir)
+        # legacy откат на случай старых file-патчей (одноразово)
+        try:
+            from app.core.rpgmaker import parser as parser_mod
+            legacy = parser_mod.restore_original(game_dir)
+            if legacy.get("restored"):
+                stats["legacy_restored"] = legacy["restored"]
+        except Exception:  # noqa: BLE001
+            pass
+        # Electron: откат asar если был полный бэкап архива
+        if self._asar:
+            try:
+                asar_stats = self._restore_asar(game_dir)
+                if asar_stats.get("restored"):
+                    stats["asar_restored"] = asar_stats["restored"]
             except Exception:  # noqa: BLE001
                 pass
         return stats

@@ -176,7 +176,7 @@ with tempfile.TemporaryDirectory() as td:
     assert any(e.file == "data/Map001.json" for e in entries)
     print("   OK:", texts)
 
-print("6) Движок: внедрение перевода в asar + бэкапы...")
+print("6) Движок: применение перевода к asar-игре (вариант 3 — оверлей)...")
 with tempfile.TemporaryDirectory() as td:
     game = _make_game(td, "こんにちは、世界。")
     mod = RpgMakerModule(game)
@@ -187,14 +187,20 @@ with tempfile.TemporaryDirectory() as td:
             e.status = "translated"
     stats = mod.apply(game, entries)
     assert stats["strings"] >= 1, stats
-    assert stats["files"] >= 1, stats
+    # вариант 3: архив не патчится, только оверлей + live через CDP
+    assert stats.get("runtime") is True, stats
+    assert stats.get("asar_live_only") is True, stats
+    # архив НЕ изменён: японский оригинал на месте
     ar = asarlib.AsarArchive(os.path.join(game, "resources", "app.asar"))
-    blob = ar.read_file("project/data/Map001.json")
-    assert "Здравствуй, мир." in blob.decode("utf-8")
-    # оригинал Map001.json сохранён в backup/
-    backups = stats.get("backups", [])
-    assert backups, stats
-    assert any(os.path.basename(b) == "Map001.json" for b in backups)
+    blob = ar.read_file("project/data/Map001.json").decode("utf-8")
+    assert "こんにちは、世界。" in blob, blob
+    assert "Здравствуй, мир." not in blob, blob
+    # оверлей с переводом записан рядом с игрой (читаемый артефакт)
+    overlay = os.path.join(game, "ob_translation", "ru.json")
+    assert os.path.isfile(overlay), stats
+    ov = json.load(open(overlay, encoding="utf-8"))
+    assert ov["target_lang"] == "ru"
+    assert ov["dict"].get("こんにちは、世界。") == "Здравствуй, мир.", ov
     # другие файлы архива не тронуты
     assert ar.read_file("project/data/System.json") == \
         json.dumps({"gameTitle": "Тест", "variables": ["", "Мана"],
@@ -247,7 +253,7 @@ with tempfile.TemporaryDirectory() as td:
         "0123456789abcdef0123456789abcdef"
 print("   OK")
 
-print("9) Движок: восстановление оригинала из backup/ (rel-пути)...")
+print("9) Движок: восстановление после runtime-overlay apply (asar)...")
 with tempfile.TemporaryDirectory() as td:
     game = _make_game(td, "こんにちは、世界。")
     mod = RpgMakerModule(game)
@@ -258,12 +264,12 @@ with tempfile.TemporaryDirectory() as td:
             e.status = "translated"
     stats = mod.apply(game, entries)
     assert stats["strings"] >= 1, stats
-    # бэкап записан с полным rel-путём внутри backup/<ts>/
-    baks = [b for b in stats.get("backups", [])
-            if b.endswith("data/Map001.json")]
-    assert baks, stats
+    overlay = os.path.join(game, "ob_translation", "ru.json")
+    assert os.path.isfile(overlay), stats
     res = mod.restore_original(game)
-    assert res["restored"] >= 1, res
+    # оверлей удалён, архив не менялся вовсе (восстанавливать нечего)
+    assert res["removed"] >= 1, res
+    assert not os.path.exists(overlay), res
     ar = asarlib.AsarArchive(os.path.join(game, "resources", "app.asar"))
     blob = ar.read_file("project/data/Map001.json").decode("utf-8")
     assert "こんにちは、世界。" in blob, blob

@@ -364,6 +364,14 @@ class _Extractor:
                         self.add(file, f"{p}[0]{_SCRIPT_MARK}:{n}",
                                  f"{context} / script", s)
                         n += 1
+            else:
+                # generic fallback — неизвестные коды / кастомные плагины:
+                # берём CJK-строки и осмысленный латинский текст на любой
+                # глубине вложенности. Вариант-3 применяет перевод только
+                # в памяти игры, поэтому ложные срабатывания безопасны.
+                for j, v in enumerate(params):
+                    self._generic_walk_value(
+                        file, f"{p}[{j}]", f"{context} / param {code}", v)
 
     def db_file(self, file: str, data: list, fields: list[str]):
         for idx, obj in enumerate(data):
@@ -446,6 +454,79 @@ class _Extractor:
                 self.add(file, f"[{idx}].name",
                          "map name (list)", obj["name"])
 
+    # ── generic fallback — для кастомных плагинов/игр ──────────────
+    _GENERIC_SKIP_KEYS = {"note", "meta", "traits", "effects", "damage"}
+
+    def _generic_text(self, s) -> bool:
+        """Кандидат из НЕИЗВЕСТНОЙ структуры: CJK-строка или осмысленный
+        латинский текст (как js_text_candidate). Вариант-3 применяет
+        перевод только в памяти игры, поэтому ложные срабатывания здесь
+        безопаснее, чем при патче файлов; фильтруем лишь очевидный код
+        (пути/URL/ключи без пробелов/одиночные символы)."""
+        if not isinstance(s, str):
+            return False
+        s = s.strip()
+        if not s or len(s) > 600:
+            return False
+        if _JS_CJK_RE.search(s):
+            return True
+        return js_text_candidate(s)
+
+    # обратная совместимость: старое имя метода
+    def _generic_cjk(self, s) -> bool:
+        return self._generic_text(s)
+
+    def _generic_walk_value(self, file: str, path: str, ctx: str,
+                            v, depth: int = 0):
+        """Рекурсивный обход значения произвольной глубины."""
+        if depth > 4 or v is None:
+            return
+        if isinstance(v, str):
+            if self._generic_text(v):
+                self.add(file, path, ctx, v)
+        elif isinstance(v, dict):
+            for dk, dv in v.items():
+                self._generic_walk_value(
+                    file, f"{path}.{dk}", ctx, dv, depth + 1)
+        elif isinstance(v, list):
+            for j, item in enumerate(v):
+                self._generic_walk_value(
+                    file, f"{path}[{j}]", ctx, item, depth + 1)
+
+    def generic_obj(self, file: str, obj: dict, base: str, ctx: str, depth: int = 0):
+        """Рекурсивный обход неизвестной JSON-структуры.
+
+        Берём CJK-строки и осмысленный латинский текст на любой
+        глубине (до 6 уровней вложенности).
+        """
+        if depth > 6 or not isinstance(obj, dict):
+            return
+        for k, v in obj.items():
+            if k in self._GENERIC_SKIP_KEYS:
+                continue
+            path = f"{base}.{k}" if base else k
+            if isinstance(v, dict):
+                self.generic_obj(file, v, path, ctx, depth + 1)
+            elif isinstance(v, list):
+                for i, item in enumerate(v):
+                    self._generic_walk_value(
+                        file, f"{path}[{i}]", ctx, item, 1)
+            else:
+                self._generic_walk_value(file, path, ctx, v)
+
+    def db_file_generic(self, file: str, data: list, known_fields: list[str]):
+        """DB-файл + добираем кастомные текстовые поля вне known_fields."""
+        # known — уже извлечены через db_file; теперь ищем кастомные
+        for idx, obj in enumerate(data):
+            if not isinstance(obj, dict):
+                continue
+            for k, v in obj.items():
+                if k in known_fields or k in self._GENERIC_SKIP_KEYS:
+                    continue
+                self._generic_walk_value(
+                    file, f"[{idx}].{k}",
+                    f"{file[:-5]} '{obj.get('name') or idx}' / {k}", v)
+
 def _read_json(path: str):
     with open(path, encoding="utf-8") as f:
         return json.load(f)
@@ -502,6 +583,8 @@ def extract(game_dir: str, data_dir: str | None = None,
                 continue
             if fname in DB_FIELDS:
                 ex.db_file(rel, data, DB_FIELDS[fname])
+                # кастомные поля от плагинов (YEP и т.п.) — добираем CJK
+                ex.db_file_generic(rel, data, DB_FIELDS[fname])
             elif fname.startswith("Map") and fname != "MapInfos.json":
                 ex.map_file(rel, data)
             elif fname == "CommonEvents.json":
@@ -512,6 +595,18 @@ def extract(game_dir: str, data_dir: str | None = None,
                 ex.system(rel, data)
             elif fname == "MapInfos.json":
                 ex.map_infos(rel, data)
+            else:
+                # неизвестный JSON (кастомные файлы плагинов):
+                # только изолированные CJK-строки — текст, без кода
+                if isinstance(data, dict):
+                    ex.generic_obj(rel, data, "", f"file {fname}")
+                elif isinstance(data, list):
+                    for idx, item in enumerate(data):
+                        if isinstance(item, dict):
+                            ex.generic_obj(rel, item, f"[{idx}]",
+                                           f"file {fname} #{idx}")
+                        elif isinstance(item, str) and ex._generic_cjk(item):
+                            ex.add(rel, f"[{idx}]", f"file {fname} #{idx}", item)
         elif fname.lower().endswith(".rpgmvm"):
             data = _read_rpgm_map(game_dir, os.path.join(root, fname))
             if data is None:
