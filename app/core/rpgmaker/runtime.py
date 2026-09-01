@@ -124,7 +124,7 @@ def _ensure_plugins_entry(game_dir: str, plugin_name: str = RUNTIME_PLUGIN_NAME)
         return False
     path = os.path.join(game_dir, rel.replace("/", os.sep))
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             text = f.read()
     except OSError:
         return False
@@ -145,9 +145,13 @@ def _ensure_plugins_entry(game_dir: str, plugin_name: str = RUNTIME_PLUGIN_NAME)
         if idx < 0:
             return False
         head = text[:idx].rstrip()
-        if head.endswith(","):
-            head = head[:-1]
-        new_text = head + ",\n" + entry + "\n" + text[idx:]
+        # пустой массив: var $plugins = []  -> без ведущей запятой
+        if head.endswith("["):
+            new_text = head + entry + "\n" + text[idx:]
+        else:
+            if head.endswith(","):
+                head = head[:-1]
+            new_text = head + ",\n" + entry + "\n" + text[idx:]
     try:
         with open(path, "w", encoding="utf-8", newline="\n") as f:
             f.write(new_text)
@@ -164,7 +168,7 @@ def _remove_plugins_entry(game_dir: str, plugin_name: str = RUNTIME_PLUGIN_NAME)
     if not os.path.isfile(path):
         return False
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             text = f.read()
     except OSError:
         return False

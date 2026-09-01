@@ -31,7 +31,7 @@ class FileView:
         if body is None:
             return None
         try:
-            return body.decode("utf-8")
+            return body.decode("utf-8-sig")
         except UnicodeDecodeError:
             return None
 

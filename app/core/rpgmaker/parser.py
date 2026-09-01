@@ -199,7 +199,7 @@ def _read_plugins(path: str, variant: str = "") -> list | None:
     (страховка для нестандартных деплоев).
     """
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             text = f.read()
     except (OSError, UnicodeDecodeError):
         return None
@@ -355,8 +355,15 @@ class _Extractor:
                     self.add(file, f"{p}[{j}]",
                              f"{context} / plugin", v)
             elif code == CMD_PLUGIN_MV and params:
-                self.add(file, f"{p}[0]",
-                         f"{context} / plugin (MV)", params[0])
+                # MV plugin command — строка вида "Command arg...". Переводим
+                # только если в строке есть CJK (японский текст для игрока);
+                # иначе это код вроде "SetSwitch 1 true" — перевод ломает
+                # плагин (true→истинный → ReferenceError, см. репорт).
+                raw = params[0]
+                if isinstance(raw, str) and raw.strip():
+                    if _JS_CJK_RE.search(raw):
+                        self.add(file, f"{p}[0]",
+                                 f"{context} / plugin (MV)", raw)
             elif code in (CMD_SCRIPT, CMD_SCRIPT_CONT) and params:
                 n = 0
                 for s in extract_js_strings(params[0]):
@@ -468,6 +475,13 @@ class _Extractor:
         s = s.strip()
         if not s or len(s) > 600:
             return False
+        # пути к файлам/ресурсам — даже с CJK не переводим (имя файла)
+        # audio/bgm/戦闘曲.ogg, img/pictures/xxx.png, http://, data/...
+        if re.search(r"[\\/]", s) and re.search(r"\.[A-Za-z0-9]{1,5}\s*$", s):
+            # содержит слэш и расширение — вероятно путь, а не текст для игрока
+            return False
+        if s.lower() in ("true", "false", "null", "undefined", "nan", "none"):
+            return False
         if _JS_CJK_RE.search(s):
             return True
         return js_text_candidate(s)
@@ -528,7 +542,7 @@ class _Extractor:
                     f"{file[:-5]} '{obj.get('name') or idx}' / {k}", v)
 
 def _read_json(path: str):
-    with open(path, encoding="utf-8") as f:
+    with open(path, encoding="utf-8-sig") as f:
         return json.load(f)
 
 
@@ -624,7 +638,7 @@ def extract(game_dir: str, data_dir: str | None = None,
 # ── Внедрение ──
 
 def _detect_indent(path: str) -> int | None:
-    with open(path, encoding="utf-8") as f:
+    with open(path, encoding="utf-8-sig") as f:
         head = f.read(64)
     return 2 if head.startswith("{\n") or head.startswith("[\n") else None
 
@@ -725,7 +739,7 @@ def apply(game_dir: str, entries: list[TranslationEntry],
         if not rel.endswith(".json"):
             # js-плагин: заменяем литералы по содержимому
             try:
-                with open(abs_path, encoding="utf-8") as f:
+                with open(abs_path, encoding="utf-8-sig") as f:
                     code = f.read()
             except (OSError, UnicodeDecodeError):
                 continue

@@ -2,6 +2,19 @@
 
 All notable changes to the project. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: `X.Y` — `X` is the update number (new features), `Y` fixes for the last update (e.g. `154.6`).
 
+## [7.4] — 2026-09-01
+
+### Added
+- **RPG Maker: гибридный механизм перевода** `app/engines/rpgmaker/__init__.py:101` — `data/*.json`/`Map*.json` (включая шифрованные `Map*.rpgmvm`) переводятся только в памяти через `ob_runtime.js` (`ob_translation/<lang>.json`), файлы игры не трогаются; `js/plugins/*.js` патчатся заменой строковых литералов (`parser.apply` для `js/plugins`), т.к. runtime-обход `$data` их не покрывает. Для Electron/asar — overlay + live (CDP/мост) без репака. Читы сохранены: MZ — CDP `tentacle.py:PAYLOAD`, MV — `octopus_ob.js` (`PAYLOAD` + пустой `tr`).
+
+### Fixed
+- **RPG Maker: `ReferenceError: истинный is not defined` + битый звук** — `true/false/null/undefined/NaN` маскируются как `<xN/>` (`mask.py:13` `_CODE_RE`), иначе `true` в `SetSwitch 1 true` / `フラグ true` переводилось в `истинный` и `eval`-илось как идентификатор. `audio/bgm/戦闘曲.ogg` с CJK теперь не извлекается как текст (`parser.py:460` проверка пути `r"[\\/]"`+`r"\.[A-Za-z0-9]{1,5}$"`). `CMD 356` (MV plugin command) теперь извлекается только с CJK (`parser.py:357`), `SetSwitch 1 true` без CJK скипается.
+- **RPG Maker: пустой `plugins.js` ломал игру** `runtime.py:144`/`mv_bridge.py:314` — `var $plugins = []` → `var $plugins = [,{"ob_runtime"}]` (ведущая запятая). Фикс `if head.endswith("[")`.
+- **RPG Maker: удаление плагина ломало `plugins.js`** `mv_bridge.py:429` — `depth=0` обрывался на `parameters:{}` (`{{"ob_runtime","parameters":{}}}` → `[}}\n];`). Фикс `depth=1`.
+- **RPG Maker: потеря токенов `<xN/>` ломала коды `\C[]`** `service.py:369` — `flush()` при `!validate` делал `engine.translate([original])` без маски, коды переводились. Теперь `validate||tokens_present ? unmask : retry masked single else original`.
+- **RPG Maker: BOM `utf-8-sig`** `fileview.py:27`, `parser.py:202,531,627`, `mv_bridge.py:271,296,355,381`, `runtime.py:127,171` — файлы с BOM теперь читаются корректно, `json.load` не падает.
+- **MV bridge / runtime `plugins.js`/`ob_runtime.js` теперь читаются как `utf-8-sig`** — стабильно для любых деплоев (`www/data`/`www/js`).
+
 ## [7.3] — 2026-08-22
 
 ### Added

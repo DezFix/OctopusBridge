@@ -268,7 +268,7 @@ def ensure_bridge_registered(game_dir: str, cheats_payload: str,
     old_dict = "{}"
     if not need_write:
         try:
-            with open(plugin_path, encoding="utf-8") as f:
+            with open(plugin_path, encoding="utf-8-sig") as f:
                 src = f.read()
         except OSError:
             src = ""
@@ -293,7 +293,7 @@ def _ensure_plugins_entry(game_dir: str) -> bool:
     if not os.path.isfile(path):
         return False
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             text = f.read()
     except OSError:
         return False
@@ -315,9 +315,12 @@ def _ensure_plugins_entry(game_dir: str) -> bool:
         if idx < 0:
             return False
         head = text[:idx].rstrip()
-        if head.endswith(","):
-            head = head[:-1]
-        new_text = head + ",\n" + entry + "\n" + text[idx:]
+        if head.endswith("["):
+            new_text = head + entry + "\n" + text[idx:]
+        else:
+            if head.endswith(","):
+                head = head[:-1]
+            new_text = head + ",\n" + entry + "\n" + text[idx:]
     try:
         with open(path, "w", encoding="utf-8", newline="\n") as f:
             f.write(new_text)
@@ -349,7 +352,7 @@ def update_tr_dict(game_dir: str, entries: list) -> int:
         return 0
     path = os.path.join(game_dir, *plugin_rel(game_dir).split("/"))
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             src = f.read()
     except OSError:
         return 0
@@ -375,7 +378,7 @@ def unregister_bridge(game_dir: str) -> bool:
     path = os.path.join(game_dir, *plugins_js_rel(game_dir).split("/"))
     if os.path.isfile(path):
         try:
-            with open(path, encoding="utf-8") as f:
+            with open(path, encoding="utf-8-sig") as f:
                 text = f.read()
         except OSError:
             text = ""
@@ -424,7 +427,7 @@ def _remove_entry_by_name(text: str, name: str) -> str:
     if start < 0:
         return text
     end = start + 1
-    depth = 0
+    depth = 1  # уже внутри внешнего {
     while end < len(text):
         ch = text[end]
         if ch == "{":

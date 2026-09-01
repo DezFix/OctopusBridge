@@ -20,6 +20,11 @@ _CODE_RE = re.compile(
     r'|</?[A-Za-z][^>]{0,30}>'    # <center>, </center> — теги плагинов
     r'|\[\['                      # [[ — экранированная скобка Ren'Py
     r'|\[[^\[\]\n]{1,120}\]'      # [expr] — интерполяция Ren'Py (см. guard)
+    r'|\btrue\b'                  # JS/CSS булевы — не переводим, иначе ReferenceError
+    r'|\bfalse\b'
+    r'|\bnull\b'
+    r'|\bundefined\b'
+    r'|\bNaN\b'
     r')'
 )
 

@@ -368,9 +368,30 @@ class Translator:
                     zip(batch_holders, translated):
                 if validate(masked_tr, codes):
                     text = unmask(masked_tr, codes)
+                elif tokens_present(masked_tr):
+                    # мягкая: часть токенов есть — восстанавливаем что можем
+                    text = unmask(masked_tr, codes)
                 else:
-                    text = self.engine.translate(
-                        [holders[0].original], src_lang, tgt_lang)[0]
+                    # токены потеряны — одиночный masked ретрай, иначе оригинал
+                    # (перевод оригинала без маски ломает коды \C[..] и крашит игру)
+                    try:
+                        # найдём исходный masked для этой записи
+                        idx = batch_holders.index((holders, codes, lead, trail))
+                        orig_masked = batch_src[idx] if idx < len(batch_src) else ""
+                    except ValueError:
+                        orig_masked = ""
+                    if orig_masked:
+                        try:
+                            retry = self.engine.translate(
+                                [orig_masked], src_lang, tgt_lang)[0]
+                            if validate(retry, codes) or tokens_present(retry):
+                                text = unmask(retry, codes)
+                            else:
+                                text = holders[0].original
+                        except Exception:  # noqa: BLE001
+                            text = holders[0].original
+                    else:
+                        text = holders[0].original
                 if not text.strip():
                     text = holders[0].original   # пустое -> оригинал
                 text = _reattach(text, lead, trail)

@@ -99,13 +99,22 @@ class RpgMakerModule(EngineModule):
             return parser.extract(proj, variant=self.variant)
 
     def apply(self, game_dir: str, entries: list, **kwargs) -> dict:
-        """Вариант 3 — runtime-overlay: не трогаем data/*.json.
+        """Гибридный механизм: runtime-overlay для данных + file-patch для плагинов + live.
 
-        Переводы пишутся в ob_translation/<lang>.json (Twine-style,
-        изолированный JSON — только текст, без кода), рантайм-плагин
-        ob_runtime.js подменяет текст в памяти. Оригинальные файлы игры
-        остаются нетронутыми — игры не ломаются.
-        Legacy file-патч (parser.apply) оставлен только для отката.
+        - `data/*.json`, `Map*.json` (включая .rpgmvm) — только runtime-overlay
+          (`ob_translation/<lang>.json` + `js/plugins/ob_runtime.js`), файлы
+          игры не трогаем → не ломается на любых играх/плагинах.
+        - `js/plugins/*.js` — file-patch заменой строковых литералов
+          (`parser.apply` для плагинов, только `js/plugins` entries), т.к.
+          runtime-обход `$data` их не покрывает. Для asar — патч архива
+          через `_apply_asar` (только плагины), иначе live-перевод покрывает.
+        - `www`-деплой, Electron/asar, шифрованные карты — overlay + live
+          (CDP/мост) без модификации архива.
+        - Читы (PAYLOAD) — отдельно через CDP (MZ) или `octopus_ob.js` (MV).
+
+        Максимальное извлечение (generic + DB + events + plugins) сохранено,
+        но с защитой: пути к файлам, `true/false/null`, note/meta, команды
+        `356` с кодом не извлекаются (см. parser._generic_text, mask).
         """
         from app.core.rpgmaker import runtime as rt
         # мигрируем legacy file-патч если он был: откатываем один раз
@@ -118,11 +127,65 @@ class RpgMakerModule(EngineModule):
                 parser_mod.restore_original(game_dir)
         except Exception:  # noqa: BLE001
             pass
-        stats = rt.install_runtime(
-            game_dir, entries,
-            target_lang=kwargs.get("target_lang", "ru"))
-        # MV: мост для читов/live остаётся, но без вшивания словаря
-        # (словарь теперь в ob_runtime.js)
+
+        target_lang = kwargs.get("target_lang", "ru")
+
+        # ——— разделение: runtime (JSON-данные) vs file-patch (js/plugins) ———
+        # file-путь в entry.file — относительный ("data/Actors.json" или
+        # "js/plugins/YEP_Core.js"). Фильтруем по префиксу.
+        def _is_plugin_js(e) -> bool:
+            f = getattr(e, "file", "") if not isinstance(e, dict) else e.get("file", "")
+            return "js/plugins" in f
+
+        def _is_translatable(e) -> bool:
+            t = getattr(e, "translation", "") if not isinstance(e, dict) else e.get("translation", "")
+            s = getattr(e, "status", "") if not isinstance(e, dict) else e.get("status", "")
+            o = getattr(e, "original", "") if not isinstance(e, dict) else e.get("original", "")
+            return bool(o and t and t.strip() and s != "skip")
+
+        plugin_entries = [e for e in entries if _is_plugin_js(e) and _is_translatable(e)]
+        json_entries = [e for e in entries if not _is_plugin_js(e)]
+
+        stats: dict = {"files": 0, "strings": 0, "runtime": False, "backups": []}
+
+        # 1) runtime-overlay для JSON-данных (включая зашифрованные Map*.rpgmvm)
+        # передаём только JSON-entries, плагины идут отдельным file-patch (п.2)
+        if any(_is_translatable(e) for e in json_entries):
+            rt_stats = rt.install_runtime(game_dir, json_entries, target_lang=target_lang)
+            stats.update(rt_stats)
+        else:
+            # нет JSON-переводов — runtime не нужен (только плагины)
+            stats["runtime"] = False
+            stats["strings"] = 0
+
+        # 2) file-patch для js/plugins/*.js (только диск, не asar-live)
+        if plugin_entries:
+            if self._asar:
+                # Electron: патчим архив напрямую (только плагины)
+                try:
+                    p_stats = self._apply_asar(game_dir, plugin_entries, target_lang=target_lang)
+                    stats["files"] = stats.get("files", 0) + p_stats.get("files", 0)
+                    stats["strings"] = stats.get("strings", 0) + p_stats.get("strings", 0)
+                    if p_stats.get("backups"):
+                        stats["backups"] = stats.get("backups", []) + p_stats.get("backups", [])
+                    stats["plugin_files"] = p_stats.get("files", 0)
+                    stats["plugin_strings"] = p_stats.get("strings", 0)
+                except Exception:  # noqa: BLE001
+                    pass
+            else:
+                try:
+                    from . import parser
+                    p_stats = parser.apply(game_dir, plugin_entries, target_lang=target_lang)
+                    stats["files"] = stats.get("files", 0) + p_stats.get("files", 0)
+                    stats["strings"] = stats.get("strings", 0) + p_stats.get("strings", 0)
+                    if p_stats.get("backups"):
+                        stats["backups"] = stats.get("backups", []) + p_stats.get("backups", [])
+                    stats["plugin_files"] = p_stats.get("files", 0)
+                    stats["plugin_strings"] = p_stats.get("strings", 0)
+                except Exception:  # noqa: BLE001
+                    pass
+
+        # 3) MV: мост для читов/live (всегда, даже если нет переводов — нужен для читов)
         if self.variant == "mv":
             try:
                 from app.core.rpgmaker import mv_bridge
