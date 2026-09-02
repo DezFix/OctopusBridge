@@ -344,16 +344,19 @@ class _Extractor:
                 args = params[3]
                 if isinstance(args, dict):
                     for k, v in args.items():
-                        self.add(file, f"{p}[3].{k}",
-                                 f"{context} / plugin", v)
+                        if isinstance(v, str) and self._generic_text(v):
+                            self.add(file, f"{p}[3].{k}",
+                                     f"{context} / plugin", v)
                 elif isinstance(args, list):
                     for j, v in enumerate(args):
-                        self.add(file, f"{p}[3][{j}]",
-                                 f"{context} / plugin", v)
+                        if isinstance(v, str) and self._generic_text(v):
+                            self.add(file, f"{p}[3][{j}]",
+                                     f"{context} / plugin", v)
             elif code == CMD_PLUGIN_CONT:
                 for j, v in enumerate(params):
-                    self.add(file, f"{p}[{j}]",
-                             f"{context} / plugin", v)
+                    if isinstance(v, str) and self._generic_text(v):
+                        self.add(file, f"{p}[{j}]",
+                                 f"{context} / plugin", v)
             elif code == CMD_PLUGIN_MV and params:
                 # MV plugin command — строка вида "Command arg...". Переводим
                 # только если в строке есть CJK (японский текст для игрока);
@@ -483,6 +486,10 @@ class _Extractor:
         if s.lower() in ("true", "false", "null", "undefined", "nan", "none"):
             return False
         if _JS_CJK_RE.search(s):
+            return True
+        # Cyrillic / any non-ASCII single word (Привет, арг1) — plugin args
+        # с кириллицей должны извлекаться даже без пробела (см. тест 357)
+        if re.search(r"[^\x00-\x7F]", s):
             return True
         return js_text_candidate(s)
 
