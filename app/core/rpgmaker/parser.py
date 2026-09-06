@@ -150,6 +150,62 @@ def extract_js_strings(code: str) -> list[str]:
     return [raw for raw, _, _, _ in iter_js_strings(code)]
 
 
+_CMP_TAIL_RE = re.compile(r"(===|!==|==|!=)\s*$")
+_CASE_TAIL_RE = re.compile(r"\bcase$")
+_PROP_ACCESS_RE = re.compile(r"[A-Za-z_$][\w$]*\s*\[$")
+_OBJKEY_HEAD_RE = re.compile(r"^\s*:")
+
+
+def _is_code_literal(code: str, start: int, end: int) -> bool:
+    """True — литерал используется кодом как идентификатор, а не текст.
+
+    Перевод таких строк ломает логику плагина БЕЗ ошибки синтаксиса
+    (тихий софт-брейк): сравнение `command==='探索開始'` никогда не
+    совпадёт, `args["変数"]` даст undefined, ключ `{"キー":...}`
+    не найдётся. Диагностика: Очикано TRP_SkitMZ (`command==='...'`),
+    Keke_FreeCamera (`args["..."]`), NRP (`getParam`-ключи).
+    Проверяем только ближайшее окружение кавычек:
+    - слева `===`/`!==`/`==`/`!=` или `case ` → сравнение/ветка;
+    - справа `:` при `{`/`,` слева → ключ объекта;
+    - слева `ident[` (args/params/...) → доступ к свойству.
+    Массивы-литералы (`= ["..."]`, `(["..."])`) не трогаем: там текст.
+    """
+    left = code[max(0, start - 24):start].rstrip()
+    right = code[end:end + 4]
+    if _CMP_TAIL_RE.search(left) or _CASE_TAIL_RE.search(left):
+        return True
+    if _OBJKEY_HEAD_RE.match(right):
+        stripped = left
+        if stripped.endswith("{") or stripped.endswith(","):
+            return True
+    if right.lstrip().startswith("]") and _PROP_ACCESS_RE.search(left):
+        return True
+    return False
+
+
+def _js_escape_translation(text: str, quote: str) -> str:
+    """Экранирует перевод для вставки в JS-строковый литерал.
+
+    Сырые U+2028/U+2029 и C0-контролы в исходнике .js — SyntaxError
+    «Invalid or unexpected token» при старте игры (Очикано, 7.5):
+    движок парсит плагины как JS, а не как JSON. json.dumps их НЕ
+    экранирует (валидны в JSON), поэтому руками: \\n/\\r/\\t читаемо,
+    остальное \\uXXXX. Кавычка и бэкслеш — как раньше.
+    """
+    # сначала быстрые замены односимвольных
+    esc = (text
+           .replace("\\", "\\\\")
+           .replace("\r", "\\r")
+           .replace("\n", "\\n")
+           .replace("\t", "\\t")
+           .replace(quote, "\\" + quote))
+    # U+2028/U+2029 + остальные C0-контролы и DEL → \uXXXX
+    def _repl(m: re.Match) -> str:
+        return f"\\u{ord(m.group(0)):04x}"
+
+    return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u2028\u2029]", _repl, esc)
+
+
 def js_text_candidate(s: str) -> bool:
     """Подходит ли литерал для перевода: текст, а не идентификатор/путь."""
     if not s or len(s) < 2 or len(s) > 400:
@@ -289,11 +345,12 @@ def extract_plugins(game_dir: str, data_dir: str, on_skip=None,
             continue
         rel = f"{js_dir}/plugins/{js_name}.js"
         n = 0
-        for s in extract_js_strings(code):
-            if s.strip() in param_keys:
+        for raw, _q, start, end in iter_js_strings(code):
+            if raw.strip() in param_keys:
                 continue
-            if _plugin_text_candidate(s):
-                ex.add(rel, f"{_PLUGIN_MARK}{n}", f"plugin {name}", s)
+            if _plugin_text_candidate(raw) and not _is_code_literal(
+                    code, start, end):
+                ex.add(rel, f"{_PLUGIN_MARK}{n}", f"plugin {name}", raw)
                 n += 1
     # ── значения параметров из списка плагинов (plugins.js) ──
     # Плагинные меню/опции (MOG_TitleCommands, AnotherNewGame, TitleItemEraser
@@ -754,9 +811,7 @@ def _replace_js_strings(code: str, original: str,
     result = code
     for raw, q, start, end in reversed(matches):
         if raw == original:
-            esc = (translation
-                   .replace("\\", "\\\\").replace("\r", "\\r")
-                   .replace("\n", "\\n").replace(q, "\\" + q))
+            esc = _js_escape_translation(translation, q)
             result = result[:start] + q + esc + q + result[end:]
     return result
 
@@ -860,12 +915,17 @@ def _apply_plugin_params_file(abs_path: str, items: list,
             on_skip(e, "param value not found")
     if not written:
         return False, 0
+    # plugins.js — .js-исходник (парсится движком как JS, не JSON.parse):
+    # сырые U+2028/U+2029 из переводов дали бы тот же SyntaxError, что
+    # в _replace_js_strings (Очикано). \\uXXXX валидны и в JS, и в JSON.
     try:
+        blob = json.dumps(arr, ensure_ascii=False,
+                          indent=1 if is_json else None)
+        blob = blob.replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
         if is_json:
-            new_text = json.dumps(arr, ensure_ascii=False, indent=1)
+            new_text = blob
         else:
-            new_text = (head + json.dumps(arr, ensure_ascii=False)
-                        + tail)
+            new_text = head + blob + tail
     except (ValueError, TypeError):
         return False, 0
     try:

@@ -1072,4 +1072,80 @@ with tempfile.TemporaryDirectory() as td:
 print("   OK")
 
 print()
+print("36) _js_escape_translation: U+2028/29, C0-контролы, кавычки...")
+import re as _re36
+from app.core.rpgmaker.parser import _js_escape_translation as _esc
+_LS1, _LS2 = chr(0x2028), chr(0x2029)
+out = _esc("a" + _LS1 + "b" + _LS2 + "c\\d'e\"f\ng\th" + chr(1) + "i", "'")
+assert _LS1 not in out and _LS2 not in out, ascii(out)
+assert chr(1) not in out
+assert "\\u2028" in out and "\\u2029" in out and "\\u0001" in out
+assert "\\\\" in out and "\\'" in out and "\\n" in out and "\\t" in out
+# ручной JS-unescape крутится обратно в исходник (валидность литерала)
+_SRC36 = "a" + _LS1 + "b" + _LS2 + "c\\d'e\"f\ng\th" + chr(1) + "i"
+_tmp = out.replace("\\\\", "\x00")
+_tmp = _tmp.replace("\\'", "'").replace('\\"', '"')
+_tmp = _tmp.replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t")
+_tmp = _re36.sub(r"\\u([0-9a-f]{4})",
+                 lambda m: chr(int(m.group(1), 16)), _tmp)
+assert _tmp.replace("\x00", "\\") == _SRC36, ascii(_tmp)
+print("   OK")
+
+print()
+print("37) _is_code_literal: сравнения/ключи/args[] — код, "
+      "массивы/текст — нет...")
+from app.core.rpgmaker.parser import _is_code_literal as _icl
+Q = "'"
+assert _icl("if(command===" + Q + "SKIT" + Q + "){}", 13, 19)
+assert _icl("args[" + '"' + "key" + '"' + "]", 5, 10)
+assert _icl("{ " + '"' + "k" + '"' + ": 1 }", 2, 5)
+assert _icl("switch(x){case " + Q + "a" + Q + ":}", 15, 18)
+assert not _icl("var a = [" + '"' + "text" + '"' + "]", 9, 15)
+assert not _icl("var a = " + '"' + "text" + '"' + ";", 8, 14)
+assert not _icl("msg(" + Q + "hello" + Q + ")", 4, 11)
+print("   OK")
+
+print()
+print("38) apply: перевод с U+2028 не ломает синтаксис плагина...")
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "js", "plugins"))
+    os.makedirs(os.path.join(td, "data"))
+    open(os.path.join(td, "js", "rpg_core.js"), "w").close()
+    with open(os.path.join(td, "js", "plugins.js"), "w",
+              encoding="utf-8") as f:
+        f.write("var $plugins = [\n"
+                "{\"name\":\"P\",\"status\":true,\"parameters\":{"
+                "\"label\":\"決定\"}},\n"
+                "];\n")
+    with open(os.path.join(td, "js", "plugins", "P.js"), "w",
+              encoding="utf-8") as f:
+        f.write("if(command==='探索開始'){}\n"
+                "var msg='こんにちは';\n")
+    with open(os.path.join(td, "data", "System.json"), "w",
+              encoding="utf-8") as f:
+        json.dump({"gameTitle": "Игра"}, f)
+    entries = parser.extract_plugins(td, "data", variant="mv")
+    by_orig = {e.original: e for e in entries}
+    # команда-идентификатор не извлекается (иначе dispatch мёртв)
+    assert "探索開始" not in by_orig, list(by_orig)[:10]
+    assert "こんにちは" in by_orig and "決定" in by_orig
+    for e in entries:
+        e.translation = "x" + chr(0x2028) + "y" + chr(0x2029) + "z"
+        e.status = "translated"
+    stats = parser.apply(td, entries)
+    assert stats["strings"] == 2, stats
+    pj = open(os.path.join(td, "js", "plugins", "P.js"),
+              encoding="utf-8").read()
+    assert chr(0x2028) not in pj and chr(0x2029) not in pj
+    assert "\\u2028" in pj and "\\u2029" in pj
+    assert "command==='探索開始'" in pj, "код сравнения цел"
+    pl = open(os.path.join(td, "js", "plugins.js"),
+              encoding="utf-8").read()
+    assert chr(0x2028) not in pl and "\\u2028" in pl
+    assert json.loads(pl[pl.index("["):pl.rindex("]") + 1]
+                      )[0]["parameters"]["label"] == (
+                          "x" + chr(0x2028) + "y" + chr(0x2029) + "z")
+print("   OK")
+
+print()
 print("ВСЕ ТЕСТЫ RPG MAKER ПРОШЛИ")

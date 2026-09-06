@@ -272,10 +272,14 @@ def ensure_bridge_registered(game_dir: str, cheats_payload: str,
                 src = f.read()
         except OSError:
             src = ""
+        # сырые U+2028/U+2029 в словаре (писал старый код без
+        # экранирования) — валидный JSON, но SyntaxError в JS-парсере
+        # игры: перегенерируем с js_json-экранированием (Очикано, 7.5)
         need_write = ("__TR_DICT__" in src or
                       f"__octopusBridgeVersion = {BRIDGE_PLUGIN_VERSION}"
                       not in src or
-                      ("__octopus_trInstall" in src and not _dict_ok(src)))
+                      ("__octopus_trInstall" in src and not _dict_ok(src)) or
+                      chr(0x2028) in src or chr(0x2029) in src)
         old_dict = _existing_dict(src)
     if need_write:
         try:

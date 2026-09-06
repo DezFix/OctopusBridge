@@ -2,6 +2,12 @@
 
 All notable changes to the project. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: `X.Y` — `X` is the update number (new features), `Y` fixes for the last update (e.g. `154.6`).
 
+## [7.6] — 2026-09-06
+
+### Fixed
+- **RPG Maker: `SyntaxError Invalid or unexpected token` после перевода (Очикано)** — переводы с сырыми U+2028/U+2029 и C0-контролами вшивались в `.js`-исходники как есть (`json.dumps` их не экранирует — валидны в JSON, но не в JS). Новый `_js_escape_translation` (`parser.py`) экранирует всё опасное при замене литералов в `js/plugins/*.js`; вывод `_apply_plugin_params_file` (`plugins.js`, JSON и JS-форматы) — тоже; `mv_bridge.ensure_bridge_registered` сам детектит и перегенерирует старые словари с сырыми разделителями.
+- **RPG Maker: тихие софт-брейки логики плагинов** — `_is_code_literal` (`parser.py`) больше не извлекает строки-код: сравнения `command==='...'`, `case '...'`, ключи объектов `{"...":}`, доступы `args["..."]`. Их перевод не ронял синтаксис, но убивал dispatch команд и lookup параметров.
+
 ## [7.5] — 2026-09-06
 
 ### Added
