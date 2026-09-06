@@ -303,8 +303,38 @@ if (!window.__octopus_trInit) {
 
   window.__octopus_trApply = function (text) {
     if (typeof text !== "string" || text.length === 0) return text;
-    var t = window.__octopus_tr[text];
-    return (t === undefined || t === null) ? text : t;
+    var d = window.__octopus_tr;
+    if (Object.prototype.hasOwnProperty.call(d, text)) {
+      var exact = d[text];
+      return (exact === undefined || exact === null) ? text : exact;
+    }
+    // Склеенные 401-строки ("line1\nline2"): словарь хранит построчно.
+    // Построчная замена идемпотентна (повторный проход — no-op),
+    // «дублей» оригинал+перевод не даёт (в отличие от substring-замен).
+    if (text.indexOf("\n") >= 0) {
+      var parts = text.split("\n");
+      var changed = false;
+      for (var i = 0; i < parts.length; i++) {
+        if (Object.prototype.hasOwnProperty.call(d, parts[i])) {
+          parts[i] = d[parts[i]];
+          changed = true;
+        } else {
+          var trim = parts[i].trim();
+          if (trim !== parts[i]
+              && Object.prototype.hasOwnProperty.call(d, trim)) {
+            parts[i] = d[trim];
+            changed = true;
+          }
+        }
+      }
+      if (changed) return parts.join("\n");
+    }
+    var whole = text.trim();
+    if (whole !== text
+        && Object.prototype.hasOwnProperty.call(d, whole)) {
+      return d[whole];
+    }
+    return text;
   };
 
   window.__octopus_trInstall = function (obj) {
@@ -327,7 +357,8 @@ if (!window.__octopus_trInit) {
   }
 
   var _trPoll = setInterval(function () {
-    if (typeof Window_Base === "undefined") return;
+    if (typeof Window_Base === "undefined"
+        || typeof Bitmap === "undefined") return;
     clearInterval(_trPoll);
     // диалоги/сообщения: подменяем строку ДО раскрытия escape-кодов,
     // чтобы перевод сохранил \N[..] / \C[..] как есть
@@ -349,6 +380,28 @@ if (!window.__octopus_trInit) {
       var obDName = Game_Map.prototype.displayName;
       Game_Map.prototype.displayName = function () {
         return window.__octopus_trApply(obDName.call(this));
+      };
+    });
+    // ── catch-all для меню/титулов/опций ──
+    // Часть меню рисуется НЕ через convertEscapeCharacters и НЕ из
+    // $data-таблиц (строки уже закэшированы плагинами из parameters
+    // при загрузке, либо собраны кодом). Перехватываем финальную
+    // отрисовку: Bitmap.drawText — точка, через которую проходят
+    // вообще все меню/заголовки/опции. Идемпотентно: повторный
+    // проход по уже переведённому тексту — no-op (ключа нет).
+    trSafePatch(Bitmap.prototype.drawText, function () {
+      var obDraw = Bitmap.prototype.drawText;
+      Bitmap.prototype.drawText = function (text, x, y, w, h, align) {
+        return obDraw.call(this, window.__octopus_trApply(text),
+                           x, y, w, h, align);
+      };
+    });
+    // drawTextEx — текст с escape-кодами (\C[n]...): подменяем ДО
+    // разбора кодов, чтобы перевод сохранил их как есть
+    trSafePatch(Window_Base.prototype.drawTextEx, function () {
+      var obEx = Window_Base.prototype.drawTextEx;
+      Window_Base.prototype.drawTextEx = function (text, x, y) {
+        return obEx.call(this, window.__octopus_trApply(text), x, y);
       };
     });
 
@@ -439,7 +492,29 @@ if (!window.__octopus_trInit) {
       }
       try { window.__octopus_trWalk(window["$dataMap"], 0); }
       catch (e) {}
+      // параметры плагинов ($plugins[i].parameters): часть плагинных
+      // меню уже закэшировала значения при загрузке (до нашего хука),
+      // но всё что читается лениво — подхватит перевод здесь
+      try { window.__octopus_trWalk(window["$plugins"], 0); }
+      catch (e) {}
     }
+    // PluginManager.parameters(): ленивые чтения после нашего хука —
+    // отдаём переведённую копию (оригинал $plugins не портим)
+    trSafePatch(PluginManager.parameters, function () {
+      var obParams = PluginManager.parameters;
+      PluginManager.parameters = function (name) {
+        var p = obParams.call(this, name);
+        if (!p || typeof p !== "object") return p;
+        var out = {};
+        for (var k in p) {
+          if (!Object.prototype.hasOwnProperty.call(p, k)) continue;
+          var v = p[k];
+          out[k] = (typeof v === "string")
+            ? window.__octopus_trApply(v) : v;
+        }
+        return out;
+      };
+    });
     // база грузится асинхронно — ждём все основные таблицы
     var _dbPoll = setInterval(function () {
       for (var j = 0; j < obDbTables.length; j++) {
@@ -651,10 +726,19 @@ class RpgMakerTentacle(CDPTentacle):
     def launch(self, target: str) -> bool:
         exe = target
         if os.path.isdir(target):
-            exe = os.path.join(target, "Game.exe")
+            # имя exe произвольное (Aochikano.exe, tropical-chase.exe...),
+            # а не только Game.exe
+            found = rpgm_variant.find_game_exe(target)
+            if not found:
+                self.error.emit(
+                    f"Не найден исполняемый файл игры в папке: {target} "
+                    f"(нет *.exe кроме хелперов NW.js)")
+                return False
+            exe = found
         if not os.path.isfile(exe):
             self.error.emit(f"Не найден исполняемый файл игры: {exe}")
             return False
+        self.log.emit(f"Запускаю: {os.path.basename(exe)}")
         game_dir = os.path.dirname(exe)
         self._game_dir = game_dir
         self._variant = rpgm_variant.detect_variant(game_dir)
@@ -731,17 +815,27 @@ class RpgMakerTentacle(CDPTentacle):
         self.log.emit(f"Отладка :{port}.")
         if not self._connect_page(port, url_hint=".html", wait=30.0):
             # NW.js мог поднять отладчик на другом порту (занятый
-            # порт/инкремент) — ищем фактический до того, как закрывать
+            # порт/инкремент) — ищем фактический до того, как сдаваться
             actual = probe_game_port(self._pid) if self._pid else 0
             if actual and actual != port:
                 self.log.emit(
                     f"Отладка поднялась на :{actual} — подключаюсь туда.")
                 if self._connect_page(actual, url_hint=".html", wait=10.0):
                     return True
-            if self._proc is not None:
-                self._proc.terminate()
-            self.detach()
-            return False
+            # ВАЖНО: игру НЕ убиваем — перевод через ob_runtime.js
+            # работает и без CDP, а убийство выглядит как
+            # «кнопка не работает» (окно вспыхнуло и закрылось).
+            # Такое бывает при --disable-devtools в package.json
+            # (обе лабораторные игры) — порт просто не поднимается.
+            # attached НЕ эмитим (читов нет), но возвращаем True:
+            # _pid/_proc сохранены для watchdog, welcome_tab покажет
+            # «запущена без читов» и кнопку «Стоп».
+            self.log.emit(
+                "Отладчик недоступен (в package.json есть "
+                "--disable-devtools?) — игра остаётся запущенной, "
+                "перевод работает через ob_runtime.js, "
+                "читы недоступны до перезапуска с отладкой.")
+            return True
         return True
 
     def _launch_mv(self, port: int) -> bool:

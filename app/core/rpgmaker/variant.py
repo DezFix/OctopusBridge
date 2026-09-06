@@ -94,3 +94,47 @@ def plugins_list_rel(variant: str, game_dir: str,
         if os.path.isfile(os.path.join(game_dir, rel.replace("/", os.sep))):
             return rel
     return None
+
+
+# ── поиск запускаемого exe (любое имя, не только Game.exe) ──
+_HELPER_EXE = ("notification_helper", "crashpad", "crash_reporter",
+               "uninstall", "unins", "setup", "nwjc", "update")
+
+
+def find_game_exe(game_dir: str) -> str | None:
+    """Полный путь к запускаемому exe игры в папке (любое имя).
+
+    Лабораторные/релизные сборки называются как угодно
+    (Aochikano.exe, tropical-chase.exe, ...), а не Game.exe.
+    Игнорируем хелперы NW.js (notification_helper.exe и т.п.),
+    из оставшихся берём самый крупный (основной рантайм ~2 МБ,
+    хелперы ~1 МБ). Возвращает None — exe нет.
+    """
+    if os.path.isfile(game_dir):
+        return game_dir if game_dir.lower().endswith(".exe") else None
+    if not os.path.isdir(game_dir):
+        return None
+    # классика первой
+    classic = os.path.join(game_dir, "Game.exe")
+    if os.path.isfile(classic):
+        return classic
+    try:
+        cands: list[tuple[int, str]] = []
+        for name in os.listdir(game_dir):
+            if not name.lower().endswith(".exe"):
+                continue
+            low = name.lower()
+            if any(h in low for h in _HELPER_EXE):
+                continue
+            full = os.path.join(game_dir, name)
+            try:
+                size = os.path.getsize(full)
+            except OSError:
+                size = 0
+            cands.append((size, full))
+    except OSError:
+        return None
+    if not cands:
+        return None
+    cands.sort(reverse=True)
+    return cands[0][1]

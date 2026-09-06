@@ -459,7 +459,7 @@ class WelcomeTab(QWidget):
             self.main.tabs.setCurrentIndex(ti)
 
     def _action_launch_toggle(self):
-        if self.main.session.is_active():
+        if self.main.session.is_active() or self.main.session.is_game_running():
             self._action_stop()
         else:
             self._action_launch()
@@ -481,6 +481,32 @@ class WelcomeTab(QWidget):
 
     def _on_launch_done(self, ok: bool):
         self.main.loading.hide_loading()
+        # _on_session_client/_on_session_error покрывают успех/ошибку
+        # с сигналом, но запуск без CDP (игра висит без attached) и
+        # тихий провал без сигнала оставляли кнопку мёртвой
+        # («Запускаю…», disabled). Доводим состояние здесь.
+        if not ok:
+            self.btn_launch.setEnabled(True)
+            self.btn_launch.setText(TR("dash_launch"))
+            self.btn_launch.setIcon(icon("play"))
+            if self.lbl_session_status.text() == TR("dash_launching"):
+                self.lbl_session_status.setText(TR("dash_session_idle"))
+            return
+        if self.main.session.is_active():
+            return  # _on_session_client уже выставил «Стоп»
+        if self.main.session.is_game_running():
+            # игра открыта, отладчика нет: перевод через ob_runtime.js,
+            # читы недоступны. Кнопка — «Стоп», иначе окно не закрыть.
+            self.btn_launch.setEnabled(True)
+            self.btn_launch.setText(TR("dash_stop"))
+            self.btn_launch.setIcon(icon("stop"))
+            self.lbl_session_status.setText(TR("dash_session_nocdp"))
+            return
+        # ok=True, но процесса нет (MV-фолбэк без attached?) —
+        # разблокируем кнопку, чтобы не залипала
+        self.btn_launch.setEnabled(True)
+        self.btn_launch.setText(TR("dash_launch"))
+        self.btn_launch.setIcon(icon("play"))
 
     def _action_stop(self):
         self.main.stop_session()

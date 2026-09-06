@@ -941,4 +941,135 @@ _bs.server.shutdown()
 print("   OK")
 
 print()
+print("31) find_game_exe: произвольное имя exe, хелперы, приоритет Game.exe...")
+from app.core.rpgmaker.variant import find_game_exe
+with tempfile.TemporaryDirectory() as td:
+    # пустая папка — нечего запускать
+    assert find_game_exe(td) is None
+    # кастомное имя (лабораторные игры) + хелпер NW.js игнорируется
+    custom = os.path.join(td, "Aochikano.exe")
+    helper = os.path.join(td, "notification_helper.exe")
+    open(custom, "w").close()
+    open(helper, "w").close()
+    # хелпер меньше/больше — всё равно выбирается игра, не хелпер
+    with open(helper, "w") as f:
+        f.write("x" * 100)
+    assert find_game_exe(td) == custom, find_game_exe(td)
+    # классика приоритетнее кастома
+    game_exe = os.path.join(td, "Game.exe")
+    open(game_exe, "w").close()
+    assert find_game_exe(td) == game_exe
+    # прямой путь к файлу — как есть
+    assert find_game_exe(custom) == custom
+    assert find_game_exe(os.path.join(td, "нет.exe")) is None
+print("   OK")
+
+print()
+print("32) extract_plugin_params: VALUES меню извлекаются, "
+      "ключи/true/формулы — нет...")
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "js", "plugins"))
+    os.makedirs(os.path.join(td, "data"))
+    open(os.path.join(td, "js", "rpg_core.js"), "w").close()
+    with open(os.path.join(td, "js", "plugins.js"), "w",
+              encoding="utf-8") as f:
+        f.write("var $plugins = [\n"
+                "{\"name\":\"M\",\"status\":true,\"parameters\":{"
+                "\"menuOk\":\"決定\","
+                "\"flag\":\"true\","
+                "\"count\":\"5\","
+                "\"formula\":\"10 + textSize * 5\","
+                "\"nested\":\"[{\\\"name\\\":\\\"エナジードリンク\\\"}]\""
+                "}},\n"
+                "{\"name\":\"Off\",\"status\":false,\"parameters\":{"
+                "\"x\":\"выключен\"}},\n"
+                "];\n")
+    with open(os.path.join(td, "data", "System.json"), "w",
+              encoding="utf-8") as f:
+        json.dump({"gameTitle": "Игра"}, f)
+    entries = parser.extract_plugins(td, "data", variant="mv")
+    by_orig = {e.original: e for e in entries}
+    assert "決定" in by_orig, list(by_orig)[:10]
+    assert by_orig["決定"].file == "js/plugins.js"
+    assert "#plugparam:" in by_orig["決定"].json_path
+    assert "エナジードリンク" in by_orig
+    assert "true" not in by_orig and "5" not in by_orig
+    assert "10 + textSize * 5" not in by_orig, "формула eval не текст"
+    assert not any("выключен" in e.original for e in entries)
+print("   OK")
+
+print()
+print("33) apply_plugin_params: патч VALUES в plugins.js + бэкап...")
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "js", "plugins"))
+    os.makedirs(os.path.join(td, "data"))
+    open(os.path.join(td, "js", "rpg_core.js"), "w").close()
+    with open(os.path.join(td, "js", "plugins.js"), "w",
+              encoding="utf-8") as f:
+        f.write("var $plugins = [\n"
+                "{\"name\":\"M\",\"status\":true,\"parameters\":{"
+                "\"menuOk\":\"決定\",\"flag\":\"true\"}},\n"
+                "];\n")
+    with open(os.path.join(td, "data", "System.json"), "w",
+              encoding="utf-8") as f:
+        json.dump({"gameTitle": "Игра"}, f)
+    entries = parser.extract_plugins(td, "data", variant="mv")
+    assert len(entries) == 1 and entries[0].original == "決定"
+    entries[0].translation = "Выбрать"
+    entries[0].status = "translated"
+    stats = parser.apply(td, entries)
+    assert stats["strings"] == 1, stats
+    text = open(os.path.join(td, "js", "plugins.js"),
+                encoding="utf-8").read()
+    assert "Выбрать" in text and "決定" not in text
+    assert '"flag":"true"' in text.replace(" ", ""), "флаг не тронут"
+    assert '"menuOk"' in text, "ключ не тронут"
+    assert os.path.isfile(os.path.join(td, "backup", "js",
+                                       "plugins.js"))
+    # повторное извлечение видит перевод
+    re_entries = parser.extract_plugins(td, "data", variant="mv")
+    assert any(e.original == "Выбрать" for e in re_entries)
+print("   OK")
+
+print()
+print("34) Пейлоад: multiline trApply + Bitmap/drawTextEx + "
+      "PluginManager.parameters...")
+from app.engines.rpgmaker.tentacle import _TRANSLATION_PAYLOAD as _TP
+assert "parts.join" in _TP, "построчная склейка 401"
+assert "Bitmap.prototype.drawText" in _TP
+assert "drawTextEx" in _TP
+assert "PluginManager.parameters" in _TP
+assert '"$plugins"' in _TP or "$plugins" in _TP
+print("   OK")
+
+print()
+print("35) launch: кастомный exe (Aochikano.exe) находится и запускается...")
+with tempfile.TemporaryDirectory() as td:
+    make_project(td, "mz")
+    custom_exe = os.path.join(td, "Aochikano.exe")
+    open(custom_exe, "w").close()
+    # Game.exe нет — только кастомный (как в лабораторных играх)
+    t = RpgMakerTentacle()
+    t._connect_page = lambda port, url_hint="", wait=20.0: True
+    seen = {}
+    class FakePopen2(FakePopen):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            seen["exe"] = a[0][0]
+    tentacle_mod.subprocess.Popen = FakePopen2
+    tentacle_mod.proc.find_game_processes = lambda *a, **k: []
+    tentacle_mod.browser.free_port = lambda: 7778
+    assert t.launch(td) is True
+    assert seen.get("exe") == custom_exe, seen
+    # папка без exe — понятная ошибка, а не молчание
+    with tempfile.TemporaryDirectory() as empty:
+        os.makedirs(os.path.join(empty, "data"))
+        t2 = RpgMakerTentacle()
+        errs = []
+        t2.error.connect(lambda s: errs.append(s))
+        assert t2.launch(empty) is False
+        assert errs and "exe" in errs[0].lower() or "исполняемый" in errs[0]
+print("   OK")
+
+print()
 print("ВСЕ ТЕСТЫ RPG MAKER ПРОШЛИ")

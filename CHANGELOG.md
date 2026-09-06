@@ -2,6 +2,21 @@
 
 All notable changes to the project. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: `X.Y` — `X` is the update number (new features), `Y` fixes for the last update (e.g. `154.6`).
 
+## [7.5] — 2026-09-06
+
+### Added
+- **RPG Maker: извлечение текстовых VALUES параметров плагинов** (`parser.py:extract_plugin_params`) — меню/опции плагинов (`SceneCustomMenu` товары/достижения, `Mano_InputConfig` клавиши `決定/キャンセル/ダッシュ`, титулы MOG) читаются из `PluginManager.parameters()` и раньше не переводились вообще. Значения патчатся файлом в `plugins.js` (`_apply_plugin_params_file`, JSON и JS-форматы, бэкап), ключи/флаги/числа не трогаются.
+- **RPG Maker: catch-all хуки меню** — `Bitmap.prototype.drawText` + `Window_Base.drawTextEx` + ленивый хук `PluginManager.parameters` + обход `$plugins` в `obRefreshData` (`tentacle.py:_TRANSLATION_PAYLOAD`). Покрывают строки, закэшированные плагинами и собранные кодом мимо `$data`.
+- **RPG Maker: построчный `trApply`** — склеенные 401-строки (`line1\nline2`) переводятся построчно, идемпотентно, без дублей оригинал+перевод.
+- **RPG Maker: запуск игр с произвольным exe** (`variant.py:find_game_exe`) — `Aochikano.exe`, `tropical-chase.exe` и т.п. вместо хардкода `Game.exe`; хелперы NW.js игнорируются. Статус «запущена без читов» (`dash_session_nocdp`), кнопка превращается в «Стоп».
+
+### Fixed
+- **RPG Maker: кнопка запуска не работала** — три причины: хардкод `Game.exe` (`tentacle.py:651`, в лабораторных играх его нет); `find_game_processes` не видел кастомные exe (только `game.exe/nw.exe`); `_on_launch_done` не разблокировал кнопку без сигнала (`welcome_tab.py:482`, вечное «Запускаю…»); при недоступном CDP (`--disable-devtools` в обеих лабораторных играх) игра убивалась и выглядело как «не запускается» — теперь остаётся открытой с переводом через `ob_runtime.js`.
+- **RPG Maker: меню переведены частично** — параметры плагинов не извлекались (см. Added); `trApply` был exact-only и не брал склейки/пробелы; меню мимо `$data` не хукались.
+- **RPG Maker: формулы в параметрах больше не переводятся** (`_generic_text`: ASCII-идентификатор + оператор, `${`, `=>` — скип, напр. `10 + textSize * 5` для eval).
+- **RPG Maker: код-обрывки из template-литералов не извлекаются** (`_plugin_text_candidate`: `\n` + `);`/`PluginManager`/`function` — скип, file-patch таких «строк» рвал бы синтаксис).
+- **RPG Maker: restore воскрешал `ob_runtime` в `plugins.js`** — file-patch шёл после runtime и бэкап списка снимался уже с записью. Порядок: сначала file-patch, потом runtime.
+
 ## [7.4] — 2026-09-01
 
 ### Added

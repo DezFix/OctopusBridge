@@ -11,8 +11,15 @@ import psutil
 
 # Характерные имена исполняемых файлов движков (нижний регистр, без пути)
 _RPGM_NAMES = {"game.exe", "nw.exe", "nwjs.exe", "rpgmaker.exe"}
+# хелперы NW.js — не игра, даже если лежат в папке игры
+_RPGM_HELPER_HINTS = ("notification_helper", "crashpad", "crash_reporter",
+                      "nwjc", "update", "uninstall", "unins", "setup")
 _RENPY_NAMES_SUFFIX = (".exe",)
 _RENPY_HINTS = ("renpy",)
+
+
+def _is_rpgm_helper(name_lower: str) -> bool:
+    return any(h in name_lower for h in _RPGM_HELPER_HINTS)
 
 
 def pid_exists(pid: int) -> bool:
@@ -131,9 +138,29 @@ def find_game_processes(engine_key: str,
             match = False
             cmdline: list[str] = []
             if engine_key == "rpgmaker":
-                if name in _RPGM_NAMES:
+                if name in _RPGM_NAMES and not _is_rpgm_helper(name):
                     cmdline = cmdline_of(info["pid"])
                     match = is_main_chromium_process(cmdline)
+                elif norm_dir and name.endswith(".exe") \
+                        and not _is_rpgm_helper(name):
+                    # игра с произвольным именем exe (Aochikano.exe,
+                    # tropical-chase.exe): считаем игрой любой главный
+                    # Chromium-процесс, чей exe лежит в папке игры
+                    # (рядом package.json или data/System.json)
+                    try:
+                        in_dir = os.path.normpath(exe).lower().startswith(
+                            norm_dir)
+                    except (ValueError, OSError):
+                        in_dir = False
+                    if in_dir:
+                        cmdline = cmdline_of(info["pid"])
+                        if is_main_chromium_process(cmdline):
+                            root = os.path.dirname(exe)
+                            if os.path.isfile(os.path.join(
+                                    root, "package.json")) or os.path.isfile(
+                                    os.path.join(root, "data",
+                                                 "System.json")):
+                                match = True
             elif engine_key == "renpy":
                 match = name.endswith(_RENPY_NAMES_SUFFIX) and \
                     _looks_like_renpy(exe, game_dir)

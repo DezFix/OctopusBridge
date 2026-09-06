@@ -41,6 +41,18 @@ class GameSession(QObject):
     def is_active(self) -> bool:
         return self._tentacle is not None and self._tentacle.is_attached()
 
+    def is_game_running(self) -> bool:
+        """Процесс игры жив (даже без CDP-подключения — перевод идёт
+        через ob_runtime.js, читы недоступны)."""
+        pid = None
+        if self._tentacle is not None:
+            try:
+                pid = self._tentacle.game_pid()
+            except Exception:  # noqa: BLE001
+                pid = None
+        pid = pid or self._pid
+        return bool(pid and proc.pid_exists(pid))
+
     def send_key(self, key: str, code: str = "", keyCode: int = 0,
                  windowsKeyCode: int = 0) -> bool:
         if self._tentacle:

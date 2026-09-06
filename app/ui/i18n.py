@@ -120,6 +120,10 @@ _STRINGS = {
         "en": "Game running and attached",
     },
     "dash_session_closed": {"ru": "Игра завершена", "en": "Game closed"},
+    "dash_session_nocdp": {
+        "ru": "Игра запущена (перевод через ob_runtime.js, читы недоступны — нет отладчика)",
+        "en": "Game running (translation via ob_runtime.js, cheats unavailable — no debugger)",
+    },
     "dash_session_unsupported": {
         "ru": "Этот движок не поддерживает подключение к игре",
         "en": "This engine does not support attach yet",

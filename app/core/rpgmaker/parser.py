@@ -188,7 +188,18 @@ def _plugin_text_candidate(s: str) -> bool:
     if s.strip().lower() in _PLUGIN_SKIP_EXACT:
         return False
     low = s.lstrip().lower()
-    return not low.startswith(_PLUGIN_SKIP_STARTS)
+    if low.startswith(_PLUGIN_SKIP_STARTS):
+        return False
+    # обрывки кода из template-литералов (iter_js_strings не умеет
+    # backticks, кавычка внутри `...` даёт ложный литерал через
+    # переносы строк): file-patch такого «перевода» порвёт синтаксис
+    # плагина, а в словарь он попадёт как мусор вида
+    # "');\n }\n // ..." — режем по маркерам кода
+    if "\n" in s and any(m in s for m in (
+            ");", "};", "PluginManager", "registerCommand",
+            "function", "=>", "//", "/*", "var ", "const ", "let ")):
+        return False
+    return True
 
 
 def _read_plugins(path: str, variant: str = "") -> list | None:
@@ -241,13 +252,14 @@ def extract_plugins(game_dir: str, data_dir: str, on_skip=None,
     if variant is None:
         variant = detect_variant(game_dir)
     js_dir = "www/js" if data_dir.startswith("www/") else "js"
-    rel = plugins_list_rel(variant, game_dir, data_dir)
-    if not rel:
+    plugins_rel = plugins_list_rel(variant, game_dir, data_dir)
+    if not plugins_rel:
         return []
     plugins = _read_plugins(
-        os.path.join(game_dir, rel.replace("/", os.sep)), variant)
+        os.path.join(game_dir, plugins_rel.replace("/", os.sep)), variant)
     if not plugins:
         return []
+    rel = plugins_rel
     ex = _Extractor()
     for pl in plugins:
         if not isinstance(pl, dict) or not pl.get("status"):
@@ -283,6 +295,77 @@ def extract_plugins(game_dir: str, data_dir: str, on_skip=None,
             if _plugin_text_candidate(s):
                 ex.add(rel, f"{_PLUGIN_MARK}{n}", f"plugin {name}", s)
                 n += 1
+    # ── значения параметров из списка плагинов (plugins.js) ──
+    # Плагинные меню/опции (MOG_TitleCommands, AnotherNewGame, TitleItemEraser
+    # и т.п.) читают отображаемый текст из PluginManager.parameters()
+    # один раз при загрузке и кэшируют в своих переменных — поздний
+    # runtime-обход $plugins их уже не догонит. Поэтому извлекаем
+    # текстовые VALUES (ключи не трогаем!) и патчим файл списка
+    # напрямую при apply (см. _apply_plugin_params_file).
+    ex.entries.extend(extract_plugin_params(plugins, plugins_rel))
+    return ex.entries
+
+
+_PLUGPARAM_MARK = "#plugparam:"
+
+
+def _walk_param_value(value, emit):
+    """Рекурсивно отдаёт строковые листья (включая JSON-в-строке)."""
+    if isinstance(value, str):
+        s = value.strip()
+        # JSON-в-строке (AnotherNewGame anotherDataList и т.п.):
+        # "[{\"name\":\"212\",...}]" — спускаемся внутрь
+        if len(s) >= 2 and s[0] in "[{" and s[-1] in "]}":
+            try:
+                inner = json.loads(s)
+            except (ValueError, json.JSONDecodeError):
+                inner = None
+            if isinstance(inner, (dict, list)):
+                _walk_param_value(inner, emit)
+                return
+        emit(value)
+    elif isinstance(value, dict):
+        for v in value.values():
+            _walk_param_value(v, emit)
+    elif isinstance(value, list):
+        for v in value:
+            _walk_param_value(v, emit)
+
+
+def extract_plugin_params(plugins: list, plugins_rel: str) -> list:
+    """Текстовые VALUES параметров включённых плагинов.
+
+    file = plugins_rel (напр. "js/plugins.js"), json_path =
+    "#plugparam:<plugin>:<key>[:<sub>]". Ключи, true/false/числа/пути —
+    не текст, скипаются через _Extractor._generic_text.
+    """
+    ex = _Extractor()
+    probe = _Extractor()
+    for pl in plugins or []:
+        if not isinstance(pl, dict) or not pl.get("status"):
+            continue
+        name = pl.get("name", "")
+        if not name:
+            continue
+        params = pl.get("parameters")
+        if not isinstance(params, dict):
+            continue
+        for key, val in params.items():
+            found: list[str] = []
+
+            def _emit(s, _f=found):
+                _f.append(s)
+
+            _walk_param_value(val, _emit)
+            for n, s in enumerate(found):
+                if not isinstance(s, str) or not s.strip():
+                    continue
+                if not probe._generic_text(s):
+                    continue
+                sub = f":{n}" if len(found) > 1 else ""
+                ex.add(plugins_rel,
+                       f"{_PLUGPARAM_MARK}{name}:{key}{sub}",
+                       f"plugin param {name} / {key}", s)
     return ex.entries
 
 
@@ -485,6 +568,14 @@ class _Extractor:
             return False
         if s.lower() in ("true", "false", "null", "undefined", "nan", "none"):
             return False
+        # код-выражение в параметре (MessageSkip «10 + textSize * 5»):
+        # ASCII-идентификатор + оператор — формула для eval, перевод
+        # textSize→«размерТекста» даст ReferenceError при загрузке
+        if "${" in s or "=>" in s:
+            return False
+        if (re.search(r"[A-Za-z_][A-Za-z0-9_]*", s)
+                and re.search(r"[+*=/(){};$]", s)):
+            return False
         if _JS_CJK_RE.search(s):
             return True
         # Cyrillic / any non-ASCII single word (Привет, арг1) — plugin args
@@ -670,6 +761,121 @@ def _replace_js_strings(code: str, original: str,
     return result
 
 
+def _replace_param_leaf(node, original: str, translation: str) -> bool:
+    """Заменяет первое вхождение original в листьях params (мутирует).
+
+    Работает на декодированных Python-строках (включая JSON-в-строке
+    через прямую подстроку) — outer json.dumps при записи всё
+    корректно заэкранирует. True — что-то заменено.
+    """
+    if isinstance(node, dict):
+        for k in list(node.keys()):
+            v = node[k]
+            if isinstance(v, str):
+                if v == original:
+                    node[k] = translation
+                    return True
+                if original and original in v:
+                    node[k] = v.replace(original, translation, 1)
+                    return True
+            elif isinstance(v, (dict, list)):
+                if _replace_param_leaf(v, original, translation):
+                    return True
+        return False
+    if isinstance(node, list):
+        for i, v in enumerate(node):
+            if isinstance(v, str):
+                if v == original:
+                    node[i] = translation
+                    return True
+                if original and original in v:
+                    node[i] = v.replace(original, translation, 1)
+                    return True
+            elif isinstance(v, (dict, list)):
+                if _replace_param_leaf(v, original, translation):
+                    return True
+        return False
+    return False
+
+
+def _apply_plugin_params_file(abs_path: str, items: list,
+                              on_skip=None) -> tuple[bool, int]:
+    """Патчит VALUES параметров в списке плагинов (plugins.js).
+
+    Поддерживает JSON-массив и JS-формат `var $plugins = [...]`.
+    Ключи/структура не трогаются, только строковые листья.
+    Возвращает (changed, written).
+    """
+    try:
+        with open(abs_path, encoding="utf-8-sig") as f:
+            text = f.read()
+    except (OSError, UnicodeDecodeError):
+        return False, 0
+    is_json = text.lstrip().startswith("[")
+    try:
+        if is_json:
+            arr = json.loads(text)
+            head = tail = None
+        else:
+            start = text.index("[")
+            end = text.rindex("]") + 1
+            head, tail = text[:start], text[end:]
+            arr = json.loads(re.sub(r",(\s*[\]}])", r"\1",
+                                    text[start:end]))
+    except (ValueError, json.JSONDecodeError) as e:
+        if on_skip:
+            for it in items:
+                on_skip(it, f"plugins list parse: {e}")
+        return False, 0
+    if not isinstance(arr, list):
+        return False, 0
+    by_name: dict[str, dict] = {}
+    for pl in arr:
+        if isinstance(pl, dict) and isinstance(pl.get("name"), str):
+            by_name.setdefault(pl["name"], pl)
+    written = 0
+    for e in items:
+        # "#plugparam:<name>:<key>[:<n>]"
+        try:
+            _, rest = e.json_path.split(_PLUGPARAM_MARK, 1)
+            pname, _, _key = rest.partition(":")
+        except (ValueError, AttributeError):
+            continue
+        pl = by_name.get(pname)
+        if pl is None:
+            # имя могли хранить с/без .js — пробуем второй вариант
+            alt = (pname[:-3] if pname.lower().endswith(".js")
+                   else pname + ".js")
+            pl = by_name.get(alt)
+            if pl is None:
+                if on_skip:
+                    on_skip(e, f"plugin {pname} not in list")
+                continue
+        params = pl.get("parameters")
+        if not isinstance(params, dict):
+            continue
+        if _replace_param_leaf(params, e.original, e.translation):
+            written += 1
+        elif on_skip:
+            on_skip(e, "param value not found")
+    if not written:
+        return False, 0
+    try:
+        if is_json:
+            new_text = json.dumps(arr, ensure_ascii=False, indent=1)
+        else:
+            new_text = (head + json.dumps(arr, ensure_ascii=False)
+                        + tail)
+    except (ValueError, TypeError):
+        return False, 0
+    try:
+        with open(abs_path, "w", encoding="utf-8") as f:
+            f.write(new_text)
+    except OSError:
+        return False, 0
+    return True, written
+
+
 def apply(game_dir: str, entries: list[TranslationEntry],
           backup_root: str | None = None, data_dir: str | None = None,
           target_lang: str = "ru",
@@ -741,6 +947,19 @@ def apply(game_dir: str, entries: list[TranslationEntry],
                 continue
             stats["files"] += 1
             stats["strings"] += written
+            continue
+
+        # список плагинов (plugins.js, JSON или JS): патчим VALUES
+        # параметров — отображаемый текст меню плагинов, который те
+        # кэшируют при загрузке (runtime-обход уже не догонит)
+        if any(_PLUGPARAM_MARK in e.json_path for e in items):
+            changed, written = _apply_plugin_params_file(
+                abs_path,
+                [e for e in items if _PLUGPARAM_MARK in e.json_path],
+                on_skip)
+            if changed:
+                stats["files"] += 1
+                stats["strings"] += written
             continue
 
         if not rel.endswith(".json"):
