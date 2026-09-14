@@ -847,6 +847,82 @@ assert r.startswith("init python:") and "\n    " in r
 assert "@@ABI" not in r
 print("   OK")
 
+print("2n) Ren'Py: враждебный pickle из игры не выполняется...")
+from app.core.renpy.parser import _RenPyUnpickler as _RU2n
+from app.core.renpy.parser import _is_interp_safe as _IIS2n
+
+
+class _Evil2n:
+    def __reduce__(self):
+        return (__import__("os").system, ("echo PWNED",))
+
+
+_obj2n = _RU2n(io.BytesIO(pickle.dumps(_Evil2n()))).load()
+assert type(_obj2n).__name__.startswith("_mock_"), type(_obj2n)
+
+
+class _Evil2n2:
+    def __reduce__(self):
+        return (eval, ("1+1",))
+
+
+_obj2n2 = _RU2n(io.BytesIO(pickle.dumps(_Evil2n2()))).load()
+assert type(_obj2n2).__name__.startswith("_mock_"), type(_obj2n2)
+_leg2n = _RU2n(io.BytesIO(
+    pickle.dumps({"a": [1, "x"]}, protocol=2))).load()
+assert _leg2n == {"a": [1, "x"]}, _leg2n
+print("   OK")
+
+print("2o) Ren'Py: перевод с добавленными [...]/{...} отклоняется...")
+assert _IIS2n("Играет [track]", "Plays [track]") is True
+assert _IIS2n("Играет [track]", "Plays [trak]") is False
+assert _IIS2n("Играет [track]", "Plays [track] [extra]") is False
+assert _IIS2n("Привет", "Hello") is True
+assert _IIS2n("Привет", "Hello {b}x{/b}") is False
+print("   OK")
+
+print("2p) Ren'Py: одноимённые .rpa в разных папках читаются раздельно...")
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "game"))
+    for _sub, _line in (("dlc1", 'e "Строка из первого архива"'),
+                        ("dlc2", 'e "Строка из второго архива"')):
+        _d = os.path.join(td, "game", _sub)
+        os.makedirs(_d)
+        _blob = ("label start:\n    " + _line + "\n").encode("utf-8")
+        _key = random.getrandbits(32)
+        with open(os.path.join(_d, "archive.rpa"), "wb") as f:
+            f.write(b"RPA-3.0 XXXXXXXXXXXXXXXX XXXXXXXX\n")
+            _off = f.tell()
+            f.write(_blob)
+            _idx = {"hello.rpy": [(_off ^ _key, len(_blob) ^ _key, b"")]}
+            _ioff = f.tell()
+            f.write(zlib.compress(pickle.dumps(_idx, pickle.HIGHEST_PROTOCOL)))
+            f.seek(0)
+            f.write(b"RPA-3.0 %016x %08x\n" % (_ioff, _key))
+    _texts2p = [e.original for e in renpy.extract(td)]
+    assert "Строка из первого архива" in _texts2p, _texts2p
+    assert "Строка из второго архива" in _texts2p, _texts2p
+print("   OK")
+
+print("2q) Ren'Py: C0-мусор режется, свой файл проверяется...")
+from app.core.renpy.parser import _escape as _esc2q
+from app.core.renpy.parser import _written_file_ok as _wok2q
+assert _esc2q("a\x00b\x07c\x7fd") == "abcd"
+assert _esc2q("x\x0by") == "xy"
+with tempfile.TemporaryDirectory() as td:
+    make_renpy(td)
+    entries = renpy.extract(td)
+    for e in entries:
+        e.translation = "TR\x01:" + e.original
+    stats = renpy.apply(td, entries, "ru")
+    assert stats["files"] > 0
+    out = os.path.join(stats["out_dir"], "ob_game__script.rpy")
+    assert _wok2q(out)
+    content = open(out, encoding="utf-8").read()
+    assert "\x01" not in content
+    assert 'new "TR:Привет, я ведьма."' in content
+print("   OK")
+
 # ── Twine ──
 
 STORY_HTML = """<!DOCTYPE html>
@@ -1389,6 +1465,139 @@ with tempfile.TemporaryDirectory() as td:
         assert "Ты" not in m and "Идти" not in m, m
     print("   OK: index_ru.html создан, оригинал цел,",
           stats["strings"], "строк")
+
+print("9) Twine live: браузерная половина (словарь + батчи + инжекция)...")
+from app.engines.twine import tentacle as _tt9
+
+
+def _js_balanced(src: str) -> bool:
+    """Баланс скобок вне строк/комментариев (замена JS-парсера)."""
+    st: list[str] = []
+    i, n = 0, len(src)
+    pairs = {")": "(", "]": "[", "}": "{"}
+    while i < n:
+        c = src[i]
+        if c in "\"'":
+            q = c
+            i += 1
+            while i < n:
+                if src[i] == "\\":
+                    i += 2
+                    continue
+                if src[i] == q:
+                    break
+                i += 1
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and src[i + 1] == "/":
+            j = src.find("\n", i)
+            i = n if j == -1 else j + 1
+            continue
+        if c == "/" and i + 1 < n and src[i + 1] == "*":
+            j = src.find("*/", i + 2)
+            i = n if j == -1 else j + 2
+            continue
+        if c in "([{":
+            st.append(c)
+        elif c in ")]}":
+            if not st or st.pop() != pairs[c]:
+                return False
+        i += 1
+    return not st
+
+
+for _name, _src in (("PAYLOAD", _tt9.PAYLOAD_SCRIPT),
+                    ("TR", _tt9.TR_SCRIPT)):
+    assert _js_balanced(_src), f"{_name}: скобки не сошлись"
+    assert "=>" not in _src and "`" not in _src, f"{_name}: не ES5"
+    import re as _re9
+    assert not _re9.search(r"\b(const|let)\b", _src), f"{_name}: не ES5"
+assert "__OT.tr.onWS(m)" in _tt9.PAYLOAD_SCRIPT  # диспетчер в сокете
+assert "tr_request" in _tt9.TR_SCRIPT and "tr_result" in _tt9.TR_SCRIPT
+assert "tr_dict" in _tt9.TR_SCRIPT and "MutationObserver" in _tt9.TR_SCRIPT
+# served html содержит оба скрипта (и с query-string)
+import threading as _th9
+import urllib.request as _ur9
+with tempfile.TemporaryDirectory() as td:
+    make_twine(td)
+    _h = _tt9._InjectingHTTPHandler
+    _h.directory = td
+    _h._ws_url = "ws://127.0.0.1:1"
+    _h._game_html_rel = "index.html"
+    _h._inject_html = True
+    _h._shield_html = False
+    _srv = _tt9._ThreadedHTTPServer(("127.0.0.1", 0), _h)
+    _port = _srv.server_address[1]
+    _t = _th9.Thread(target=_srv.serve_forever, daemon=True)
+    _t.start()
+    try:
+        for _path in ("/index.html", "/index.html?x=1"):
+            with _ur9.urlopen(
+                    f"http://127.0.0.1:{_port}{_path}") as _r:
+                _body = _r.read().decode("utf-8")
+            assert "twineInjected" in _body, _path
+            assert "__octopus.tr" in _body, _path
+    finally:
+        _srv.shutdown()
+        _srv.server_close()
+print("   OK")
+
+print("10) Twine live: tr_request -> tr_result через колбэк...")
+from app.engines.twine.tentacle import TwineTentacle as _TT10
+
+
+class _WS10:
+    def __init__(self):
+        self.sent: list = []
+
+    def send(self, obj):
+        self.sent.append(obj)
+        return True
+
+
+_t10 = _TT10()
+_t10._ws_server = _WS10()
+_t10._tr_cb = lambda texts, a, b: ["R:" + t for t in texts]
+_t10._on_tr_request({"texts": ["Hello", "World"], "id": 7,
+                     "lang_from": "en", "lang_to": "ru"})
+assert _t10._ws_server.sent, "ответ не отправлен"
+_last10 = _t10._ws_server.sent[-1]
+assert _last10["type"] == "tr_result" and _last10["id"] == 7, _last10
+assert _last10["results"] == ["R:Hello", "R:World"], _last10
+# упавший провайдер — оригиналы + статус, а не исключение
+_t10b = _TT10()
+_t10b._ws_server = _WS10()
+
+
+def _boom10(texts, a, b):
+    raise RuntimeError("down")
+
+
+_t10b._tr_cb = _boom10
+_t10b._on_tr_request({"texts": ["Hi"], "id": 1})
+_last10b = _t10b._ws_server.sent[-1]
+assert _last10b["results"] == ["Hi"], _last10b
+print("   OK")
+
+print("11) Twine saves: вложенные пути привязываются, sid чистый...")
+from app.core.twine import savefile as _sf11
+_d11: dict = {}
+_sf11._set_nested(_d11, "player.money", 100)
+assert _d11 == {"player": {"money": 100}}, _d11
+_sf11._set_nested(_d11, "inv[1].qty", 5)
+assert _d11["inv"][1] == {"qty": 5}, _d11
+assert isinstance(_d11["inv"], list) and len(_d11["inv"]) == 2, _d11
+_d11b: dict = {}
+_sf11._set_nested(_d11b, "[0].x", 1)  # бессмысленный путь — игнор без падения
+assert _d11b == {}, _d11b
+assert _sf11.flatten_variables({}) == {}
+with tempfile.TemporaryDirectory() as td:
+    _paths11 = _sf11.write_slots(td, "Game", [
+        {"id": "../evil", "date": 1700000000000, "data": "blob"}])
+    assert len(_paths11) == 1
+    assert os.path.dirname(_paths11[0]) == td, _paths11
+    assert ".." not in os.path.basename(_paths11[0]), _paths11
+print("   OK")
 
 print()
 print("ВСЕ ТЕСТЫ RENPY + TWINE ПРОШЛИ")

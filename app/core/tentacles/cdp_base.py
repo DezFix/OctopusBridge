@@ -24,16 +24,27 @@ BINDING_NAME = "__octopus_send"
 CONSOLE_PREFIX = "__octopus__"
 
 # Транспортная прослойка, встраиваемая в начало каждого пейлоада.
+# ES5-only: старые NW.js (RPG Maker MV, Chromium 41-49) не знают
+# const/let/стрелки — SyntaxError здесь ронял бы всю инъекцию.
 TRANSPORT_SHIM = r"""
-// ── OctopusBridge transport shim ──
-if (window.__octopus) { /* уже внедрено — повторную инъекцию игнорируем */ }
-else {
-window.__octopus = {};
-const __ob_send = (window[""" + json.dumps(BINDING_NAME) + r"""])
-  ? (o) => window[""" + json.dumps(BINDING_NAME) + r"""](JSON.stringify(o))
-  : (o) => console.log(""" + json.dumps(CONSOLE_PREFIX) + r""" + JSON.stringify(o));
-window.__octopus.send = __ob_send;
-}
+// ── OctopusBridge transport shim (ES5) ──
+(function () {
+  var BINDING = """ + json.dumps(BINDING_NAME) + r""";
+  var PREFIX = """ + json.dumps(CONSOLE_PREFIX) + r""";
+  window.__octopus = window.__octopus || {};
+  function obSend(o) {
+    var s = null;
+    try { s = JSON.stringify(o); } catch (e) { return; }
+    try {
+      if (window[BINDING]) { window[BINDING](s); return; }
+    } catch (e) {}
+    try { console.log(PREFIX + s); } catch (e2) {}
+  }
+  // CDP-канал всегда перекрывает заглушку моста (mv_bridge ставит
+  // пустой send) — иначе state/cheat сообщения теряются, когда в игре
+  // есть и мост, и CDP (SDK-сборки MV).
+  window.__octopus.send = obSend;
+})();
 """
 
 

@@ -10,8 +10,30 @@
 """
 from __future__ import annotations
 
+import io
 import os
+import pickle
 import zlib
+
+
+class _SafeIndexUnpickler(pickle.Unpickler):
+    """Индекс RPA — только контейнеры/скаляры, без классов и вызовов.
+
+    Сырой pickle.loads на данных из файла игры — RCE через __reduce__
+    (builtins.eval и т.п.). Настоящий индекс Ren'Py состоит только из
+    {str: [(int, int[, bytes])]}, всё остальное отклоняем.
+    """
+
+    _SAFE = frozenset({
+        "list", "dict", "tuple", "set", "frozenset", "str", "int",
+        "float", "bool", "bytes", "bytearray",
+    })
+
+    def find_class(self, module, name):
+        if module in ("builtins", "__builtin__") and name in self._SAFE:
+            return super().find_class(module, name)
+        raise pickle.UnpicklingError(
+            f"forbidden class in RPA index: {module}.{name}")
 
 
 class RpaArchive:
@@ -79,18 +101,27 @@ class RpaArchive:
         """Индекс RPA-2.0/3.0: zlib(pickle) словаря
         {name: [(offset, dlen) | (offset, dlen, start)]}, поля (кроме
         RPA-2.0) XOR'ены с key."""
-        import pickle
         try:
-            index = pickle.loads(zlib.decompress(data))
+            index = _SafeIndexUnpickler(
+                io.BytesIO(zlib.decompress(data))).load()
         except Exception as e:
             raise ValueError(f"Broken RPA index in {self.path}: {e}")
+        if not isinstance(index, dict):
+            raise ValueError(f"Broken RPA index in {self.path}: not a dict")
         for name, entries in index.items():
-            if not entries:
+            if not isinstance(name, str) or not entries:
                 continue
             first = entries[0]
-            if len(first) < 2:
+            if not isinstance(first, (list, tuple)) or len(first) < 2:
                 continue
-            offset, length = first[0] ^ key, first[1] ^ key
+            try:
+                if not all(type(x) is int for x in (first[0], first[1])):
+                    continue
+                offset, length = first[0] ^ key, first[1] ^ key
+            except (ValueError, TypeError):
+                continue
+            if offset < 0 or length <= 0:
+                continue
             self._index[name] = (offset, length)
 
     @property

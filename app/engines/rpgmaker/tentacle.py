@@ -23,6 +23,7 @@ from app.transport.cdp.client import CDPClient, CDPError
 from app.core.tentacles.cdp_base import CDPTentacle
 from app.core.rpgmaker import mv_bridge
 from app.core.rpgmaker import variant as rpgm_variant
+from app.core.rpgmaker.payloads import PAYLOAD, _TRANSLATION_PAYLOAD
 
 # Кандидаты портов для сканирования
 SCAN_PORTS = [9222, 9229, 9333] + list(range(9000, 9101)) + \
@@ -32,524 +33,8 @@ SCAN_PORTS = [9222, 9229, 9333] + list(range(9000, 9101)) + \
 _RPGM_PROBE = ("!!(window.$gameMessage || window.$dataSystem || "
                "(window.nw && window.nw.Window))")
 
-# ── JS-пейлоад: читы + автосинхронизация состояния ──
-PAYLOAD = r"""
-if (!window.__octopus.rpgm) {
-window.__octopus.rpgm = true;
-window.__octopus.clickTp = false;
-window.__octopus_hooksReady = false;
-
-// ── кириллица: @font-face с unicode-range ──
-try {
-  const s = document.createElement("style");
-  s.textContent =
-    '@font-face{font-family:"rmmz-mainfont";src:local("Arial");' +
-    'unicode-range:U+0400-04FF,U+0500-052F,U+2DE0-2DFF,U+A640-A69F}' +
-    '@font-face{font-family:"mplus-1m-regular";src:local("Arial");' +
-    'unicode-range:U+0400-04FF,U+0500-052F}' +
-    '@font-face{font-family:"GameFont";src:local("Arial");' +
-    'unicode-range:U+0400-04FF,U+0500-052F}';
-  document.head.appendChild(s);
-} catch (e) {}
-
-// ── ускорение игры: MV 1.6+/MZ — аккумулятор фиксированных шагов ──
-window.__octopus_gameSpeed = 1;
-window.__octopus_setGameSpeed = function (n) {
-  n = Math.max(1, Math.min(20, Math.floor(n || 1)));
-  window.__octopus_gameSpeed = n;
-  if (!window.__octopus_speedHooked &&
-      typeof SceneManager !== "undefined" && SceneManager.updateMain) {
-    try {
-      const _obUpdateMain = SceneManager.updateMain;
-      SceneManager.updateMain = function () {
-        const k = window.__octopus_gameSpeed || 1;
-        if (k <= 1) {
-          _obUpdateMain.call(this);
-          return;
-        }
-        if (typeof this._deltaTime === "number") {
-          // MV 1.6+/MZ: движок сам догоняет время фиксированными шагами
-          // (while по _accumulator). Уменьшаем шаг в k раз — за кадр
-          // накрутится k тиков, а renderScene/requestUpdate отработают
-          // один раз (в оригинале они вне цикла). НЕЛЬЗЯ звать
-          // updateMain k раз: requestUpdate = requestAnimationFrame —
-          // каждый вызов расписывает ещё кадр, рост экспоненциальный,
-          // игра зависает и вылетает.
-          const orig = this._deltaTime;
-          this._deltaTime = orig / k;
-          try {
-            _obUpdateMain.call(this);
-          } finally {
-            this._deltaTime = orig;
-          }
-        } else {
-          // древний MV без аккумулятора: k кадров, но requestUpdate
-          // глушим (считаем), чтобы не расплодить rAF-кадры
-          const obReq = SceneManager.requestUpdate;
-          let reqs = 0;
-          if (typeof obReq === "function") {
-            SceneManager.requestUpdate = function () { reqs++; };
-          }
-          try {
-            for (let i = 0; i < k; i++) _obUpdateMain.call(this);
-          } finally {
-            SceneManager.requestUpdate = obReq;
-          }
-          if (typeof obReq === "function" && reqs) obReq.call(this);
-        }
-      };
-      window.__octopus_speedHooked = true;
-    } catch (e) {}
-  }
-};
-
-let _autoStateTimer = null;
-
-function autoSendState() {
-  if (_autoStateTimer) return;
-  _autoStateTimer = setTimeout(() => { _autoStateTimer = null; sendState(); }, 500);
-}
-
-// ---------- полный снимок состояния ----------
-function collectItems(kind, db) {
-  const out = [];
-  if (!db) return out;
-  for (let i = 1; i < db.length; i++) {
-    const it = db[i];
-    if (it && it.name) {
-      out.push({ kind: kind, id: it.id, name: it.name,
-                 count: $gameParty.numItems(it) });
-    }
-  }
-  return out;
-}
-
-function _has(name) {
-  return typeof window[name] !== "undefined" && !!window[name];
-}
-
-window.__octopus_collectState = function () {
-  const state = {
-    type: "state",
-    gold: _has("$gameParty") ? $gameParty.gold() : 0,
-    mapId: _has("$gameMap") ? $gameMap.mapId() : 0,
-    inBattle: _has("$gameParty") ? $gameParty.inBattle() : false,
-    playerX: _has("$gamePlayer") ? $gamePlayer.x : 0,
-    playerY: _has("$gamePlayer") ? $gamePlayer.y : 0,
-    party: [],
-    items: [],
-    variables: _has("$gameVariables") ? $gameVariables._data.slice(1) : [],
-    switches: _has("$gameSwitches") ? $gameSwitches._data.slice(1) : []
-  };
-  if (_has("$gameActors") && _has("$gameParty")) {
-    $gameActors._data.forEach((a) => {
-      if (!a) return;
-      state.party.push({
-        id: a.actorId(), name: a.name(), level: a.level,
-        hp: a.hp, mp: a.mp, mhp: a.mhp, mmp: a.mmp, exp: a.currentExp(),
-        className: a.currentClass() ? a.currentClass().name : "",
-        inParty: $gameParty.members().includes(a),
-        params: [0, 1, 2, 3, 4, 5, 6, 7].map((i) => a.param(i))
-      });
-    });
-    state.items = collectItems("item", window.$dataItems)
-      .concat(collectItems("weapon", window.$dataWeapons))
-      .concat(collectItems("armor", window.$dataArmors));
-  }
-  return state;
-};
-
-function sendState() {
-  try { window.__octopus.send(window.__octopus_collectState()); } catch (e) {}
-}
-
-// ---------- установка хуков ----------
-function safePatch(target, patchFn) {
-  // MV-совместимость: отсутствующая функция не ломает остальные хуки
-  if (typeof target === "function") {
-    try { patchFn(); } catch (e) {
-      console.warn("[octopus] hook skip: " + e);
-    }
-  }
-}
-
-function installHooks() {
-  // телепорт по Ctrl+клику
-  safePatch(Scene_Map.prototype.update, () => {
-    const _sceneMapUpdate = Scene_Map.prototype.update;
-    Scene_Map.prototype.update = function () {
-      _sceneMapUpdate.call(this);
-      if (window.__octopus.clickTp && TouchInput.isTriggered() &&
-          Input.isPressed("control")) {
-        const x = $gameMap.canvasToMapX(TouchInput.x);
-        const y = $gameMap.canvasToMapY(TouchInput.y);
-        if ($gameMap.isValid(x, y)) $gamePlayer.locate(x, y);
-      }
-    };
-  });
-
-  // автосинхронизация состояния
-  safePatch(Game_Variables.prototype.setValue, () => {
-    const _origGameVarsSetValue = Game_Variables.prototype.setValue;
-    Game_Variables.prototype.setValue = function(id, value) {
-      _origGameVarsSetValue.call(this, id, value);
-      autoSendState();
-    };
-  });
-
-  safePatch(Game_Switches.prototype.setValue, () => {
-    const _origGameSwitchesSetValue = Game_Switches.prototype.setValue;
-    Game_Switches.prototype.setValue = function(id, value) {
-      _origGameSwitchesSetValue.call(this, id, value);
-      autoSendState();
-    };
-  });
-
-  safePatch(Game_Party.prototype.gainGold, () => {
-    const _origGainGold = Game_Party.prototype.gainGold;
-    Game_Party.prototype.gainGold = function(amount) {
-      _origGainGold.call(this, amount);
-      autoSendState();
-    };
-  });
-
-  safePatch(Game_Party.prototype.loseGold, () => {
-    const _origLoseGold = Game_Party.prototype.loseGold;
-    Game_Party.prototype.loseGold = function(amount) {
-      _origLoseGold.call(this, amount);
-      autoSendState();
-    };
-  });
-
-  safePatch(Game_Player.prototype.reserveTransfer, () => {
-    const _origReserveTransfer = Game_Player.prototype.reserveTransfer;
-    Game_Player.prototype.reserveTransfer = function(mapId, x, y, d, fadeType) {
-      _origReserveTransfer.call(this, mapId, x, y, d, fadeType);
-      autoSendState();
-    };
-  });
-
-  safePatch(Game_BattlerBase.prototype.setHp, () => {
-    const _origSetHp = Game_BattlerBase.prototype.setHp;
-    Game_BattlerBase.prototype.setHp = function(hp) {
-      _origSetHp.call(this, hp);
-      autoSendState();
-    };
-  });
-
-  safePatch(Game_BattlerBase.prototype.setMp, () => {
-    const _origSetMp = Game_BattlerBase.prototype.setMp;
-    Game_BattlerBase.prototype.setMp = function(mp) {
-      _origSetMp.call(this, mp);
-      autoSendState();
-    };
-  });
-
-  safePatch(Game_Actor.prototype.changeLevel, () => {
-    const _origChangeLevel = Game_Actor.prototype.changeLevel;
-    Game_Actor.prototype.changeLevel = function(level, showEffect) {
-      _origChangeLevel.call(this, level, showEffect);
-      autoSendState();
-    };
-  });
-
-  safePatch(Game_Actor.prototype.changeExp, () => {
-    const _origChangeExp = Game_Actor.prototype.changeExp;
-    Game_Actor.prototype.changeExp = function(exp, showEffect) {
-      _origChangeExp.call(this, exp, showEffect);
-      autoSendState();
-    };
-  });
-
-  safePatch(Game_Party.prototype.gainItem, () => {
-    const _origGainItem = Game_Party.prototype.gainItem;
-    Game_Party.prototype.gainItem = function(item, amount, includeEquip) {
-      _origGainItem.call(this, item, amount, includeEquip);
-      autoSendState();
-    };
-  });
-
-  window.__octopus_hooksReady = true;
-  window.__octopus_setGameSpeed(window.__octopus_gameSpeed || 1);
-  sendState();
-}
-
-const _enginePoll = setInterval(function () {
-  if (typeof Scene_Map === "undefined" ||
-      typeof Game_Variables === "undefined" ||
-      typeof Game_Switches === "undefined" ||
-      typeof Game_Party === "undefined" ||
-      typeof Game_Player === "undefined" ||
-      typeof Game_BattlerBase === "undefined" ||
-      typeof Game_Actor === "undefined") return;
-  clearInterval(_enginePoll);
-  try {
-    installHooks();
-    console.log("[octopus] RPGM hooks installed");
-  } catch (e) {
-    console.warn("[octopus] hook install failed: " + e);
-  }
-}, 400);
-}
-"""
-
-# ── JS-пейлоад: гибридный live-перевод (MV и MZ) ──
-# Подменяет текст в рантайме через словарь original->translation,
-# не трогая файлы игры. Работает и для зашифрованных/asar-сборок.
-_TRANSLATION_PAYLOAD = r"""
-if (!window.__octopus_trInit) {
-  window.__octopus_trInit = true;
-  window.__octopus_tr = {};
-
-  window.__octopus_trApply = function (text) {
-    if (typeof text !== "string" || text.length === 0) return text;
-    var d = window.__octopus_tr;
-    if (Object.prototype.hasOwnProperty.call(d, text)) {
-      var exact = d[text];
-      return (exact === undefined || exact === null) ? text : exact;
-    }
-    // Склеенные 401-строки ("line1\nline2"): словарь хранит построчно.
-    // Построчная замена идемпотентна (повторный проход — no-op),
-    // «дублей» оригинал+перевод не даёт (в отличие от substring-замен).
-    if (text.indexOf("\n") >= 0) {
-      var parts = text.split("\n");
-      var changed = false;
-      for (var i = 0; i < parts.length; i++) {
-        if (Object.prototype.hasOwnProperty.call(d, parts[i])) {
-          parts[i] = d[parts[i]];
-          changed = true;
-        } else {
-          var trim = parts[i].trim();
-          if (trim !== parts[i]
-              && Object.prototype.hasOwnProperty.call(d, trim)) {
-            parts[i] = d[trim];
-            changed = true;
-          }
-        }
-      }
-      if (changed) return parts.join("\n");
-    }
-    var whole = text.trim();
-    if (whole !== text
-        && Object.prototype.hasOwnProperty.call(d, whole)) {
-      return d[whole];
-    }
-    return text;
-  };
-
-  window.__octopus_trInstall = function (obj) {
-    if (obj) {
-      for (var k in obj) {
-        if (Object.prototype.hasOwnProperty.call(obj, k)) {
-          window.__octopus_tr[k] = obj[k];
-        }
-      }
-    }
-    return Object.keys(window.__octopus_tr).length;
-  };
-
-  function trSafePatch(method, patchFn) {
-    if (typeof method === "function") {
-      try { patchFn(); } catch (e) {
-        console.warn("[octopus] tr hook skip: " + e);
-      }
-    }
-  }
-
-  var _trPoll = setInterval(function () {
-    if (typeof Window_Base === "undefined"
-        || typeof Bitmap === "undefined") return;
-    clearInterval(_trPoll);
-    // диалоги/сообщения: подменяем строку ДО раскрытия escape-кодов,
-    // чтобы перевод сохранил \N[..] / \C[..] как есть
-    trSafePatch(Window_Base.prototype.convertEscapeCharacters, function () {
-      var obCvt = Window_Base.prototype.convertEscapeCharacters;
-      Window_Base.prototype.convertEscapeCharacters = function (text) {
-        return obCvt.call(this, window.__octopus_trApply(text));
-      };
-    });
-    // имена акторов (меню, статусы, сообщения \N[x])
-    trSafePatch(Game_Actor.prototype.name, function () {
-      var obName = Game_Actor.prototype.name;
-      Game_Actor.prototype.name = function () {
-        return window.__octopus_trApply(obName.call(this));
-      };
-    });
-    // имя текущей карты
-    trSafePatch(Game_Map.prototype.displayName, function () {
-      var obDName = Game_Map.prototype.displayName;
-      Game_Map.prototype.displayName = function () {
-        return window.__octopus_trApply(obDName.call(this));
-      };
-    });
-    // ── catch-all для меню/титулов/опций ──
-    // Часть меню рисуется НЕ через convertEscapeCharacters и НЕ из
-    // $data-таблиц (строки уже закэшированы плагинами из parameters
-    // при загрузке, либо собраны кодом). Перехватываем финальную
-    // отрисовку: Bitmap.drawText — точка, через которую проходят
-    // вообще все меню/заголовки/опции. Идемпотентно: повторный
-    // проход по уже переведённому тексту — no-op (ключа нет).
-    trSafePatch(Bitmap.prototype.drawText, function () {
-      var obDraw = Bitmap.prototype.drawText;
-      Bitmap.prototype.drawText = function (text, x, y, w, h, align) {
-        return obDraw.call(this, window.__octopus_trApply(text),
-                           x, y, w, h, align);
-      };
-    });
-    // drawTextEx — текст с escape-кодами (\C[n]...): подменяем ДО
-    // разбора кодов, чтобы перевод сохранил их как есть
-    trSafePatch(Window_Base.prototype.drawTextEx, function () {
-      var obEx = Window_Base.prototype.drawTextEx;
-      Window_Base.prototype.drawTextEx = function (text, x, y) {
-        return obEx.call(this, window.__octopus_trApply(text), x, y);
-      };
-    });
-
-    // ── перевод на уровне данных ──
-    // Меню/предметы/скиллы/термины рисуются напрямую из таблиц $data*
-    // мимо convertEscapeCharacters, поэтому проходим сами таблицы
-    // в ПАМЯТИ и подменяем точные совпадения. Файлы игры не трогаем.
-    // Команды событий ({code, parameters}) обходим по белому списку
-    // ТОЛЬКО отображаемых позиций: комментарии 108/408 и скрипты
-    // 355/655 плагины часто читают как теги — их не трогаем.
-    var obDict = window.__octopus_tr;
-
-    function obHas(s) {
-      return Object.prototype.hasOwnProperty.call(obDict, s)
-        && typeof obDict[s] === "string";
-    }
-    function obSubst(node, key) {
-      var v = node[key];
-      if (typeof v === "string" && obHas(v)) node[key] = obDict[v];
-    }
-    window.__octopus_trWalk = function (node, depth) {
-      if (!node || typeof node !== "object" || depth > 12) return;
-      if (Array.isArray(node)) {
-        for (var ai = 0; ai < node.length; ai++) {
-          var av = node[ai];
-          if (av && typeof av === "object") {
-            window.__octopus_trWalk(av, depth + 1);
-          } else if (typeof av === "string") {
-            if (obHas(av)) node[ai] = obDict[av];
-          }
-        }
-        return;
-      }
-      // команда события? ({code:Number, parameters:Array})
-      if (typeof node.code === "number"
-          && Object.prototype.hasOwnProperty.call(node, "parameters")) {
-        obWalkCmd(node);
-        return;
-      }
-      for (var k in node) {
-        if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
-        if (k === "note" || k === "meta") continue; // теги плагинов
-        var v2 = node[k];
-        if (v2 && typeof v2 === "object") {
-          window.__octopus_trWalk(v2, depth + 1);
-        } else {
-          obSubst(node, k);
-        }
-      }
-    };
-    // белые списки: код команды -> индексы параметров с текстом
-    var obTextCodes = {
-      101: [4],   // заголовок диалога (имя говорящего)
-      102: [0],   // выбор вариантов (массив строк)
-      320: [1],   // сменить имя актора
-      324: [1],   // сменить прозвище
-      356: [0],   // MV-команда плагина (строка целиком)
-      357: [3],   // MZ-команда плагина (аргументы)
-      401: [0],   // строки диалога
-      402: [1],   // ветка выбора (When)
-      405: [0]    // прокручиваемый текст
-    };
-    function obWalkCmd(cmd) {
-      var idxs = obTextCodes[cmd.code];
-      if (!idxs) return;
-      var ps = cmd.parameters || [];
-      for (var q = 0; q < idxs.length; q++) {
-        var i = idxs[q];
-        if (i >= ps.length) continue;
-        var v = ps[i];
-        if (typeof v === "string") {
-          if (obHas(v)) ps[i] = obDict[v];
-        } else if (v && typeof v === "object") {
-          // выбор 102[0]: массив строк; аргументы 357: вложенные структуры
-          window.__octopus_trWalk(v, 0);
-        }
-      }
-    }
-
-    var obDbTables = ["$dataActors", "$dataClasses", "$dataSkills",
-      "$dataItems", "$dataWeapons", "$dataArmors", "$dataEnemies",
-      "$dataTroops", "$dataStates", "$dataSystem", "$dataMapInfos",
-      "$dataCommonEvents"];
-    function obRefreshData() {
-      for (var i = 0; i < obDbTables.length; i++) {
-        try { window.__octopus_trWalk(window[obDbTables[i]], 0); }
-        catch (e) {}
-      }
-      try { window.__octopus_trWalk(window["$dataMap"], 0); }
-      catch (e) {}
-      // параметры плагинов ($plugins[i].parameters): часть плагинных
-      // меню уже закэшировала значения при загрузке (до нашего хука),
-      // но всё что читается лениво — подхватит перевод здесь
-      try { window.__octopus_trWalk(window["$plugins"], 0); }
-      catch (e) {}
-    }
-    // PluginManager.parameters(): ленивые чтения после нашего хука —
-    // отдаём переведённую копию (оригинал $plugins не портим)
-    trSafePatch(PluginManager.parameters, function () {
-      var obParams = PluginManager.parameters;
-      PluginManager.parameters = function (name) {
-        var p = obParams.call(this, name);
-        if (!p || typeof p !== "object") return p;
-        var out = {};
-        for (var k in p) {
-          if (!Object.prototype.hasOwnProperty.call(p, k)) continue;
-          var v = p[k];
-          out[k] = (typeof v === "string")
-            ? window.__octopus_trApply(v) : v;
-        }
-        return out;
-      };
-    });
-    // база грузится асинхронно — ждём все основные таблицы
-    var _dbPoll = setInterval(function () {
-      for (var j = 0; j < obDbTables.length; j++) {
-        if (!window[obDbTables[j]]) return;
-      }
-      clearInterval(_dbPoll);
-      obRefreshData();
-    }, 400);
-    // карты подгружаются по ходу игры — переобход после каждой загрузки
-    trSafePatch(Game_Map.prototype.setup, function () {
-      var obSetup = Game_Map.prototype.setup;
-      Game_Map.prototype.setup = function (mapId) {
-        var r = obSetup.call(this, mapId);
-        try { obRefreshData(); } catch (e) {}
-        return r;
-      };
-    });
-    // словарь могли залить позже (live-режим через мост) — если база
-    // уже загружена, обходим её сразу
-    var obInstallBase = window.__octopus_trInstall;
-    window.__octopus_trInstall = function (obj) {
-      var n = obInstallBase(obj);
-      try {
-        if (typeof $dataSystem !== "undefined" && $dataSystem
-            && window.__octopus_trWalk) {
-          obRefreshData();
-        }
-      } catch (e) {}
-      return n;
-    };
-  }, 400);
-}
-
-window.__octopus_trInstall(__TR_DICT__);
-"""
+# PAYLOAD и _TRANSLATION_PAYLOAD — в app.core.rpgmaker.payloads
+# (ядро без Qt; здесь реэкспорт для совместимости).
 
 
 def build_tr_dict(entries) -> dict:
@@ -997,9 +482,18 @@ class RpgMakerTentacle(CDPTentacle):
 
     @staticmethod
     def _cheat_expr(cmd: str, **kwargs) -> str | None:
+        # Все выражения — ES5 (var/function/indexOf): стрелки/const/let
+        # роняют официальный рантайм MV (Chromium 41-49) с SyntaxError,
+        # и читы «молча не работают».
         js = json.dumps
         if cmd == "gold_set":
-            return f"$gameParty._gold = {int(kwargs['value'])}"
+            # Через gainGold (а не прямой _gold): срабатывают хуки
+            # autoSendState и обновление UI сцены.
+            target = int(kwargs["value"])
+            return ("(function(){var t=" + str(target) + ";"
+                    "var c=$gameParty.gold();var d=t-c;"
+                    "if(d!==0){$gameParty.gainGold(d);}"
+                    "return $gameParty.gold();})()")
         if cmd == "gold_add":
             return f"$gameParty.gainGold({int(kwargs['value'])})"
         if cmd == "var_set":
@@ -1009,19 +503,28 @@ class RpgMakerTentacle(CDPTentacle):
             v = "true" if kwargs["value"] else "false"
             return f"$gameSwitches.setValue({int(kwargs['index'])}, {v})"
         if cmd == "heal":
-            return ("$gameParty.members().forEach("
-                    "a => { a.setHp(a.mhp); a.setMp(a.mmp); }), 'healed'")
+            return ("(function(){var m=$gameParty.members();"
+                    "for(var i=0;i<m.length;i++){"
+                    "m[i].setHp(m[i].mhp);m[i].setMp(m[i].mmp);}"
+                    "return 'healed';})()")
         if cmd == "heal_all":
             # MV: removeAllStates() отсутствует (MZ-only) — снимаем через
-            # states().forEach(removeState), это же лечит смерть (revive)
-            return ("$gameParty.members().forEach("
-                    "a => { a.states().forEach("
-                    "s => a.removeState(s.id)); a.setHp(a.mhp); "
-                    "a.setMp(a.mmp); }), 'healed_all'")
+            # states()/removeState, это же лечит смерть (revive).
+            # Копия массива states(): removeState во время обхода безопасен.
+            return ("(function(){var m=$gameParty.members();"
+                    "for(var i=0;i<m.length;i++){var a=m[i];"
+                    "var st=a.states().slice();"
+                    "for(var j=0;j<st.length;j++){"
+                    "a.removeState(st[j].id);}"
+                    "a.setHp(a.mhp);a.setMp(a.mmp);}"
+                    "return 'healed_all';})()")
         if cmd == "clear_states":
-            return ("$gameParty.members().forEach("
-                    "a => a.states().forEach("
-                    "s => a.removeState(s.id))), 'states_cleared'")
+            return ("(function(){var m=$gameParty.members();"
+                    "for(var i=0;i<m.length;i++){var a=m[i];"
+                    "var st=a.states().slice();"
+                    "for(var j=0;j<st.length;j++){"
+                    "a.removeState(st[j].id);}}"
+                    "return 'states_cleared';})()")
         if cmd == "speed":
             return f"$gamePlayer.setMoveSpeed({int(kwargs['value'])})"
         if cmd == "game_speed":
@@ -1033,72 +536,111 @@ class RpgMakerTentacle(CDPTentacle):
             v = "true" if kwargs["value"] else "false"
             return f"window.__octopus.clickTp = {v}"
         if cmd == "teleport":
-            return ("$gamePlayer.reserveTransfer("
-                    f"{int(kwargs['mapId'])}, {int(kwargs['x'])}, "
-                    f"{int(kwargs['y'])}, 0, 0), 'teleported'")
+            return ("(function(){if(typeof $gamePlayer==='undefined'){"
+                    "throw new Error('игра ещё не загружена');}"
+                    "if($gameParty.inBattle()){"
+                    "throw new Error('нельзя во время боя');}"
+                    "$gamePlayer.reserveTransfer("
+                    + str(int(kwargs['mapId'])) + ", " + str(int(kwargs['x'])) + ", "
+                    + str(int(kwargs['y'])) + ", 0, 0);return 'teleported';})()")
         if cmd == "reload_map":
+            # Без Decrypter/XHR-хитростей: перечитываем файл карты через
+            # штатный XHR (plain JSON) с www/data-фолбэком, для шифрованных
+            # .rpgmvm — мягкий fallback на setup текущей $dataMap.
+            # Всё ES5, ошибки XHR не роняют чит (возвращаем результат).
             return (
-                "(() => {"
-                " const mapId = $gameMap.mapId();"
-                " const fn = 'data/Map' + ('00' + mapId).slice(-3)"
-                " + '.json';"
-                " const xhr = new XMLHttpRequest();"
-                " xhr.open('GET', fn);"
-                " xhr.overrideMimeType('application/octet-stream');"
-                " xhr.onload = () => {"
-                "   if (xhr.status > 0) {"
-                "     let text = xhr.responseText;"
-                "     if (typeof Decrypter !== 'undefined'"
-                "         && Decrypter.hasEncryptedImages) {"
-                "       try { text = Decrypter.decrypt(text); }"
-                "       catch (e) {}"
-                "     }"
-                "     try { $dataMap = JSON.parse(text); }"
-                "     catch (e) { return; }"
-                "     $gameMap.setup(mapId);"
-                "     $gamePlayer.reserveTransfer(mapId,"
-                "       $gamePlayer.x, $gamePlayer.y,"
-                "       $gamePlayer.direction(), 0);"
-                "   }"
-                " };"
-                " xhr.send();"
-                " return 'map_reloaded';"
+                "(function(){"
+                "var mapId=$gameMap.mapId();"
+                "var px=$gamePlayer.x,py=$gamePlayer.y,dir=$gamePlayer.direction();"
+                "function obDone(){try{$gameMap.setup(mapId);}catch(e){}"
+                "try{$gamePlayer.reserveTransfer(mapId,px,py,dir,0);}catch(e2){}"
+                "return 'map_reloaded';}"
+                "try{"
+                "var pad=('00'+mapId).slice(-3);"
+                "var urls=['data/Map'+pad+'.json','www/data/Map'+pad+'.json'];"
+                "var idx=0;"
+                "function obTry(){"
+                "if(idx>=urls.length){return obDone();}"
+                "var fn=urls[idx++];"
+                "var xhr=new XMLHttpRequest();"
+                "try{xhr.open('GET',fn);}catch(e){return obTry();}"
+                "try{xhr.overrideMimeType('application/octet-stream');}catch(e2){}"
+                "xhr.onload=function(){"
+                "try{if(xhr.status===0||xhr.status===200){"
+                "var t=xhr.responseText;"
+                "if(t&&t.charCodeAt(0)===82){return obTry();}"
+                "$dataMap=JSON.parse(t);return obDone();}}catch(e){}"
+                "return obTry();};"
+                "xhr.onerror=function(){return obTry();};"
+                "try{xhr.send();}catch(e){return obTry();}"
+                "}"
+                "obTry();return 'map_reloading';"
+                "}catch(e){return obDone();}"
                 "})()")
         if cmd == "win_battle":
-            return ("(() => { if (typeof $gameParty === 'undefined' || "
-                    "!$gameParty.inBattle()) "
-                    "throw new Error('сейчас нет боя'); "
-                    "const troop = $gameTroop; "
-                    "troop.members().forEach("
-                    "e => { if (e.isAlive()) e.die(); }); "
-                    "if (troop.isAllDead()) BattleManager.processVictory(); "
-                    "return 'won'; })()")
+            return ("(function(){if(typeof $gameParty==='undefined'||"
+                    "!$gameParty.inBattle()){"
+                    "throw new Error('сейчас нет боя');}"
+                    "var troop=$gameTroop;"
+                    "var ms=troop.members();"
+                    "for(var i=0;i<ms.length;i++){"
+                    "if(ms[i].isAlive()){ms[i].die();}}"
+                    "if(troop.isAllDead()){BattleManager.processVictory();}"
+                    "return 'won';})()")
         if cmd == "give_item":
             kind = str(kwargs.get("kind", ""))
             db = {"weapon": "$dataWeapons", "armor": "$dataArmors"}.get(
                 kind, "$dataItems")
-            return ("(() => { const it = " + db + f"[{int(kwargs['id'])}]; "
-                    "if (!it) throw new Error('нет такого предмета'); "
+            return ("(function(){var it=" + db + f"[{int(kwargs['id'])}];"
+                    "if(!it){throw new Error('нет такого предмета');}"
                     f"$gameParty.gainItem(it, {int(kwargs.get('count', 1))}, "
-                    "true); return it.name; })()")
+                    "true);return it.name;})()")
         if cmd == "open_menu":
-            return ("SceneManager.push(Scene_Menu), 'menu_opened'")
+            return ("(function(){if(typeof SceneManager==='undefined'){"
+                    "throw new Error('сцена недоступна');}"
+                    "if(SceneManager._scene&&SceneManager._scene.constructor===Scene_Menu){"
+                    "return 'already';}"
+                    "SceneManager.push(Scene_Menu);return 'menu_opened';})()")
         if cmd == "open_items":
-            return ("SceneManager.push(Scene_Item), 'items_opened'")
+            return ("(function(){if(typeof SceneManager==='undefined'){"
+                    "throw new Error('сцена недоступна');}"
+                    "if(SceneManager._scene&&SceneManager._scene.constructor===Scene_Item){"
+                    "return 'already';}"
+                    "SceneManager.push(Scene_Item);return 'items_opened';})()")
         if cmd == "open_skills":
-            return ("SceneManager.push(Scene_Skill), 'skills_opened'")
+            return ("(function(){if(typeof SceneManager==='undefined'){"
+                    "throw new Error('сцена недоступна');}"
+                    "if(SceneManager._scene&&SceneManager._scene.constructor===Scene_Skill){"
+                    "return 'already';}"
+                    "SceneManager.push(Scene_Skill);return 'skills_opened';})()")
         if cmd == "open_equip":
-            return ("SceneManager.push(Scene_Equip), 'equip_opened'")
+            return ("(function(){if(typeof SceneManager==='undefined'){"
+                    "throw new Error('сцена недоступна');}"
+                    "if(SceneManager._scene&&SceneManager._scene.constructor===Scene_Equip){"
+                    "return 'already';}"
+                    "SceneManager.push(Scene_Equip);return 'equip_opened';})()")
         if cmd == "open_status":
-            return ("SceneManager.push(Scene_Status), 'status_opened'")
+            return ("(function(){if(typeof SceneManager==='undefined'){"
+                    "throw new Error('сцена недоступна');}"
+                    "if(SceneManager._scene&&SceneManager._scene.constructor===Scene_Status){"
+                    "return 'already';}"
+                    "SceneManager.push(Scene_Status);return 'status_opened';})()")
         if cmd == "open_save":
-            return ("SceneManager.push(Scene_Save), 'save_opened'")
+            return ("(function(){if(typeof SceneManager==='undefined'){"
+                    "throw new Error('сцена недоступна');}"
+                    "SceneManager.push(Scene_Save);return 'save_opened';})()")
         if cmd == "open_load":
-            return ("SceneManager.push(Scene_Load), 'load_opened'")
+            return ("(function(){if(typeof SceneManager==='undefined'){"
+                    "throw new Error('сцена недоступна');}"
+                    "SceneManager.push(Scene_Load);return 'load_opened';})()")
         if cmd == "open_options":
-            return ("SceneManager.push(Scene_Options), 'options_opened'")
+            return ("(function(){if(typeof SceneManager==='undefined'){"
+                    "throw new Error('сцена недоступна');}"
+                    "SceneManager.push(Scene_Options);return 'options_opened';})()")
         if cmd == "open_gameend":
-            return ("SceneManager.push(Scene_GameEnd), 'gameend_opened'")
+            return ("(function(){if(typeof SceneManager==='undefined'){"
+                    "throw new Error('сцена недоступна');}"
+                    "SceneManager.push(Scene_GameEnd);return 'gameend_opened';})()")
         if cmd == "actor_set":
             field = str(kwargs["field"])
             fid = int(kwargs["actorId"])
@@ -1107,14 +649,14 @@ class RpgMakerTentacle(CDPTentacle):
                 "level": f"a.changeLevel({int(val)}, false)",
                 "hp": f"a.setHp({int(val)})",
                 "mp": f"a.setMp({int(val)})",
-                "exp": f"a.changeExp({js(val)}, false)",
+                "exp": f"a.changeExp({js(int(val))}, false)",
             }
             op = ops.get(field)
             if not op:
                 return None
-            return ("(() => { const a = $gameActors.actor(" + str(fid) +
-                    "); if (!a) throw new Error('нет такого героя'); "
-                    + op + "; return a.name(); })()")
+            return ("(function(){var a=$gameActors.actor(" + str(fid) +
+                    ");if(!a){throw new Error('нет такого героя');}"
+                    + op + ";return a.name();})()")
         return None
 
     def game_pid(self) -> int | None:

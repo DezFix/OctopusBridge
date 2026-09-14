@@ -163,9 +163,18 @@ def js_json(obj) -> str:
     JSON.parse справился бы с U+2028/U+2029, но это литерал в коде:
     в Chromium 65 (MV) они считаются разделителями строк и ломают
     синтаксис — экранируем как \\u2028/\\u2029.
+
+    HTML-безопасность: словарь живёт в .js, который грузится через
+    <script> — ``</script>`` внутри перевода закроет элемент на уровне
+    HTML-парсера раньше JS-парсера. ``<``/``>``/``&`` уводим в \\uXXXX
+    (JSON их понимает, в рантайме decode даёт исходные символы).
     """
-    return json.dumps(obj, ensure_ascii=False).replace(
-        "\u2028", "\\u2028").replace("\u2029", "\\u2029")
+    return (json.dumps(obj, ensure_ascii=False)
+            .replace("&", "\\u0026")
+            .replace("<", "\\u003c")
+            .replace(">", "\\u003e")
+            .replace("\u2028", "\\u2028")
+            .replace("\u2029", "\\u2029"))
 
 
 def _tr_dict_span(src: str) -> tuple[int, int] | None:
@@ -301,7 +310,7 @@ def _ensure_plugins_entry(game_dir: str) -> bool:
             text = f.read()
     except OSError:
         return False
-    if f'"{BRIDGE_PLUGIN_NAME}"' in text:
+    if f'"{BRIDGE_PLUGIN_NAME}"' in text or f"'{BRIDGE_PLUGIN_NAME}'" in text:
         return True
     entry = ('{"name":"octopus_ob","status":true,"description":'
              '"OctopusBridge bridge (cheats/translation)","parameters":{}}')
@@ -311,10 +320,14 @@ def _ensure_plugins_entry(game_dir: str) -> bool:
             data = json.loads(text)
         except ValueError:
             return False
+        if not isinstance(data, list):
+            return False
         data.append(json.loads(entry))
         new_text = json.dumps(data, ensure_ascii=False, indent=1)
+        is_json = True
     else:
         # JS-формат MV: var $plugins = [ ... ];
+        is_json = False
         idx = text.rfind("]")
         if idx < 0:
             return False
@@ -325,9 +338,34 @@ def _ensure_plugins_entry(game_dir: str) -> bool:
             if head.endswith(","):
                 head = head[:-1]
             new_text = head + ",\n" + entry + "\n" + text[idx:]
+    # Валидация: битый plugins.js = игра не стартует. Не пишем, если
+    # массив не парсится после вставки.
+    try:
+        if is_json:
+            assert isinstance(json.loads(new_text), list)
+        else:
+            _s = new_text[new_text.index("["):new_text.rindex("]") + 1]
+            assert isinstance(
+                json.loads(re.sub(r",(\s*[\]}])", r"\1", _s)), list)
+    except (ValueError, json.JSONDecodeError, AssertionError):
+        return False
+    try:
+        with open(path, "rb") as f:
+            _orig = f.read()
+    except OSError:
+        _orig = None
     try:
         with open(path, "w", encoding="utf-8", newline="\n") as f:
             f.write(new_text)
+        # бэкап оригинала один раз рядом с файлом (.ob_backup), НЕ в
+        # backup/<rel> (туда смотрит legacy-откат parser'а — не смешиваем).
+        try:
+            bak = path + ".ob_backup"
+            if not os.path.exists(bak) and _orig is not None:
+                with open(bak, "wb") as bf:
+                    bf.write(_orig)
+        except OSError:
+            pass
         return True
     except OSError:
         return False
@@ -412,21 +450,48 @@ def _remove_entry_by_name(text: str, name: str) -> str:
     ("parameters": {}). Идём от "name" назад до открывающей скобки
     объекта, затем вперёд до парной закрывающей — и удаляем объект
     вместе с окружающими запятыми/пробелами.
+
+    Счёт скобок — строко-чувствительный: ``{``/``}`` внутри строковых
+    литералов (напр. переводов) не считаются структурой, иначе вырезка
+    разорвёт файл и игра не стартует.
     """
     m = re.search(r'"name"\s*:\s*"' + re.escape(name) + r'"', text)
     if not m:
+        return text
+
+    def _in_string(pos: int) -> bool:
+        """Внутри ли pos двойной-quoted строки (с учётом \\)?"""
+        in_s = False
+        esc = False
+        i = 0
+        while i < pos:
+            c = text[i]
+            if in_s:
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == '"':
+                    in_s = False
+            elif c == '"':
+                in_s = True
+            i += 1
+        return in_s
+
+    if _in_string(m.start()):
         return text
     idx = m.start()
     start = idx
     depth = 0
     while start >= 0:
         ch = text[start]
-        if ch == "}":
-            depth += 1
-        elif ch == "{":
-            depth -= 1
-            if depth < 0:
-                break
+        if not _in_string(start):
+            if ch == "}":
+                depth += 1
+            elif ch == "{":
+                depth -= 1
+                if depth < 0:
+                    break
         start -= 1
     if start < 0:
         return text
@@ -434,12 +499,13 @@ def _remove_entry_by_name(text: str, name: str) -> str:
     depth = 1  # уже внутри внешнего {
     while end < len(text):
         ch = text[end]
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                break
+        if not _in_string(end):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    break
         end += 1
     if end >= len(text):
         return text

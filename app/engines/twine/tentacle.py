@@ -14,9 +14,11 @@
 
 Что даёт мост: состояние игры и переменные (State.variables /
 story.state) в панели приложения, читы (set_variable / exec),
-бэкап и восстановление сейвов. Перевод игры делается в приложении
+бэкап и восстановление сейвов, live-перевод видимого текста
+(словарь проекта + живые батчи через провайдер приложения).
+Перевод игры делается в приложении
 (извлечение текста -> перевод -> новая html-копия рядом с игрой),
-в веб-странице перевод не живёт.
+live-слой в странице — дополнение поверх, файлы не трогает.
 """
 from __future__ import annotations
 
@@ -37,8 +39,8 @@ from app.core.tentacles.base import Tentacle
 # ── JS-пэйлоад ────────────────────────────────────────────────────────
 #  {WS_URL} — подставляется HTTP-сервером при инжекции
 #  Единый пэйлоад для обоих режимов (браузер и webapp-окно): мост
-#  состояния/читов/сейвов. Перевода в веб-странице нет — он делается
-#  в приложении (извлечение -> перевод -> новая html-копия игры).
+#  состояния/читов/сейвов (ниже) + live-перевод видимого текста
+#  (TR_SCRIPT: словарь проекта + батчи через провайдер приложения).
 PAYLOAD_SCRIPT = r"""
 <script>
 if (!window.__octopus || !window.__octopus.twineInjected) {
@@ -84,6 +86,8 @@ function _connectWS() {
         if (_restoreSaves(m.data)) return;
         if (++tries < 20) setTimeout(retryRestore, 500);
       })();
+    } else if (__OT.tr) {
+      try { __OT.tr.onWS(m); } catch (e) {}
     }
   };
   _ws.onclose = function() { setTimeout(_connectWS, 1500); };
@@ -113,13 +117,13 @@ __OT.collectState = function() {
       s.variables = JSON.parse(JSON.stringify(State.variables || {}));
       s.story = { passage: State.passage || '', turns: State.turns || 0 };
       if (typeof Story !== 'undefined') { var c = Story.get(); s.story.title = (c && c.title) || ''; }
-      (function fl(o, p) { for (var k in o) { var n = p ? p+'.'+k : k, v = o[k]; if (v && typeof v === 'object' && !Array.isArray(v)) fl(v, n); else s.variablesFlat[n] = v; } })(s.variables, '');
+      (function fl(o, p) { for (var k in o) { if (!Object.prototype.hasOwnProperty.call(o, k)) continue; var n = p ? p+'.'+k : k, v = o[k]; if (v && typeof v === 'object' && !Array.isArray(v)) fl(v, n); else s.variablesFlat[n] = v; } })(s.variables, '');
     } catch(e) {}
   } else if (__OT._fmt === 'harlowe') {
     try {
       if (window.Harlowe && window.Harlowe.state) {
         s.variables = JSON.parse(JSON.stringify(window.Harlowe.state.variables || {}));
-        (function fl(o, p) { for (var k in o) { var n = p ? p+'.'+k : k, v = o[k]; if (v && typeof v === 'object' && !Array.isArray(v)) fl(v, n); else s.variablesFlat[n] = v; } })(s.variables, '');
+        (function fl(o, p) { for (var k in o) { if (!Object.prototype.hasOwnProperty.call(o, k)) continue; var n = p ? p+'.'+k : k, v = o[k]; if (v && typeof v === 'object' && !Array.isArray(v)) fl(v, n); else s.variablesFlat[n] = v; } })(s.variables, '');
       }
     } catch(e) {}
   }
@@ -185,14 +189,24 @@ __OT.setVar = function(name, value) {
   if (__OT._fmt === 'sugarcube' && typeof State !== 'undefined') {
     try {
       var p = name.split('.'), o = State.variables;
-      for (var i = 0; i < p.length - 1; i++) { if (o[p[i]] === undefined || o[p[i]] === null) o[p[i]] = {}; o = o[p[i]]; }
+      for (var i = 0; i < p.length - 1; i++) {
+        if (o[p[i]] === undefined || o[p[i]] === null) {
+          o[p[i]] = isNaN(Number(p[i + 1])) ? {} : [];
+        }
+        o = o[p[i]];
+      }
       o[p[p.length - 1]] = value; __OT._sendState(); return true;
     } catch(e) { return false; }
   }
   if (__OT._fmt === 'harlowe' && window.Harlowe) {
     try {
       var p = name.split('.'), o = window.Harlowe.state.variables;
-      for (var i = 0; i < p.length - 1; i++) { if (o[p[i]] === undefined) o[p[i]] = {}; o = o[p[i]]; }
+      for (var i = 0; i < p.length - 1; i++) {
+        if (o[p[i]] === undefined || o[p[i]] === null) {
+          o[p[i]] = isNaN(Number(p[i + 1])) ? {} : [];
+        }
+        o = o[p[i]];
+      }
       o[p[p.length - 1]] = value; __OT._sendState(); return true;
     } catch(e) { return false; }
   }
@@ -203,6 +217,192 @@ __OT.exec = function(code) { try { return { ok: true, value: eval(code) }; } cat
 
 })();
 }
+</script>
+"""
+
+# ── JS live-перевод (браузерная половина) ──────────────────────────
+# Дополняет PAYLOAD_SCRIPT: словарь проекта (tr_dict) + живые батчи
+# (tr_request/tr_result) через ТОТ ЖЕ WebSocket. Только текстовые узлы
+# DOM (textContent) — атрибуты, ссылки и обработчики не трогаем, поэтому
+# рендер и логика игры не ломаются. ES5: работает везде.
+TR_SCRIPT = r"""
+<script>
+(function(){
+if (!window.__octopus || window.__octopus.tr) return;
+var OT = window.__octopus;
+var T = OT.tr = {
+  dict: {}, enabled: false, from: "auto", to: "ru",
+  orig: [],          // [node, original] для отката при выключении
+  pending: null,     // {id, items:[{node, orig}]} — ждём tr_result
+  reqSeq: 0, timer: 0, busy: false, obs: null
+};
+var SKIP_TAGS = {SCRIPT:1, STYLE:1, NOSCRIPT:1, TEXTAREA:1, TEMPLATE:1,
+  INPUT:1, SELECT:1, OPTION:1, CODE:1, PRE:1};
+
+function hasLetters(s) { return /[A-Za-z\u00C0-\u024F\u0370-\u03FF\u0400-\u04FF\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/.test(s); }
+
+function root() {
+  return document.getElementById("passages") || document.getElementById("story") || document.body;
+}
+
+function eachText(fn) {
+  var r = root();
+  if (!r || !document.createTreeWalker) return;
+  var w = document.createTreeWalker(r, NodeFilter.SHOW_TEXT, null, false);
+  var n;
+  while ((n = w.nextNode())) {
+    var p = n.parentNode;
+    if (p && SKIP_TAGS[p.nodeName]) continue;
+    try { fn(n); } catch (e) {}
+  }
+}
+
+function remember(node, orig, applied) {
+  for (var i = 0; i < T.orig.length; i++) {
+    if (T.orig[i][0] === node) { T.orig[i][2] = applied; return; }
+  }
+  T.orig.push([node, orig, applied]);
+}
+
+function applyDict() {
+  if (!T.enabled) return;
+  T.busy = true;
+  try {
+    eachText(function(n) {
+      var v = n.nodeValue;
+      if (!v) return;
+      if (Object.prototype.hasOwnProperty.call(T.dict, v)) {
+        remember(n, v, T.dict[v]);
+        n.nodeValue = T.dict[v];
+      }
+    });
+  } finally { T.busy = false; }
+  pruneOrig();
+}
+
+function pruneOrig() {
+  // забываем мёртвые узлы, чтобы не течь памятью на длинных сессиях
+  var alive = [];
+  for (var i = 0; i < T.orig.length; i++) {
+    try { if (T.orig[i][0].isConnected) alive.push(T.orig[i]); } catch (e) {}
+  }
+  T.orig = alive;
+}
+
+function maybeRequest() {
+  if (!T.enabled || T.pending || !OT.send) return;
+  var items = [], chars = 0;
+  eachText(function(n) {
+    if (items.length >= 40 || chars >= 1800) return;
+    var v = n.nodeValue;
+    if (!v || v.length > 200) return;
+    var t = v.trim();
+    if (!t || !hasLetters(t)) return;
+    if (Object.prototype.hasOwnProperty.call(T.dict, v)) return;
+    items.push({node: n, orig: v});
+    chars += v.length;
+  });
+  if (!items.length) return;
+  var texts = [];
+  for (var i = 0; i < items.length; i++) texts.push(items[i].orig);
+  T.pending = {id: ++T.reqSeq, items: items};
+  try { OT.send({type: "tr_request", id: T.pending.id, texts: texts, lang_from: T.from, lang_to: T.to}); }
+  catch (e) { T.pending = null; }
+}
+
+function onResult(m) {
+  var p = T.pending;
+  if (!p || p.id !== m.id || !m.results) { T.pending = null; return; }
+  T.busy = true;
+  try {
+    for (var i = 0; i < p.items.length && i < m.results.length; i++) {
+      var it = p.items[i], r = m.results[i];
+      try {
+        if (it.node.isConnected && it.node.nodeValue === it.orig
+            && typeof r === "string" && r && r !== it.orig) {
+          remember(it.node, it.orig, r);
+          it.node.nodeValue = r;
+        }
+      } catch (e) {}
+    }
+  } finally { T.busy = false; T.pending = null; }
+  pruneOrig();
+}
+
+function reset() {
+  // вернуть оригиналы — только туда, где лежит именно наш перевод
+  // (узел, который игра успела переписать, не трогаем)
+  T.busy = true;
+  try {
+    for (var i = 0; i < T.orig.length; i++) {
+      var pair = T.orig[i];
+      try {
+        if (pair[0].isConnected && pair[0].nodeValue === pair[2]) {
+          pair[0].nodeValue = pair[1];
+        }
+      } catch (e) {}
+    }
+  } finally { T.busy = false; T.orig = []; T.pending = null; }
+}
+
+function observe() {
+  if (T.obs || !window.MutationObserver) return;
+  var deb = 0;
+  T.obs = new MutationObserver(function() {
+    if (!T.enabled || T.busy) return;
+    if (deb) return;
+    deb = setTimeout(function() {
+      deb = 0;
+      if (!T.enabled || T.busy) return;
+      applyDict();
+      maybeRequest();
+    }, 400);
+  });
+  try { T.obs.observe(root() || document.body,
+    {childList: true, characterData: true, subtree: true}); } catch (e) {}
+}
+
+T.queue = function() {
+  if (!T.enabled || T.busy) return;
+  if (T.timer) return;
+  T.timer = setTimeout(function() {
+    T.timer = 0;
+    if (!T.enabled) return;
+    applyDict();
+    maybeRequest();
+  }, 250);
+};
+
+T.onWS = function(m) {
+  if (m.type === "tr_dict") {
+    T.dict = (m.data && typeof m.data === "object") ? m.data : {};
+    if (T.enabled) { reset(); applyDict(); maybeRequest(); }
+    return true;
+  }
+  if (m.type === "tr_set") {
+    T.enabled = !!m.enabled;
+    if (typeof m.from === "string" && m.from) T.from = m.from;
+    if (typeof m.to === "string" && m.to) T.to = m.to;
+    if (T.enabled) { observe(); applyDict(); maybeRequest(); }
+    else { reset(); if (T.obs) { try { T.obs.disconnect(); } catch (e) {} T.obs = null; } }
+    return true;
+  }
+  if (m.type === "tr_result") { onResult(m); return true; }
+  if (m.type === "tr_status") {
+    try { if (m.msg) console.debug("[octopus] tr: " + m.msg); } catch (e) {}
+    return true;
+  }
+  return false;
+};
+
+// SugarCube: перерендер пассажа — перевести заново
+try {
+  if (typeof $ !== "undefined" && $.fn) {
+    $(document).on(":passagedisplay", function() { T.queue(); });
+  }
+} catch (e) {}
+try { document.addEventListener("DOMContentLoaded", function() { T.queue(); }); } catch (e) {}
+})();
 </script>
 """
 
@@ -255,7 +455,8 @@ class _InjectingHTTPHandler(http_server.SimpleHTTPRequestHandler):
                 pass
             return
         # .html — инжекция пэйлоада (мост) или экран ошибок (webapp-режим)
-        is_html = self.path.endswith(".html") or self.path.endswith(".htm")
+        _noq = self.path.split("?")[0].lower()
+        is_html = _noq.endswith(".html") or _noq.endswith(".htm")
         if is_html and (self._inject_html or self._shield_html):
             local = self.translate_path(self.path)
             if os.path.isfile(local):
@@ -268,9 +469,11 @@ class _InjectingHTTPHandler(http_server.SimpleHTTPRequestHandler):
                 if self._inject_html:
                     script = PAYLOAD_SCRIPT.replace("{WS_URL}", self._ws_url)
                     content = content.replace(b"</body>",
-                                              script.encode() + b"</body>")
+                                              script.encode()
+                                              + TR_SCRIPT.encode() + b"</body>")
                     if b"</body>" not in content:
-                        content = content + script.encode()
+                        content = content + script.encode() \
+                            + TR_SCRIPT.encode()
                 else:
                     # Экран ошибок ДО скриптов игры — WebView2 не показывает
                     # диалог "An error has occurred" на баги самой игры.
@@ -290,7 +493,8 @@ class _InjectingHTTPHandler(http_server.SimpleHTTPRequestHandler):
                     # Единый пэйлоад (мост + live-перевод) и в webapp-режиме:
                     # окно игры — это WebView2 с тем же origin.
                     payload = PAYLOAD_SCRIPT.replace(
-                        "{WS_URL}", self._ws_url).encode("utf-8")
+                        "{WS_URL}", self._ws_url).encode("utf-8") \
+                        + TR_SCRIPT.encode("utf-8")
                     if b"</body>" in content:
                         content = content.replace(b"</body>",
                                                   payload + b"</body>")

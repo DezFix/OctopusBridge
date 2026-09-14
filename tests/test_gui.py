@@ -166,13 +166,16 @@ print("   OK")
 
 print("6) Чит-выражения RPGM (без игры)...")
 from app.engines.rpgmaker.tentacle import RpgMakerTentacle as RT
-assert RT._cheat_expr("gold_set", value=5) == "$gameParty._gold = 5"
+# 7.7: gold_set идёт через gainGold(diff) — срабатывают хуки и UI,
+# teleport — с защитой от боя (ES5-IIFE)
+_gs = RT._cheat_expr("gold_set", value=5)
+assert "gainGold" in _gs and "_gold =" not in _gs, _gs
 assert RT._cheat_expr("var_set", index=2, value="x") == \
     '$gameVariables.setValue(2, "x")'
 assert RT._cheat_expr("switch_set", index=7, value=True) == \
     "$gameSwitches.setValue(7, true)"
-assert RT._cheat_expr("teleport", mapId=3, x=1, y=2) == \
-    "$gamePlayer.reserveTransfer(3, 1, 2, 0, 0), 'teleported'"
+_tp = RT._cheat_expr("teleport", mapId=3, x=1, y=2)
+assert "reserveTransfer" in _tp and "3, 1, 2" in _tp, _tp
 assert RT._cheat_expr("no_such_cheat") is None
 print("   OK")
 
@@ -199,7 +202,9 @@ for key in ("settings_corr_tab", "settings_glossary_box",
             "settings_cache_size", "settings_cache_clean",
             "settings_cache_auto", "settings_cache_limit",
             "settings_cache_cleaned", "settings_cache_nothing",
-            "settings_cache_open"):
+            "settings_cache_open",
+            "tr_verify_failed", "tr_verify_restored", "tr_verify_broken",
+            "tr_apply_skipped"):
     assert TR(key), key
 print("   OK")
 

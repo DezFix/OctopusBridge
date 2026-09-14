@@ -10,8 +10,8 @@ binaries, hiddenimports = [], []
 
 version_info = VSVersionInfo(
     ffi=FixedFileInfo(
-        filevers=(7, 6, 0, 0),
-        prodvers=(7, 6, 0, 0),
+        filevers=(7, 13, 0, 0),
+        prodvers=(7, 13, 0, 0),
         mask=0x3F,
         flags=0x0,
         OS=0x40004,
@@ -24,11 +24,11 @@ version_info = VSVersionInfo(
             StringTable('040904B0', [
                 StringStruct('CompanyName', 'OctopusBridge'),
                 StringStruct('FileDescription', 'OctopusBridge - game translation & modding tool'),
-                StringStruct('FileVersion', '7.6'),
+                StringStruct('FileVersion', '7.13'),
                 StringStruct('InternalName', 'OctopusBridge'),
-                StringStruct('OriginalFilename', 'OctopusBridge_v7.6.exe'),
+                StringStruct('OriginalFilename', 'OctopusBridge_v7.13.exe'),
                 StringStruct('ProductName', 'OctopusBridge'),
-                StringStruct('ProductVersion', '7.6'),
+                StringStruct('ProductVersion', '7.13'),
             ]),
         ]),
         VarFileInfo([VarStruct('Translation', [1033, 1200])]),
@@ -44,7 +44,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['torch', 'torchvision', 'torchaudio', 'torch_directml', 'transformers', 'tokenizers', 'safetensors', 'accelerate', 'datasets', 'peft', 'einops', 'triton', 'sympy', 'networkx', 'sklearn', 'scipy', 'pandas', 'matplotlib', 'PIL', 'IPython', 'jupyter_client', 'stanza'],
+    excludes=['PyQt5', 'PyQt6', 'PySide2', 'torch', 'torchvision', 'torchaudio', 'torch_directml', 'transformers', 'tokenizers', 'safetensors', 'accelerate', 'datasets', 'peft', 'einops', 'triton', 'sympy', 'networkx', 'sklearn', 'scipy', 'pandas', 'matplotlib', 'PIL', 'IPython', 'jupyter_client', 'stanza'],
     noarchive=False,
     optimize=0,
 )
@@ -56,7 +56,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='OctopusBridge_v7.6.exe',
+    name='OctopusBridge_v7.13.exe',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

@@ -47,6 +47,22 @@ _RUNTIME_PLUGIN_TEMPLATE = r"""
 {{TRANSLATION_PAYLOAD}}
 
   window.__octopus_trInstall({{DICT_JSON}});
+
+  // заголовок окна (package.json/index.html переводятся файлом, но
+  // при запуске через мост/вкладки файл уже прочитан — догоняем тут)
+  try {
+    var _obDocT = String(document.title || "");
+    var _obNewT = window.__octopus_trApply(_obDocT);
+    if (_obNewT && _obNewT !== _obDocT) {
+      document.title = _obNewT;
+      try {
+        if (window.nw && nw.Window) { nw.Window.get().title = _obNewT; }
+        else if (window.require) {
+          window.require("nw.gui").Window.get().title = _obNewT;
+        }
+      } catch (_obe2) {}
+    }
+  } catch (_obe) {}
 })();
 """
 
@@ -101,7 +117,7 @@ def _plugins_list_rel_for_runtime(game_dir: str) -> str | None:
 def build_runtime_source(tr_dict: dict, target_lang: str = "ru",
                          overlay_rel: str | None = None) -> str:
     """JS-код рантайм-плагина с вшитым словарём."""
-    from app.engines.rpgmaker.tentacle import _TRANSLATION_PAYLOAD
+    from app.core.rpgmaker.payloads import _TRANSLATION_PAYLOAD
     from app.core.rpgmaker.mv_bridge import js_json
     dict_json = js_json(tr_dict) if tr_dict else "{}"
     # payload заканчивается на window.__octopus_trInstall(__TR_DICT__); —
@@ -118,6 +134,43 @@ def build_runtime_source(tr_dict: dict, target_lang: str = "ru",
             .replace("{{COUNT}}", str(len(tr_dict))))
 
 
+def _backup_once(game_dir: str, rel: str, original_text: bytes | None = None) -> None:
+    """Бэкап оригинала списка плагинов рядом с файлом (один раз).
+
+    Храним как ``<plugins.js>.ob_backup`` — НЕ в ``backup/<rel>``:
+    туда смотрит parser.restore_original (legacy file-патч), и смешивание
+    runtime-записи с legacy-бэкапами давало ложный ``legacy_restored``
+    и риск воскресить ob_runtime при откате. Без бэкапа откат после битой
+    записи невозможен, а битый plugins.js = игра не стартует.
+    """
+    try:
+        orig_path = os.path.join(game_dir, rel.replace("/", os.sep))
+        bak = orig_path + ".ob_backup"
+        if os.path.exists(bak):
+            return
+        if original_text is None:
+            with open(orig_path, "rb") as f:
+                original_text = f.read()
+        with open(bak, "wb") as f:
+            f.write(original_text)
+    except OSError:
+        pass
+
+
+def _validate_plugins_list_text(text: str, is_json: bool) -> bool:
+    """Проверка, что новый текст списка плагинов не сломает запуск игры."""
+    import re as _re
+    try:
+        if is_json:
+            data = json.loads(text)
+            return isinstance(data, list)
+        s = text[text.index("["):text.rindex("]") + 1]
+        data = json.loads(_re.sub(r",(\s*[\]}])", r"\1", s))
+        return isinstance(data, list)
+    except (ValueError, json.JSONDecodeError):
+        return False
+
+
 def _ensure_plugins_entry(game_dir: str, plugin_name: str = RUNTIME_PLUGIN_NAME) -> bool:
     rel = _plugins_list_rel_for_runtime(game_dir)
     if not rel:
@@ -128,7 +181,7 @@ def _ensure_plugins_entry(game_dir: str, plugin_name: str = RUNTIME_PLUGIN_NAME)
             text = f.read()
     except OSError:
         return False
-    if f'"{plugin_name}"' in text:
+    if f'"{plugin_name}"' in text or f"'{plugin_name}'" in text:
         return True
     entry = (f'{{"name":"{plugin_name}","status":true,'
              f'"description":"OctopusBridge runtime translation","parameters":{{}}}}')
@@ -137,6 +190,8 @@ def _ensure_plugins_entry(game_dir: str, plugin_name: str = RUNTIME_PLUGIN_NAME)
         try:
             data = json.loads(text)
         except ValueError:
+            return False
+        if not isinstance(data, list):
             return False
         data.append(json.loads(entry))
         new_text = json.dumps(data, ensure_ascii=False, indent=1)
@@ -152,9 +207,17 @@ def _ensure_plugins_entry(game_dir: str, plugin_name: str = RUNTIME_PLUGIN_NAME)
             if head.endswith(","):
                 head = head[:-1]
             new_text = head + ",\n" + entry + "\n" + text[idx:]
+    if not _validate_plugins_list_text(new_text, is_json):
+        return False
+    try:
+        with open(path, "rb") as f:
+            _orig = f.read()
+    except OSError:
+        _orig = None
     try:
         with open(path, "w", encoding="utf-8", newline="\n") as f:
             f.write(new_text)
+        _backup_once(game_dir, rel, _orig)
         return True
     except OSError:
         return False
@@ -188,6 +251,8 @@ def _remove_plugins_entry(game_dir: str, plugin_name: str = RUNTIME_PLUGIN_NAME)
     from app.core.rpgmaker.mv_bridge import _remove_entry_by_name
     new_text = _remove_entry_by_name(text, plugin_name)
     if new_text == text:
+        return False
+    if not _validate_plugins_list_text(new_text, False):
         return False
     try:
         with open(path, "w", encoding="utf-8", newline="\n") as f:

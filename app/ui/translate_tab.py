@@ -1813,6 +1813,17 @@ class TranslateTab(QWidget):
         stats = module.apply(
             p.game_dir, p.entries,
             target_lang=self.main.settings.value("target_lang", "ru"))
+        if stats.get("verify_failed"):
+            msg = TR("tr_verify_failed",
+                     problems="\n".join(stats["verify_failed"][:8]))
+            if stats.get("verify_restored"):
+                msg += "\n" + TR("tr_verify_restored")
+            if stats.get("verify_remaining"):
+                msg += "\n" + TR("tr_verify_broken",
+                                 remaining="\n".join(stats["verify_remaining"][:8]))
+            QMessageBox.critical(self, TR("err"), msg)
+            self._update_steps()
+            return
         parts = [TR("tr_apply_done", files=stats["files"],
                      strings=stats["strings"])]
         if stats.get("backups"):
@@ -1823,6 +1834,11 @@ class TranslateTab(QWidget):
             parts.append(TR("tr_apply_folder", path=stats["out_dir"]))
         if stats.get("removed_orphans"):
             parts.append(TR("tr_apply_orphans", n=stats["removed_orphans"]))
+        if stats.get("skipped_total"):
+            details = ", ".join(
+                f"{k}×{v}" for k, v in (stats.get("skipped_by") or {}).items())
+            parts.append(TR("tr_apply_skipped", n=stats["skipped_total"],
+                            details=details or "—"))
         # гибрид: если игра запущена — внедряем перевод live-хуком (MV/MZ),
         # это покрывает и зашифрованные/asar-сборки
         ch = self.main.channel()

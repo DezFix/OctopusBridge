@@ -35,7 +35,11 @@ REQUIRED_MIN = {
 }
 
 # Исключаем неиспользуемые тяжёлые пакеты, чтобы exe оставался лёгким.
+# Qt: приложение использует только PySide6 — PyQt5/PyQt6/PySide2 обязаны
+# быть в excludes, иначе PyInstaller падает:
+# "attempt to collect multiple Qt bindings packages".
 EXCLUDES_MIN = [
+    "PyQt5", "PyQt6", "PySide2",
     "torch", "torchvision", "torchaudio", "torch_directml",
     "transformers", "tokenizers", "safetensors",
     "accelerate", "datasets", "peft", "einops", "triton", "sympy",

@@ -54,24 +54,30 @@ def _extract_interp_codes(text: str) -> list[str]:
 
 def _is_interp_safe(original: str, translation: str) -> bool:
     """True, если весь Python-код/теги внутри [...]/{...} оригинала
-    присутствуют в переводе ДОСЛОВНО и в том же порядке.
+    присутствуют в переводе ДОСЛОВНО и в том же порядке, и перевод
+    не привносит СВОИХ [...]/{...} групп.
 
     Нужно, чтобы MT/переводчик, получивший строку с интерполяцией
     (например "Играет [menu_music.truncate_text(current_track['title'])]"),
     не смог незаметно испортить код — известный случай: подчёркивания
     в идентификаторах превращались в пробелы, движок падал с
     SyntaxError прямо в игре. Если код не совпал — эту запись нельзя
-    применять, используем оригинал.
+    применять, используем оригинал. Добавленные переводчиком скобочные
+    группы ({b}, [x]) тоже отклоняем: несбалансированный тег роняет
+    показ реплики исключением.
     """
     orig_codes = _extract_interp_codes(original)
     if not orig_codes:
-        return True
+        # в оригинале кода нет — в переводе его быть не должно
+        return not _extract_interp_codes(translation)
     pos = 0
     for code in orig_codes:
         idx = translation.find(code, pos)
         if idx == -1:
             return False
         pos = idx + len(code)
+    if len(_extract_interp_codes(translation)) != len(orig_codes):
+        return False
     return True
 
 _STR = r'"((?:[^"\\]|\\.)*)"'
@@ -140,7 +146,14 @@ class _RevertableDict(dict):
     pass
 
 class _MockNode:
-    pass
+    # Терпимый конструктор: pickle по REDUCE вызывает cls(*args) —
+    # mock принимает любые аргументы и ничего не выполняет, форма
+    # файла сохраняется, код из файла — никогда.
+    def __new__(cls, *args, **kwargs):
+        return super().__new__(cls)
+
+    def __init__(self, *args, **kwargs):
+        pass
 
 _RENPY_MOCKS: dict[tuple[str, str], type] = {
     ("renpy.ast", "PyCode"): _PyCode,
@@ -162,15 +175,34 @@ for _name in [
     _RENPY_MOCKS[("renpy.ast", _name)] = type(_name, (_MockNode,), {})
 
 class _RenPyUnpickler(pickle.Unpickler):
+    # Белый список безопасных не-renpy классов: всё остальное уходит
+    # в mock (иначе враждебный .rpyc выполнит код через __reduce__
+    # вроде builtins.eval — классический pickle-RCE при извлечении).
+    # copyreg.__newobj__/_reconstructor обязаны быть настоящими:
+    # ими unpickler создаёт объекты протокола 2.
+    _SAFE_BUILTINS = frozenset({
+        "list", "dict", "tuple", "set", "frozenset", "str", "int",
+        "float", "bool", "bytes", "bytearray", "complex",
+    })
+
     def find_class(self, module, name):
         key = (module, name)
         if key in _RENPY_MOCKS:
             return _RENPY_MOCKS[key]
+        if module == "copyreg" and name in ("__newobj__", "_reconstructor"):
+            return super().find_class(module, name)
+        if module in ("builtins", "__builtin__") \
+                and name in self._SAFE_BUILTINS:
+            return super().find_class(module, name)
         if module.startswith("renpy."):
             cls = type(f"_mock_{name}", (_MockNode,), {})
             _RENPY_MOCKS[key] = cls
             return cls
-        return super().find_class(module, name)
+        # чужой модуль (os, subprocess, operator...) — mock вместо
+        # реального вызова: форма сохраняется, код не выполняется
+        cls = type(f"_mock_ext_{module}_{name}", (_MockNode,), {})
+        _RENPY_MOCKS[key] = cls
+        return cls
 
 # ── RPC2 unpickling ─────────────────────────────────────────────────
 
@@ -660,7 +692,6 @@ def _iter_rpy(game_dir: str, extract_lang: str | None = None):
         for arc_path in _find_rpa(game_dir):
             try:
                 arc = RpaArchive(arc_path)
-                arc_name = os.path.basename(arc_path)
             except Exception:
                 continue
             for fname in arc.files:
@@ -672,7 +703,9 @@ def _iter_rpy(game_dir: str, extract_lang: str | None = None):
                     head = fname[len("tl/"):].split("/", 1)[0]
                     if head != extract_lang:
                         continue
-                yield f"rpa://{arc_name}/{fname}", fname
+                # полный путь архива + NUL: одноимённые .rpa в разных
+                # подпапках иначе читались бы из чужого архива
+                yield f"rpa://{os.path.normpath(arc_path)}\x00{fname}", fname
     except ImportError:
         pass
 
@@ -711,23 +744,25 @@ def extract(game_dir: str, extract_lang: str | None = None
 
     # .rpa-архивы открываем один раз — раньше каждый .rpyc из архива
     # заново сканировал game/ и перечитывал индекс (O(файлов × архивов)).
+    # Ключ — ПОЛНЫЙ путь: одноимённые архивы в разных подпапках иначе
+    # читались бы из чужого архива (молча неверная выгрузка).
     from app.core.renpy.rpa import RpaArchive
     _archives: dict[str, RpaArchive | None] = {}
     for arc_path in find_rpa_archives(game_dir):
         try:
-            _archives[os.path.basename(arc_path)] = RpaArchive(arc_path)
+            _archives[os.path.normpath(arc_path)] = RpaArchive(arc_path)
         except Exception:
-            _archives[os.path.basename(arc_path)] = None
+            _archives[os.path.normpath(arc_path)] = None
 
     for path, rel in _iter_rpy(game_dir, extract_lang):
         # ── .rpyc from RPA archive ──
         if path.startswith("rpa://"):
-            parts = path[len("rpa://"):].split("/", 1)
-            if len(parts) != 2:
+            rest = path[len("rpa://"):]
+            if "\x00" not in rest:
                 continue
-            arc_name, fname = parts
-            arc = _archives.get(arc_name)
-            if arc is None:
+            arc_key, fname = rest.split("\x00", 1)
+            arc = _archives.get(os.path.normpath(arc_key))
+            if arc is None or not fname:
                 continue
             try:
                 raw = arc.read(fname)
@@ -899,11 +934,30 @@ def _escape(text: str) -> str:
     файл как escape-последовательность \\n, иначе Ren'Py падает с
     «Could not parse string». Порядок важен: сначала backslash и кавычки,
     затем переводы строк (они «рождают» новый backslash, который не должен
-    экранироваться повторно).
+    экранироваться повторно). Остальные C0-контролы и DEL вырезаем:
+    в диалогах им делать нечего, а лексер на них может споткнуться.
     """
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
     return (text.replace("\\", "\\\\").replace('"', '\\"')
             .replace("\r\n", "\\n").replace("\r", "\\n")
             .replace("\n", "\\n").replace("\t", "\\t"))
+
+
+def _written_file_ok(path: str) -> bool:
+    """Самопроверка только что записанного ob_*.rpy: все old/new-строки
+    однострочные и закрыты кавычкой. Страховка на случай, если в текст
+    пробралось что-то неэкранируемое: битый файл удаляем сразу,
+    а не оставляем убивать старт игры."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                s = line.strip()
+                if (s.startswith('old "') or s.startswith('new "')) \
+                        and not s.endswith('"'):
+                    return False
+    except OSError:
+        return False
+    return True
 
 
 def _unescape_rpy_string(text: str) -> str:
@@ -1046,6 +1100,14 @@ def apply(game_dir: str, entries: list[TranslationEntry],
                 f.write(f"    # ob-sha1 {digest}\n")
                 f.write(f'    old "{_escape(e.original)}"\n')
                 f.write(f'    new "{_escape(e.translation)}"\n\n')
+        if not _written_file_ok(out_path):
+            # свой же битый файл не оставляем: Ren'Py упадёт на старте
+            try:
+                os.remove(out_path)
+            except OSError:
+                pass
+            written_paths.discard(out_path)
+            continue
         stats["files"] += 1
         stats["strings"] += len(deduped)
         stats["new_strings"] += new_count

@@ -324,6 +324,22 @@ _STRINGS = {
         "ru": "Удалено устаревших файлов: {n}",
         "en": "Removed stale files: {n}",
     },
+    "tr_apply_skipped": {
+        "ru": "Пропущено: {n} ({details})",
+        "en": "Skipped: {n} ({details})",
+    },
+    "tr_verify_failed": {
+        "ru": "Проверка файлов игры НЕ пройдена — перевод откачен, игра не тронута:\n{problems}",
+        "en": "Game files check FAILED — translation rolled back, game untouched:\n{problems}",
+    },
+    "tr_verify_restored": {
+        "ru": "Оригиналы восстановлены из бэкапа.",
+        "en": "Originals restored from backup.",
+    },
+    "tr_verify_broken": {
+        "ru": "ВНИМАНИЕ: файлы остались битыми и после отката:\n{remaining}\nВосстанови игру из своей копии вручную.",
+        "en": "WARNING: files are still broken after rollback:\n{remaining}\nRestore the game from your own copy manually.",
+    },
     "tr_restore": {
         "ru": "Восстановить оригинал",
         "en": "Restore original",

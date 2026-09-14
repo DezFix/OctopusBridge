@@ -387,8 +387,13 @@ expr = RpgMakerTentacle._cheat_expr("reload_map")
 assert expr is not None
 assert "$gameMap.setup(mapId)" in expr
 assert "reserveTransfer" in expr
-assert "('00' + mapId).slice(-3)" in expr
-assert "Decrypter.decrypt" in expr
+assert ".slice(-3)" in expr
+# ES5 (MV Chromium 41-49): без const/let/стрелок/Decrypter; шифрованные
+# .rpgmvm детектятся по сигнатуре 'R' (82) и уходят в мягкий fallback,
+# www/data — вторым URL
+assert "=>" not in expr
+assert "Decrypter" not in expr
+assert "www/data/Map" in expr
 assert RpgMakerTentacle._cheat_expr("reload_map_unknown") is None
 print("   OK")
 
@@ -1145,6 +1150,562 @@ with tempfile.TemporaryDirectory() as td:
     assert json.loads(pl[pl.index("["):pl.rindex("]") + 1]
                       )[0]["parameters"]["label"] == (
                           "x" + chr(0x2028) + "y" + chr(0x2029) + "z")
+print("   OK")
+
+print()
+print("39) ES5: пейлоады и читы без const/let/=>/includes (старый NW.js MV)...")
+import re as _re39
+from app.core.rpgmaker.payloads import PAYLOAD as _PAY, _TRANSLATION_PAYLOAD as _TRP
+from app.core.tentacles.cdp_base import TRANSPORT_SHIM as _SHIM
+for _label, _src in (("PAYLOAD", _PAY), ("TR", _TRP), ("SHIM", _SHIM)):
+    assert "=>" not in _src, _label
+    assert _re39.search(r"(?<![A-Za-z_$])const\s+[A-Za-z_$]", _src) is None, _label
+    assert _re39.search(r"(?<![A-Za-z_$])let\s+[A-Za-z_$]", _src) is None, _label
+    assert ".includes(" not in _src, _label
+# tentacle реэкспортирует те же объекты (совместимость)
+from app.engines.rpgmaker.tentacle import PAYLOAD as _PAY2
+assert _PAY2 == _PAY
+# читы — все без ES6
+for _cmd, _kw in [
+        ("gold_set", {"value": 10}), ("gold_add", {"value": 5}),
+        ("heal", {}), ("heal_all", {}), ("clear_states", {}),
+        ("teleport", {"mapId": 1, "x": 1, "y": 1}),
+        ("reload_map", {}), ("win_battle", {}),
+        ("give_item", {"kind": "item", "id": 1, "count": 1}),
+        ("open_menu", {}),
+        ("actor_set", {"actorId": 1, "field": "hp", "value": 10})]:
+    _e = RpgMakerTentacle._cheat_expr(_cmd, **_kw)
+    assert _e and "=>" not in _e, _cmd
+assert "gainGold" in RpgMakerTentacle._cheat_expr("gold_set", value=5)
+assert "_gold =" not in RpgMakerTentacle._cheat_expr("gold_set", value=5)
+print("   OK")
+
+print()
+print("40) Безопасный apply: data и js/plugins не трогаем, только runtime...")
+from app.engines.rpgmaker import RpgMakerModule as _Mod40
+with tempfile.TemporaryDirectory() as td:
+    make_project(td, "mz")
+    with open(os.path.join(td, "data", "System.json"), "w",
+              encoding="utf-8") as f:
+        json.dump({"gameTitle": "Game"}, f)
+    _entries = parser.extract(td)
+    for _e in _entries:
+        _e.translation = "RU_" + _e.original
+        _e.status = "translated"
+    with open(os.path.join(td, "data", "CommonEvents.json"),
+              encoding="utf-8") as f:
+        _before = f.read()
+    _mod = _Mod40(td)
+    _stats = _mod.apply(td, _entries, target_lang="ru")
+    with open(os.path.join(td, "data", "CommonEvents.json"),
+              encoding="utf-8") as f:
+        assert f.read() == _before, "data-файл изменён — риск поломки запуска"
+    assert os.path.isfile(os.path.join(td, "ob_translation", "ru.json"))
+    assert os.path.isfile(os.path.join(td, "js", "plugins", "ob_runtime.js"))
+    assert _mod.restore_original(td)["removed"] >= 1
+    assert not os.path.exists(os.path.join(td, "js", "plugins", "ob_runtime.js"))
+print("   OK")
+
+print()
+print("41) Экранирование </script>/<!-- в JS-словарях и литералах...")
+from app.core.rpgmaker import mv_bridge as _mb41
+from app.core.rpgmaker.parser import _js_escape_translation as _esc41
+assert "</script>" not in _mb41.js_json({"a": "x</script>y"})
+assert "<!--" not in _mb41.js_json({"a": "<!--x"})
+assert "</script>" not in _esc41("a</script>b", '"')
+assert "<!--" not in _esc41("<!--x", "'")
+# _replace_js_strings не трогает кодовые вхождения
+from app.core.rpgmaker.parser import _replace_js_strings as _rep41
+_code = 'if(cmd==="K"){ } var t="K";'
+_out = _rep41(_code, "K", "RU")
+assert _out is not None and _out.count("RU") == 1, _out
+assert 'cmd==="K"' in _out
+print("   OK")
+
+print()
+print("42) plugins.js: валидация и строко-чувствительное удаление...")
+from app.core.rpgmaker.mv_bridge import _remove_entry_by_name as _rm42
+_txt = ('var $plugins = [{"name":"A","status":true,"parameters":{'
+        '"t":"a}b"}}, {"name":"octopus_ob","status":true,'
+        '"description":"","parameters":{}}];')
+_new = _rm42(_txt, "octopus_ob")
+assert '"octopus_ob"' not in _new and '"name":"A"' in _new
+assert '"t":"a}b"' in _new, "скобка внутри строки не должна ломать вырезку"
+print("   OK")
+
+print()
+print("43) JSON-в-строке: кавычка/бэкслеш в переводе не рвут базу плагина...")
+from app.core.rpgmaker.parser import (
+    _replace_param_value as _rep43, _is_json_container as _isc43)
+_inner43 = [{"name": "Клинок", "desc": "меч героя"},
+            {"name": "Зелье", "desc": "лечит раны"}]
+_params43 = {"db": json.dumps(_inner43, ensure_ascii=False),
+             "plain": "Обычный текст"}
+# точный лист :0 с кавычкой в переводе
+assert _rep43(_params43, "db", "Клинок", 'Клинок "делюкс"', 0) is True
+_back43 = json.loads(_params43["db"])  # игра парсит — обязано сойтись
+assert _back43[0]["name"] == 'Клинок "делюкс"', _back43
+assert _back43[1]["name"] == "Зелье"  # соседний лист цел
+# точный лист :3 (порядок обхода: name,desc,name,desc)
+assert _rep43(_params43, "db", "лечит раны", "лечит\\всё", 3) is True
+_back43 = json.loads(_params43["db"])
+assert _back43[1]["desc"] == "лечит\\всё", _back43
+# чужой индекс — отказ без записи
+_snap43 = _params43["db"]
+assert _rep43(_params43, "db", "Зелье", "X", 0) is False
+assert _params43["db"] == _snap43
+assert _rep43(_params43, "db", "Зелье", "X", 99) is False
+# нет ключа — отказ
+assert _rep43(_params43, "нет", "Зелье", "X", None) is False
+# обычная строка: точное совпадение и подстрока (legacy)
+assert _rep43(_params43, "plain", "Обычный текст", "Новый", None) is True
+assert _params43["plain"] == "Новый"
+_params43["plain"] = "aaa bbb"
+assert _rep43(_params43, "plain", "bbb", "ccc", None) is True
+assert _params43["plain"] == "aaa ccc"
+# _is_json_container: только целые объекты/массивы
+assert _isc43('[{"a":1}]') == [{"a": 1}]
+assert _isc43("[Save]") is None and _isc43("123") is None
+assert _isc43("[не json") is None
+print("   OK")
+
+print()
+print("44) verify: строгий парсер ловит то, что уронит игру...")
+from app.core.rpgmaker import verify as _v44
+try:
+    _v44.strict_loads('[1, NaN]')
+    assert False, "NaN обязан отвергаться как в V8"
+except ValueError:
+    pass
+try:
+    _v44.strict_loads('{"a": Infinity}')
+    assert False, "Infinity обязан отвергаться как в V8"
+except ValueError:
+    pass
+assert _v44.strict_loads('{"a": [1, 2]}') == {"a": [1, 2]}
+# комментарии в JS-формате — не поломка
+with tempfile.TemporaryDirectory() as td:
+    _pj = os.path.join(td, "plugins.js")
+    with open(_pj, "w", encoding="utf-8") as f:
+        f.write("// список плагинов\nvar $plugins = [\n"
+                '{"name":"A","status":true,"parameters":{}},\n'
+                "];\n")
+    assert _v44._check_plugins_list(_pj) is None
+    with open(_pj, "w", encoding="utf-8") as f:
+        f.write('var $plugins = [{"name":"A",}];\n')
+    assert _v44._check_plugins_list(_pj) is None  # висячая запятая — ок
+    with open(_pj, "w", encoding="utf-8") as f:
+        f.write('var $plugins = [{"name":"A" "status":true}];\n')
+    assert _v44._check_plugins_list(_pj) is not None  # битый — ловим
+print("   OK")
+
+print()
+print("45) Сквозной hostile apply (MV+MZ): игра стартует после перевода...")
+from app.engines.rpgmaker import RpgMakerModule as _Mod45
+_HOSTILE = ['ますたあ "quoted"', "путь\\назад", "a,b[c]{d}",
+            "line1\nline2", "x</script>y", "до\u2028после",
+            "\\C[1]Привет\\C[0]", "%1 percent", "«кавычки-ёлочки»",
+            "хвост\\"]
+for _variant in ("mz", "mv"):
+    with tempfile.TemporaryDirectory() as td:
+        make_project(td, _variant)
+        _dd = os.path.join(td, "www", "data") if _variant == "mv" \
+            else os.path.join(td, "data")
+        # плагин с JSON-базой в параметрах
+        _inner = [{"name": "ボス剣", "desc": " buy/sell "},
+                  {"name": "草", "desc": "heal"}]
+        _pname = "M"
+        if _variant == "mv":
+            _pj = os.path.join(td, "www", "js", "plugins.js")
+            os.makedirs(os.path.dirname(_pj), exist_ok=True)
+            with open(os.path.join(td, "www", "index.html"), "w",
+                      encoding="utf-8") as f:
+                f.write("<html><body>game</body></html>\n")
+            with open(_pj, "w", encoding="utf-8") as f:
+                f.write("var $plugins = " + json.dumps(
+                    [{"name": _pname, "status": True, "description": "",
+                      "parameters": {"db": json.dumps(_inner, ensure_ascii=False),
+                                     "label": "ラベル"}}],
+                    ensure_ascii=False) + ";\n")
+        else:
+            _pj = os.path.join(td, "data", "plugins.js")
+            with open(_pj, "w", encoding="utf-8") as f:
+                json.dump([{"name": _pname, "status": True, "description": "",
+                            "parameters": {
+                                "db": json.dumps(_inner, ensure_ascii=False),
+                                "label": "ラベル"}}], f, ensure_ascii=False)
+        with open(os.path.join(_dd, "System.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump({"gameTitle": "タイトル", "currencyUnit": "G"}, f,
+                      ensure_ascii=False)
+        _entries = parser.extract(td)
+        assert _entries, f"nothing extracted ({_variant})"
+        for _i, _e in enumerate(_entries):
+            _e.translation = _HOSTILE[_i % len(_HOSTILE)]
+            _e.status = "translated"
+        _mod = _Mod45(td)
+        _stats = _mod.apply(td, _entries, target_lang="ru")
+        assert not _stats.get("verify_failed"), \
+            f"{_variant}: { _stats.get('verify_failed')}"
+        # симуляция старта игры: всё парсится строго
+        from app.core.rpgmaker import verify as _vv
+        _probs = _vv.verify_boot_files(td)
+        assert not _probs, f"{_variant}: {_probs}"
+        # внутренняя база плагина цела и переведена
+        _txt = open(_pj, encoding="utf-8").read()
+        _arr = json.loads(_txt[_txt.index("["):_txt.rindex("]") + 1])
+        _mine = [p for p in _arr if p.get("name") == _pname]
+        assert len(_mine) == 1, [p.get("name") for p in _arr]
+        _db = json.loads(_mine[0]["parameters"]["db"])
+        assert isinstance(_db, list) and len(_db) == 2
+        assert _db[0]["name"] != "ボス剣"  # перевод лёг внутрь базы
+        _mod.restore_original(td)
+print("   OK")
+
+print()
+print("46) resrefs: имена ресурсов опознаются, текст — нет...")
+from app.core.rpgmaker import resrefs as _rr46
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "audio", "bgm"))
+    os.makedirs(os.path.join(td, "img", "pictures"))
+    os.makedirs(os.path.join(td, "www", "audio"))
+    open(os.path.join(td, "audio", "bgm", "001 Test Song.ogg"), "wb").write(b"x")
+    open(os.path.join(td, "audio", "bgm", "戦闘曲.ogg_"), "wb").write(b"x")
+    open(os.path.join(td, "img", "pictures", "Castle.png"), "wb").write(b"x")
+    open(os.path.join(td, "www", "audio", "Theme.rpgmvp"), "wb").write(b"x")
+    _idx = _rr46.build_index(td)
+    assert _rr46.is_resource_name(_idx, "001 Test Song")
+    assert _rr46.is_resource_name(_idx, "戦闘曲")
+    assert _rr46.is_resource_name(_idx, "Castle")
+    assert _rr46.is_resource_name(_idx, "Castle.png")
+    assert _rr46.is_resource_name(_idx, "Theme")
+    assert not _rr46.is_resource_name(_idx, "Добрый вечер")
+    assert not _rr46.is_resource_name(_idx, "Hello world")
+    assert not _rr46.is_resource_name(_idx, "")
+    assert not _rr46.is_resource_name(set(), "Castle")
+    _rr46.clear_index(td)
+print("   OK")
+
+print()
+print("47) Извлечение: аудио/картинки/метки/маршруты не извлекаются...")
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "data"))
+    os.makedirs(os.path.join(td, "js"))
+    os.makedirs(os.path.join(td, "audio", "bgm"))
+    os.makedirs(os.path.join(td, "img", "pictures"))
+    open(os.path.join(td, "js", "rmmz_core.js"), "w").close()
+    open(os.path.join(td, "audio", "bgm", "001 Test Song.ogg"), "wb").write(b"x")
+    open(os.path.join(td, "img", "pictures", "Castle.png"), "wb").write(b"x")
+    _map = {"displayName": "Town", "width": 2, "height": 2,
+            "data": [0] * 2 * 2 * 6,
+            "events": [None, {"id": 1, "name": "EV", "x": 1, "y": 1,
+                      "note": "", "pages": [{"conditions": {}, "image": {},
+                      "list": [
+                          {"code": 401, "indent": 0,
+                           "parameters": ["Добрый вечер"]},
+                          {"code": 241, "indent": 0, "parameters": [
+                              {"name": "001 Test Song", "volume": 90,
+                               "pitch": 100, "pan": 0}]},
+                          {"code": 231, "indent": 0, "parameters": [
+                              1, "Castle", 0, 0, 0, 100, 100, 255, 0]},
+                          {"code": 118, "indent": 0,
+                           "parameters": ["LOOP"]},
+                          {"code": 205, "indent": 0, "parameters": [
+                              {"list": [{"code": 43, "parameters": [
+                                  {"name": "001 Test Song"}]}]}]},
+                          {"code": 0, "indent": 0, "parameters": []}]}]}]}
+    with open(os.path.join(td, "data", "Map001.json"), "w",
+              encoding="utf-8") as f:
+        json.dump(_map, f, ensure_ascii=False)
+    with open(os.path.join(td, "data", "System.json"), "w",
+              encoding="utf-8") as f:
+        json.dump({"gameTitle": "G"}, f)
+    _ents = parser.extract(td)
+    _texts = [e.original for e in _ents]
+    assert "Добрый вечер" in _texts
+    assert "001 Test Song" not in _texts, _texts
+    assert "Castle" not in _texts, _texts
+print("   OK")
+
+print()
+print("48) Старый проект с аудио в словаре: фильтр на apply...")
+from app.core.models import TranslationEntry as _TE48
+from app.engines.rpgmaker import RpgMakerModule as _Mod48
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "data"))
+    os.makedirs(os.path.join(td, "js"))
+    os.makedirs(os.path.join(td, "audio", "bgm"))
+    open(os.path.join(td, "js", "rmmz_core.js"), "w").close()
+    open(os.path.join(td, "audio", "bgm", "001 Test Song.ogg"), "wb").write(b"x")
+    with open(os.path.join(td, "data", "System.json"), "w",
+              encoding="utf-8") as f:
+        json.dump({"gameTitle": "G"}, f)
+    with open(os.path.join(td, "data", "plugins.js"), "w",
+              encoding="utf-8") as f:
+        json.dump([{"name": "M", "status": True, "description": "",
+                    "parameters": {"bgm": "001 Test Song",
+                                   "label": "Hello"}}], f)
+    _ents48 = [
+        _TE48(id=1, file="data/plugins.js",
+              json_path="#plugparam:M:bgm", context="p",
+              original="001 Test Song", translation="001 Песня",
+              status="translated"),
+        _TE48(id=2, file="data/plugins.js",
+              json_path="#plugparam:M:label", context="p",
+              original="Hello", translation="Привет",
+              status="translated"),
+    ]
+    _st48 = _Mod48(td).apply(td, _ents48, target_lang="ru")
+    assert _st48.get("res_skipped") == 1, _st48
+    assert not _st48.get("verify_failed"), _st48.get("verify_failed")
+    _pl48 = json.load(open(os.path.join(td, "data", "plugins.js"),
+                           encoding="utf-8"))
+    assert _pl48[0]["parameters"]["bgm"] == "001 Test Song", _pl48
+    assert _pl48[0]["parameters"]["label"] == "Привет", _pl48
+print("   OK")
+
+print()
+print("49) JS-обход не трогает аудио-объекты и имена файлов...")
+from app.core.rpgmaker.payloads import _TRANSLATION_PAYLOAD as _TR49
+assert "obIsAudio" in _TR49 and "obIsResKey" in _TR49
+for _k in ("characterName", "faceName", "battlerName", "parallaxName",
+           "battleback1Name", "battleback2Name", "title1Name",
+           "title2Name"):
+    assert _k in _TR49, _k
+assert "=>" not in _TR49  # остался ES5
+print("   OK")
+
+print()
+print("50) verify ловит перевод имени файла и лечит откатом...")
+from app.core.rpgmaker import verify as _vv50
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "data"))
+    os.makedirs(os.path.join(td, "js"))
+    os.makedirs(os.path.join(td, "audio", "bgm"))
+    os.makedirs(os.path.join(td, "backup", "data"))
+    open(os.path.join(td, "js", "rmmz_core.js"), "w").close()
+    open(os.path.join(td, "audio", "bgm", "001 Test Song.ogg"), "wb").write(b"x")
+    _good = [{"name": "M", "status": True, "description": "",
+              "parameters": {"bgm": "001 Test Song"}}]
+    with open(os.path.join(td, "data", "plugins.js"), "w",
+              encoding="utf-8") as f:
+        json.dump(_good, f)
+    import shutil as _sh50
+    _sh50.copy2(os.path.join(td, "data", "plugins.js"),
+                os.path.join(td, "backup", "data", "plugins.js"))
+    _bad = [{"name": "M", "status": True, "description": "",
+             "parameters": {"bgm": "001 Песня"}}]
+    with open(os.path.join(td, "data", "plugins.js"), "w",
+              encoding="utf-8") as f:
+        json.dump(_bad, f, ensure_ascii=False)
+    _probs = _vv50.verify_boot_files(td)
+    assert any("001 Test Song" in p for p in _probs), _probs
+    _st50 = _Mod48(td).apply(td, [], target_lang="ru")
+    _back = json.load(open(os.path.join(td, "data", "plugins.js"),
+                           encoding="utf-8"))
+    assert _back[0]["parameters"]["bgm"] == "001 Test Song", _back
+print("   OK")
+
+print()
+print("51) 657 `KEY = value`: извлекается value, данные — нет...")
+from app.core.rpgmaker.parser import _split_kv_line as _kv51
+from app.core.rpgmaker.parser import _splice_kv as _sp51
+assert _kv51("メッセージ内容 = エナジードリンクを入手！") == \
+    ("メッセージ内容", "エナジードリンクを入手！")
+assert _kv51("X座標 = 10") == ("X座標", "10")
+assert _kv51("без равно") == (None, None)
+assert _kv51("a = b = c") == ("a", "b = c")  # первый знак
+assert _kv51("two words = x") == (None, None)  # ключ без пробелов
+assert _kv51("スイッチID = ") == (None, None)  # пустое value
+assert _kv51("k = v\nline2") == (None, None)  # только однострочные
+assert _sp51("メッセージ内容 = エナジードリンクを入手！",
+             "エナジードリンクを入手！", "Got a drink!") == \
+    "メッセージ内容 = Got a drink!"
+assert _sp51("X座標 = 10", "X座標", "Y") is None  # ключ не меняем
+assert _sp51("a = b", "zzz", "Q") is None  # чужое value не трогаем
+with tempfile.TemporaryDirectory() as td:
+    make_project(td, "mz")
+    _ce = os.path.join(td, "data", "CommonEvents.json")
+    _common = json.load(open(_ce, encoding="utf-8"))
+    _common[1]["list"] = [
+        {"code": 657, "indent": 0,
+         "parameters": ["メッセージ内容 = エナジードリンクを入手！"]},
+        {"code": 657, "indent": 0, "parameters": ["変数 = 102"]},
+        {"code": 657, "indent": 0, "parameters": ["просто текст"]},
+        {"code": 0, "indent": 0, "parameters": []},
+    ]
+    json.dump(_common, open(_ce, "w", encoding="utf-8"),
+              ensure_ascii=False)
+    _ents51 = parser.extract(td)
+    _by_orig51 = {e.original: e for e in _ents51}
+    assert "エナジードリンクを入手！" in _by_orig51, list(_by_orig51)
+    assert "メッセージ内容" not in _by_orig51  # ключ цел
+    assert "変数 = 102" not in _by_orig51  # данные
+    assert "просто текст" in _by_orig51  # обычная строка целиком
+    # parity parser.apply: ключ цел, value переведено
+    _e51 = _by_orig51["エナジードリンクを入手！"]
+    _e51.translation = "Got a drink!"
+    _e51.status = "translated"
+    _st51 = parser.apply(td, [_e51])
+    assert _st51["strings"] == 1, _st51
+    _back51 = json.load(open(_ce, encoding="utf-8"))
+    assert _back51[1]["list"][0]["parameters"][0] == \
+        "メッセージ内容 = Got a drink!", _back51[1]["list"][0]
+print("   OK")
+
+print()
+print("52) Свои плагины (ob_runtime/octopus_ob) не извлекаются...")
+with tempfile.TemporaryDirectory() as td:
+    make_project(td, "mz")
+    os.makedirs(os.path.join(td, "js", "plugins"))
+    with open(os.path.join(td, "data", "plugins.js"), "w",
+              encoding="utf-8") as f:
+        json.dump([{"name": "ob_runtime", "status": True, "description": "",
+                    "parameters": {}},
+                   {"name": "MyP", "status": True, "description": "",
+                    "parameters": {}}], f)
+    with open(os.path.join(td, "js", "plugins", "ob_runtime.js"), "w",
+              encoding="utf-8") as f:
+        f.write('window.__octopus_trInstall({"Привет": "Hello"});\n')
+    with open(os.path.join(td, "js", "plugins", "MyP.js"), "w",
+              encoding="utf-8") as f:
+        f.write("var s = 'こんにちは世界';\n")
+    _ents52 = parser.extract_plugins(td, "data", variant="mz")
+    _texts52 = [e.original for e in _ents52]
+    assert "こんにちは世界" in _texts52, _texts52
+    assert "Привет" not in _texts52 and "Hello" not in _texts52, _texts52
+print("   OK")
+
+print()
+print("53) Вложенные аргументы 357 извлекаются...")
+with tempfile.TemporaryDirectory() as td:
+    make_project(td, "mz")
+    _ce = os.path.join(td, "data", "CommonEvents.json")
+    _common = json.load(open(_ce, encoding="utf-8"))
+    _common[1]["list"] = [
+        {"code": 357, "indent": 0, "parameters": [
+            "P.js", "cmd", "note",
+            {"title": "Заголовок окна",
+             "nested": {"deep": "глубокий текст", "n": 5}}]},
+        {"code": 0, "indent": 0, "parameters": []},
+    ]
+    json.dump(_common, open(_ce, "w", encoding="utf-8"),
+              ensure_ascii=False)
+    _texts53 = [e.original for e in parser.extract(td)]
+    assert "Заголовок окна" in _texts53, _texts53
+    assert "глубокий текст" in _texts53, _texts53
+print("   OK")
+
+print()
+print("54) 657 в рантайме: JS-ветка с KV-подменой (ES5)...")
+from app.core.rpgmaker.payloads import _TRANSLATION_PAYLOAD as _TR54
+assert "obSplitKV" in _TR54 and "obApplyKVParam" in _TR54
+assert "cmd.code === 657" in _TR54
+assert "=>" not in _TR54
+print("   OK")
+
+print()
+print("55) Заголовок окна: извлечение + запись (package.json/index.html)...")
+with tempfile.TemporaryDirectory() as td:
+    make_project(td, "mz")
+    with open(os.path.join(td, "package.json"), "w",
+              encoding="utf-8") as f:
+        json.dump({"name": "rmmz-game", "main": "index.html",
+                   "window": {"title": "オチカノAnother Ver1.00",
+                              "width": 1280}}, f, ensure_ascii=False)
+    with open(os.path.join(td, "index.html"), "w",
+              encoding="utf-8") as f:
+        f.write("<html><head><title>オチカノAnother Ver1.00</title>"
+                "</head><body></body></html>")
+    _ents55 = parser.extract(td)
+    _titles55 = [e for e in _ents55 if e.file in ("package.json",
+                                                  "index.html")]
+    assert len(_titles55) == 2, [e.file for e in _titles55]
+    assert all(e.original == "オチカノAnother Ver1.00" for e in _titles55)
+    for e in _titles55:
+        e.translation = "Ochikano Another v1.00"
+        e.status = "translated"
+    _st55 = parser.apply(td, _titles55)
+    assert _st55["strings"] == 2, _st55
+    _pkg55 = json.load(open(os.path.join(td, "package.json"),
+                            encoding="utf-8"))
+    assert _pkg55["window"]["title"] == "Ochikano Another v1.00", _pkg55
+    assert _pkg55["name"] == "rmmz-game"  # остальное цело
+    _html55 = open(os.path.join(td, "index.html"),
+                   encoding="utf-8").read()
+    assert "<title>Ochikano Another v1.00</title>" in _html55, _html55
+    # чужой заголовок не затираем
+    from app.core.rpgmaker.parser import _apply_html_title as _aht55
+    with open(os.path.join(td, "index.html"), "w",
+              encoding="utf-8") as f:
+        f.write("<title>Other Game</title>")
+    assert _aht55(os.path.join(td, "index.html"),
+                  "オチカノAnother Ver1.00", "X") is False
+    assert "<title>Other Game</title>" in open(
+        os.path.join(td, "index.html"), encoding="utf-8").read()
+print("   OK")
+
+print()
+print("56) dataEx: кастомные данные разработчика сканируются...")
+with tempfile.TemporaryDirectory() as td:
+    make_project(td, "mz")
+    os.makedirs(os.path.join(td, "dataEx"))
+    with open(os.path.join(td, "dataEx", "MySkitDB.json"), "w",
+              encoding="utf-8") as f:
+        json.dump({"skits": [{"title": "朝の出来事",
+                              "steps": [1, 2, {"pose": 0}]}]}, f,
+                  ensure_ascii=False)
+    _texts56 = [e.original for e in parser.extract(td)]
+    assert "朝の出来事" in _texts56, _texts56
+print("   OK")
+
+print()
+print("57) Рантайм ставит заголовок окна + verify читает package.json...")
+from app.core.rpgmaker import runtime as _rt57
+_src57 = _rt57.build_runtime_source({"A": "B"}, "ru")
+assert "document.title" in _src57 and "nw.Window" in _src57
+from app.core.rpgmaker import verify as _vv57
+with tempfile.TemporaryDirectory() as td:
+    with open(os.path.join(td, "package.json"), "w",
+              encoding="utf-8") as f:
+        f.write('{"name": "x"}')
+    assert _vv57.verify_boot_files(td) == []
+    with open(os.path.join(td, "package.json"), "w",
+              encoding="utf-8") as f:
+        f.write('{"name": }')
+    assert any("package.json" in p for p in _vv57.verify_boot_files(td))
+print("   OK")
+
+print()
+print("58) Отчёт о пропусках: skipped_total/skipped_by в stats...")
+from app.core.models import TranslationEntry as _TE58
+from app.engines.rpgmaker import RpgMakerModule as _Mod58
+with tempfile.TemporaryDirectory() as td:
+    make_project(td, "mz")
+    with open(os.path.join(td, "data", "System.json"), "w",
+              encoding="utf-8") as f:
+        json.dump({"gameTitle": "G"}, f)
+    with open(os.path.join(td, "data", "plugins.js"), "w",
+              encoding="utf-8") as f:
+        json.dump([{"name": "M", "status": True, "description": "",
+                    "parameters": {"label": "Hello"}}], f)
+    _ents58 = [
+        _TE58(id=1, file="data/plugins.js",
+              json_path="#plugparam:GHOST:key", context="p",
+              original="Boo", translation="Бу",
+              status="translated"),
+        _TE58(id=2, file="data/plugins.js",
+              json_path="#plugparam:M:label", context="p",
+              original="Hello", translation="Привет",
+              status="translated"),
+    ]
+    _st58 = _Mod58(td).apply(td, _ents58, target_lang="ru")
+    assert _st58.get("skipped_total") == 1, _st58
+    assert _st58.get("skipped_by") == {"plugin-missing": 1}, _st58
+    _pl58 = json.load(open(os.path.join(td, "data", "plugins.js"),
+                           encoding="utf-8"))
+    assert _pl58[0]["parameters"]["label"] == "Привет", _pl58
+    assert not _st58.get("verify_failed"), _st58.get("verify_failed")
 print("   OK")
 
 print()

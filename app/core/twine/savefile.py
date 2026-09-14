@@ -297,23 +297,28 @@ def _path_parts(dotted: str) -> list:
 def _set_nested(target: dict, dotted: str, value):
     """Записывает значение по dot-path с поддержкой индексов списков
     ('flags[0]', 'inv[1].qty'). Следующий сегмент пути заранее известен —
-    промежуточные контейнеры создаются сразу нужного типа."""
+    промежуточные контейнеры создаются сразу нужного типа и сразу
+    привязываются к родителю (потеря привязки = молчаливое ничегонеделание).
+    Путь, начинающийся с индекса, для словаря-корня бессмыслен — игнор."""
     parts = _path_parts(dotted)
     if not parts:
+        return
+    if parts[0][0] == "idx":
         return
     node: object = target
     for i, (kind, key) in enumerate(parts[:-1]):
         nxt = parts[i + 1][0]
         if kind == "key":
-            child = node.get(key) if isinstance(node, dict) else None
+            if not isinstance(node, dict):
+                return
+            child = node.get(key)
             if not isinstance(child, (dict, list)):
                 child = [] if nxt == "idx" else {}
-                if isinstance(node, dict):
-                    node[key] = child
+                node[key] = child
             node = child
         else:
             if not isinstance(node, list):
-                node = []
+                return
             while len(node) <= key:
                 node.append([] if nxt == "idx" else {})
             node = node[key]
@@ -322,19 +327,18 @@ def _set_nested(target: dict, dotted: str, value):
         if isinstance(node, dict):
             node[last_key] = value
     else:
-        if not isinstance(node, list):
-            node = []
-        while len(node) <= last_key:
-            node.append(None)
-        node[last_key] = value
+        if isinstance(node, list):
+            while len(node) <= last_key:
+                node.append(None)
+            node[last_key] = value
 
 
 def set_variables(data: dict, updates: dict):
     """Обновляет переменные (dot-path) в активном моменте сейва.
 
-    Для delta-формата правки вливаются в последний момент — при декоде
-    они применятся поверх предыдущих состояний, т.е. текущее состояние
-    игры изменится, а «отмотка» истории сохранит старые значения.
+    Для delta-формата правки вливаются в активный момент (state.index):
+    при декоде они применятся поверх предыдущих состояний, т.е. текущее
+    состояние игры изменится, а «отмотка» истории сохранит старые значения.
     """
     moment = _current_moment(data)
     if moment is None:
@@ -372,7 +376,7 @@ def flatten_variables(variables: dict, max_depth: int = 50) -> dict:
         else:
             out[path] = str(node)
 
-    if isinstance(variables, dict):
+    if isinstance(variables, dict) and variables:
         walk(variables, "", 0)
     return out
 
@@ -392,7 +396,9 @@ def write_slots(game_dir: str, base_name: str, slots: list,
         data = s.get('data')
         if not isinstance(data, str) or not data:
             continue
-        sid = str(s.get('id', 'x'))
+        # id присылает игра — чистим от ../ и прочего (иначе запись
+        # уйдёт за пределы папки игры)
+        sid = re.sub(r'[^\w\-]+', '_', str(s.get('id', 'x'))) or 'x'
         stamp = fallback_ts or time.strftime('%Y%m%d-%H%M%S')
         date = s.get('date')
         if date:

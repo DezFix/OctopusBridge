@@ -37,6 +37,57 @@ CMD_PLUGIN_MV = 356
 CMD_SCRIPT = 355
 CMD_SCRIPT_CONT = 655
 
+# ── Коды команд БЕЗ отображаемого текста: только ссылки на файлы,
+# метки и код (перевод ломает загрузку ресурсов / логику) ──
+# 111 ветвление (операнды в т.ч. скрипты), 118/119 метки перехода,
+# 122 переменные (операнд-скрипт), 132/133/139/140 BGM/ME,
+# 205/505 маршрут (графика/SE/скрипты), 222 переход (файл),
+# 231-235 картинки, 241-250 аудио, 251 видео,
+# 283/284 фон/параллакс, 322/323 изображения героев/транспорта.
+CMD_NONTEXT_CODES = frozenset({
+    111, 118, 119, 122, 132, 133, 139, 140, 205, 505, 222,
+    231, 232, 233, 234, 235,
+    241, 242, 245, 246, 247, 248, 249, 250, 251,
+    283, 284, 322, 323,
+})
+
+
+def _split_kv_line(s: str):
+    """`KEY = value` -> (key, value). Иначе (None, None).
+
+    Формат аргументов-continuation 657 (и части 357-аргументов):
+    человекочитаемая пара «ключ = значение», которую плагин разбирает
+    по первому `=`. Ключ обязан быть компактным идентификатором/меткой
+    (без пробелов, <= 40 символов) — иначе это обычный текст с `=`.
+    Значение возвращается БЕЗ краевых пробелов (для ключа словаря);
+    подстановка обязана сохранять исходные отступы (см. _splice_kv).
+    """
+    if not isinstance(s, str) or "\n" in s or "=" not in s:
+        return None, None
+    head, _, tail = s.partition("=")
+    key = head.strip()
+    if not key or len(key) > 40 or re.search(r"\s", key):
+        return None, None
+    val = tail.strip()
+    if not val:
+        return None, None
+    return key, val
+
+
+def _splice_kv(slot: str, value: str, translation: str) -> str | None:
+    """Подменяет value-часть `KEY = value` на перевод, ключ и отступы целы.
+
+    Возвращает новую строку слота или None (value не совпало строго —
+    никаких подстрок: менять часть слова нельзя, это уже не тот ключ).
+    """
+    if not isinstance(slot, str) or not isinstance(value, str) or "=" not in slot:
+        return None
+    eq = slot.index("=")
+    tail = slot[eq + 1:]
+    if tail.strip() != value:
+        return None
+    return slot[:eq + 1] + tail.replace(value, translation, 1)
+
 # ── Поля БД: файл -> список полей ──
 DB_FIELDS = {
     "Actors.json": ["name", "nickname", "profile"],
@@ -189,8 +240,14 @@ def _js_escape_translation(text: str, quote: str) -> str:
     Сырые U+2028/U+2029 и C0-контролы в исходнике .js — SyntaxError
     «Invalid or unexpected token» при старте игры (Очикано, 7.5):
     движок парсит плагины как JS, а не как JSON. json.dumps их НЕ
-    экранирует (валидны в JSON), поэтому руками: \\n/\\r/\\t читаемо,
+    экранирует (валидны в JSON, но не в JS), поэтому руками: \\n/\\r/\\t читаемо,
     остальное \\uXXXX. Кавычка и бэкслеш — как раньше.
+
+    HTML-безопасность: плагины грузятся через <script src> — последовательность
+    ``</script>`` внутри строкового литерала всё равно закрывает элемент
+    на уровне HTML-парсера (вне зависимости от JS-кавычек) и игра стартует
+    с пустым экраном. Поэтому ``<``/``>``/``&`` тоже уводим в \\uXXXX:
+    в рантайме они декодируются обратно в те же символы.
     """
     # сначала быстрые замены односимвольных
     esc = (text
@@ -199,6 +256,9 @@ def _js_escape_translation(text: str, quote: str) -> str:
            .replace("\n", "\\n")
            .replace("\t", "\\t")
            .replace(quote, "\\" + quote))
+    # < > & — против обрыва </script> / <!-- в HTML-парсере.
+    # Делаем ДО C0-замен (новые \\uXXXX не должны попасть под них).
+    esc = esc.replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e")
     # U+2028/U+2029 + остальные C0-контролы и DEL → \uXXXX
     def _repl(m: re.Match) -> str:
         return f"\\u{ord(m.group(0)):04x}"
@@ -238,11 +298,15 @@ _PLUGIN_SKIP_EXACT = ("null", "true", "false", "undefined", "NaN", "none",
                       "none yet", "empty")
 
 
-def _plugin_text_candidate(s: str) -> bool:
+def _plugin_text_candidate(s: str, res: set[str] | None = None) -> bool:
     if not js_text_candidate(s):
         return False
     if s.strip().lower() in _PLUGIN_SKIP_EXACT:
         return False
+    if res:
+        from .resrefs import is_resource_name
+        if is_resource_name(res, s):
+            return False  # имя аудио/картинки/видео — ссылка, не текст
     low = s.lstrip().lower()
     if low.startswith(_PLUGIN_SKIP_STARTS):
         return False
@@ -316,12 +380,20 @@ def extract_plugins(game_dir: str, data_dir: str, on_skip=None,
     if not plugins:
         return []
     rel = plugins_rel
-    ex = _Extractor()
+    from .resrefs import build_index
+    res = build_index(game_dir)
+    ex = _Extractor(res)
     for pl in plugins:
         if not isinstance(pl, dict) or not pl.get("status"):
             continue
         name = pl.get("name", "")
         if not name or name.startswith(_PLUGIN_SKIP_PREFIXES):
+            continue
+        # наши сгенерированные плагины — не текст игры: иначе словарь
+        # ob_runtime.js (тысячи уже переведённых строк) попадает обратно
+        # в выгрузку как «оригиналы» (двойной перевод + мусор в таблице)
+        _base_js = name[:-3] if name.lower().endswith(".js") else name
+        if _base_js in ("ob_runtime", "octopus_ob"):
             continue
         # имена параметров (из plugins.js) — это КЛЮЧИ, а не текст:
         # плагины читают их через Parameters['Default Rows']; перевод
@@ -332,7 +404,7 @@ def extract_plugins(game_dir: str, data_dir: str, on_skip=None,
                       if isinstance(params, dict) else set())
         # plugins.js хранит имя с расширением ("MyPlugin.js") — не
         # приклеиваем ".js" повторно
-        js_name = name[:-3] if name.lower().endswith(".js") else name
+        js_name = _base_js
         code = None
         try:
             with open(os.path.join(game_dir, js_dir, "plugins",
@@ -348,7 +420,7 @@ def extract_plugins(game_dir: str, data_dir: str, on_skip=None,
         for raw, _q, start, end in iter_js_strings(code):
             if raw.strip() in param_keys:
                 continue
-            if _plugin_text_candidate(raw) and not _is_code_literal(
+            if _plugin_text_candidate(raw, res) and not _is_code_literal(
                     code, start, end):
                 ex.add(rel, f"{_PLUGIN_MARK}{n}", f"plugin {name}", raw)
                 n += 1
@@ -359,7 +431,7 @@ def extract_plugins(game_dir: str, data_dir: str, on_skip=None,
     # runtime-обход $plugins их уже не догонит. Поэтому извлекаем
     # текстовые VALUES (ключи не трогаем!) и патчим файл списка
     # напрямую при apply (см. _apply_plugin_params_file).
-    ex.entries.extend(extract_plugin_params(plugins, plugins_rel))
+    ex.entries.extend(extract_plugin_params(plugins, plugins_rel, res))
     return ex.entries
 
 
@@ -389,15 +461,18 @@ def _walk_param_value(value, emit):
             _walk_param_value(v, emit)
 
 
-def extract_plugin_params(plugins: list, plugins_rel: str) -> list:
+def extract_plugin_params(plugins: list, plugins_rel: str,
+                          res: set[str] | None = None) -> list:
     """Текстовые VALUES параметров включённых плагинов.
 
     file = plugins_rel (напр. "js/plugins.js"), json_path =
-    "#plugparam:<plugin>:<key>[:<sub>]". Ключи, true/false/числа/пути —
-    не текст, скипаются через _Extractor._generic_text.
+    "#plugparam:<plugin>:<key>[:<n>]". Ключи, true/false/числа/пути —
+    не текст, скипаются через _Extractor._generic_text. Значения,
+    совпадающие с файлами ресурсов (имена BGM/SE/картинок), — это
+    ссылки на файлы, а не текст: их перевод даёт "Failed to load".
     """
-    ex = _Extractor()
-    probe = _Extractor()
+    ex = _Extractor(res)
+    probe = _Extractor(res)
     for pl in plugins or []:
         if not isinstance(pl, dict) or not pl.get("status"):
             continue
@@ -437,10 +512,19 @@ def set_by_path(obj, path: str, value) -> None:
 # ── Извлечение ──
 
 class _Extractor:
-    def __init__(self):
+    def __init__(self, res: set[str] | None = None):
         self.entries: list[TranslationEntry] = []
         self._next_id = 1
         self._seen: set[tuple[str, str]] = set()
+        # индекс имён ресурсов игры (audio/img/movies): совпавшие строки —
+        # ссылки на файлы, переводить их = "Failed to load" в игре
+        self._res = res
+
+    def _is_res(self, s: str) -> bool:
+        if not self._res:
+            return False
+        from .resrefs import is_resource_name
+        return is_resource_name(self._res, s)
 
     def add(self, file: str, path: str, context: str, text: str):
         if not isinstance(text, str) or not text.strip():
@@ -464,6 +548,12 @@ class _Extractor:
             params = cmd.get("parameters") or []
             p = f"{base}[{i}].parameters"
 
+            if code in CMD_NONTEXT_CODES:
+                # нет отображаемого текста: аудио/картинки/видео (имена
+                # файлов), метки перехода, скрипты/операнды. Перевод
+                # отсюда = "Failed to load" или сломанная логика.
+                continue
+
             if code in (CMD_DIALOG, CMD_SCROLL, CMD_COMMENT, CMD_COMMENT_CONT):
                 if params:
                     kind = ("comment" if code in (CMD_COMMENT, CMD_COMMENT_CONT)
@@ -481,22 +571,31 @@ class _Extractor:
             elif code in (CMD_CHANGE_NAME, CMD_CHANGE_NICK) and len(params) > 1:
                 self.add(file, f"{p}[1]", f"{context} / rename", params[1])
             elif code == CMD_PLUGIN and len(params) > 3:
+                # params[2] НЕ извлекаем намеренно: ядро движка его
+                # игнорирует (rmmz_objects.js: callCommand(this,
+                # pluginName, params[1], params[3])), а для плагинов это
+                # ключ диспетчера вроде "探索開始" — перевод убьёт
+                # dispatch без единой ошибки (тихий софт-брейк).
                 args = params[3]
                 if isinstance(args, dict):
                     for k, v in args.items():
-                        if isinstance(v, str) and self._generic_text(v):
-                            self.add(file, f"{p}[3].{k}",
-                                     f"{context} / plugin", v)
+                        self._extract_plugin_arg(
+                            file, f"{p}[3].{k}", f"{context} / plugin", v)
                 elif isinstance(args, list):
                     for j, v in enumerate(args):
-                        if isinstance(v, str) and self._generic_text(v):
-                            self.add(file, f"{p}[3][{j}]",
-                                     f"{context} / plugin", v)
+                        self._extract_plugin_arg(
+                            file, f"{p}[3][{j}]", f"{context} / plugin", v)
             elif code == CMD_PLUGIN_CONT:
+                # continuation 657: обычно строки `KEY = value` (LL_, NRP,
+                # Torigoya...). Плагин разбирает их по первому `=`,
+                # поэтому извлекаем ТОЛЬКО value-часть (ключ цел всегда).
                 for j, v in enumerate(params):
-                    if isinstance(v, str) and self._generic_text(v):
-                        self.add(file, f"{p}[{j}]",
-                                 f"{context} / plugin", v)
+                    if isinstance(v, str):
+                        self._extract_657_param(
+                            file, f"{p}[{j}]", context, v)
+                    else:
+                        self._generic_walk_value(
+                            file, f"{p}[{j}]", f"{context} / plugin", v)
             elif code == CMD_PLUGIN_MV and params:
                 # MV plugin command — строка вида "Command arg...". Переводим
                 # только если в строке есть CJK (японский текст для игрока);
@@ -510,7 +609,7 @@ class _Extractor:
             elif code in (CMD_SCRIPT, CMD_SCRIPT_CONT) and params:
                 n = 0
                 for s in extract_js_strings(params[0]):
-                    if js_text_candidate(s):
+                    if js_text_candidate(s) and not self._is_res(s):
                         self.add(file, f"{p}[0]{_SCRIPT_MARK}:{n}",
                                  f"{context} / script", s)
                         n += 1
@@ -522,6 +621,31 @@ class _Extractor:
                 for j, v in enumerate(params):
                     self._generic_walk_value(
                         file, f"{p}[{j}]", f"{context} / param {code}", v)
+
+    # ── аргументы плагин-команд 357/657 ──
+    def _extract_plugin_arg(self, file: str, path: str, ctx: str,
+                            v, depth: int = 0):
+        """Строки верхнего уровня + вложенные структуры аргументов 357."""
+        if isinstance(v, str):
+            if self._generic_text(v):
+                self.add(file, path, ctx, v)
+        elif depth < 4 and isinstance(v, (dict, list)):
+            items = v.items() if isinstance(v, dict) else enumerate(v)
+            for k, item in items:
+                sub = f"{path}.{k}" if isinstance(v, dict) else f"{path}[{k}]"
+                self._extract_plugin_arg(file, sub, ctx, item, depth + 1)
+
+    def _extract_657_param(self, file: str, path: str, context: str, v: str):
+        """Одна строка continuation 657: `KEY = value` или обычный текст."""
+        _key, val = _split_kv_line(v)
+        if _key is not None:
+            # числа/идентификаторы (ID, координаты, имена сцен) — данные,
+            # человеческий текст — извлекаем только value-часть
+            if self._generic_text(val):
+                self.add(file, path, f"{context} / plugin value", val)
+            return
+        if self._generic_text(v):
+            self.add(file, path, f"{context} / plugin", v)
 
     def db_file(self, file: str, data: list, fields: list[str]):
         for idx, obj in enumerate(data):
@@ -634,11 +758,17 @@ class _Extractor:
                 and re.search(r"[+*=/(){};$]", s)):
             return False
         if _JS_CJK_RE.search(s):
+            if self._is_res(s):
+                return False  # имя ресурса с CJK (аудио/картинка) — ссылка
             return True
         # Cyrillic / any non-ASCII single word (Привет, арг1) — plugin args
         # с кириллицей должны извлекаться даже без пробела (см. тест 357)
         if re.search(r"[^\x00-\x7F]", s):
+            if self._is_res(s):
+                return False
             return True
+        if self._is_res(s):
+            return False  # латинское имя ресурса с пробелами ("001 Battle")
         return js_text_candidate(s)
 
     # обратная совместимость: старое имя метода
@@ -737,7 +867,8 @@ def extract(game_dir: str, data_dir: str | None = None,
     if variant is None:
         from .variant import detect_variant
         variant = detect_variant(game_dir)
-    ex = _Extractor()
+    from .resrefs import build_index
+    ex = _Extractor(build_index(game_dir))
     root = os.path.join(game_dir, data_dir)
     for fname in sorted(os.listdir(root)):
         rel = f"{data_dir}/{fname}"
@@ -767,15 +898,7 @@ def extract(game_dir: str, data_dir: str | None = None,
             else:
                 # неизвестный JSON (кастомные файлы плагинов):
                 # только изолированные CJK-строки — текст, без кода
-                if isinstance(data, dict):
-                    ex.generic_obj(rel, data, "", f"file {fname}")
-                elif isinstance(data, list):
-                    for idx, item in enumerate(data):
-                        if isinstance(item, dict):
-                            ex.generic_obj(rel, item, f"[{idx}]",
-                                           f"file {fname} #{idx}")
-                        elif isinstance(item, str) and ex._generic_cjk(item):
-                            ex.add(rel, f"[{idx}]", f"file {fname} #{idx}", item)
+                _extract_unknown_json(ex, rel, fname, data)
         elif fname.lower().endswith(".rpgmvm"):
             data = _read_rpgm_map(game_dir, os.path.join(root, fname))
             if data is None:
@@ -785,9 +908,83 @@ def extract(game_dir: str, data_dir: str | None = None,
                     print(f"[parser] skipped {fname}: cannot decrypt")
                 continue
             ex.map_file(rel, data)
+    # кастомные каталоги данных (dataEx/TRP skit DB и подобные): тексты,
+    # добавленные разработчиком/плагинами вне data/, тоже переводим —
+    # неизвестные JSON идут общим generic-путём (только текст, без кода)
+    ex_dir = os.path.join(game_dir, "dataEx")
+    if os.path.isdir(ex_dir):
+        for fname in sorted(os.listdir(ex_dir)):
+            if not fname.endswith(".json"):
+                continue
+            rel = f"dataEx/{fname}"
+            try:
+                data = _read_json(os.path.join(ex_dir, fname))
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                if on_skip:
+                    on_skip(fname, e)
+                continue
+            _extract_unknown_json(ex, rel, fname, data)
+    # заголовок окна (виден всегда — панель ОС/вкладка): package.json
+    # window.title (NW.js читает манифест при старте) + index.html <title>
+    _extract_window_title(game_dir, ex, on_skip)
     entries = ex.entries
     entries += extract_plugins(game_dir, data_dir, on_skip, variant)
     return entries
+
+
+def _extract_unknown_json(ex, rel: str, fname: str, data) -> None:
+    """Неизвестный JSON (кастомные файлы/каталоги плагинов): только
+    изолированные CJK-строки — текст, без кода (res/code-гарды внутри)."""
+    if isinstance(data, dict):
+        ex.generic_obj(rel, data, "", f"file {fname}")
+    elif isinstance(data, list):
+        for idx, item in enumerate(data):
+            if isinstance(item, dict):
+                ex.generic_obj(rel, item, f"[{idx}]",
+                               f"file {fname} #{idx}")
+            elif isinstance(item, str) and ex._generic_cjk(item):
+                ex.add(rel, f"[{idx}]", f"file {fname} #{idx}", item)
+
+
+def _title_text(s) -> str | None:
+    """Человеческий заголовок окна или None (пусто/код/слишком длинно)."""
+    if not isinstance(s, str):
+        return None
+    t = s.strip()
+    if len(t) < 2 or len(t) > 200:
+        return None
+    if not re.search(r"[^\W\d_]", t):
+        return None
+    return t
+
+
+def _extract_window_title(game_dir: str, ex, on_skip=None) -> None:
+    """Заголовок окна игры: package.json window.title + index.html <title>."""
+    try:
+        with open(os.path.join(game_dir, "package.json"),
+                  encoding="utf-8-sig") as f:
+            manifest = json.load(f)
+        title = (manifest.get("window") or {}).get("title")
+        t = _title_text(title)
+        if t:
+            ex.add("package.json", "window.title", "window title", t)
+    except (OSError, ValueError, AttributeError) as e:
+        if on_skip:
+            on_skip("package.json", e)
+    try:
+        with open(os.path.join(game_dir, "index.html"),
+                  encoding="utf-8-sig") as f:
+            html_text = f.read()
+    except OSError:
+        return
+    m = re.search(r"<title[^>]*>(.*?)</title>", html_text,
+                  re.IGNORECASE | re.DOTALL)
+    if not m:
+        return
+    import html as _html
+    t = _title_text(_html.unescape(m.group(1)))
+    if t:
+        ex.add("index.html", "#title", "window title", t)
 
 
 # ── Внедрение ──
@@ -802,31 +999,73 @@ _SCRIPT_MARK = "#script"
 
 
 def _replace_js_strings(code: str, original: str,
-                        translation: str) -> str | None:
+                        translation: str,
+                        res: set[str] | None = None) -> str | None:
     """Заменяет литералы, равные original, на translation. None — если
-    ни один литерал не совпал (строка уже изменена или её нет)."""
+    ни один литерал не совпал (строка уже изменена или её нет).
+
+    Безопасность: пропускаем вхождения, которые на момент apply выглядят
+    как код (сравнение/case/ключ объекта/args["..."]) — один и тот же
+    литерал мог встретиться и как текст, и как ключ логики; перевод
+    кодового вхождения даёт тихий софт-брейк без SyntaxError.
+    Ссылки на ресурсы (имена аудио/картинок) не трогаем вообще.
+    """
+    if res:
+        from .resrefs import is_resource_name
+        if is_resource_name(res, original):
+            return None
     matches = iter_js_strings(code)
-    if not any(raw == original for raw, _, _, _ in matches):
+    hits = [(raw, q, s, e) for raw, q, s, e in matches if raw == original]
+    if not hits:
+        return None
+    # фильтруем кодовые вхождения по исходному коду (позиции валидны,
+    # т.к. замена идёт с конца к началу)
+    text_hits = [(raw, q, s, e) for raw, q, s, e in hits
+                 if not _is_code_literal(code, s, e)]
+    if not text_hits:
         return None
     result = code
-    for raw, q, start, end in reversed(matches):
-        if raw == original:
-            esc = _js_escape_translation(translation, q)
-            result = result[:start] + q + esc + q + result[end:]
+    for _raw, q, start, end in reversed(text_hits):
+        esc = _js_escape_translation(translation, q)
+        result = result[:start] + q + esc + q + result[end:]
     return result
+
+
+def _is_json_container(s: str):
+    """Декодирует JSON-в-строке (параметры-базы плагинов) или None.
+
+    Строгий критерий: вся строка — один JSON-объект/массив. Именно такие
+    значения плагины разбирают через JSON.parse при старте игры, поэтому
+    писать в них можно только через decode → замена → encode, иначе
+    кавычка/бэкслеш в переводе рвёт внутреннюю структуру и игра падает
+    с SyntaxError на загрузке (а внешний plugins.js остаётся валидным).
+    """
+    if not isinstance(s, str):
+        return None
+    t = s.strip()
+    if len(t) < 2 or t[0] not in "[{" or t[-1] not in "]}":
+        return None
+    try:
+        inner = json.loads(t)
+    except (ValueError, json.JSONDecodeError):
+        return None
+    return inner if isinstance(inner, (dict, list)) else None
 
 
 def _replace_param_leaf(node, original: str, translation: str) -> bool:
     """Заменяет первое вхождение original в листьях params (мутирует).
 
-    Работает на декодированных Python-строках (включая JSON-в-строке
-    через прямую подстроку) — outer json.dumps при записи всё
-    корректно заэкранирует. True — что-то заменено.
+    Устаревший неконтейнерный путь: оставлен для совместимости, новая
+    логика — _replace_param_value (с учётом ключа, индекса :n и
+    JSON-контейнеров). Прямая подстрока здесь безопасна только для
+    обычных строк: outer json.dumps при записи всё корректно заэкранирует.
     """
     if isinstance(node, dict):
         for k in list(node.keys()):
             v = node[k]
             if isinstance(v, str):
+                if _is_json_container(v) is not None:
+                    continue  # контейнеры — только через _replace_param_value
                 if v == original:
                     node[k] = translation
                     return True
@@ -840,6 +1079,8 @@ def _replace_param_leaf(node, original: str, translation: str) -> bool:
     if isinstance(node, list):
         for i, v in enumerate(node):
             if isinstance(v, str):
+                if _is_json_container(v) is not None:
+                    continue
                 if v == original:
                     node[i] = translation
                     return True
@@ -853,12 +1094,131 @@ def _replace_param_leaf(node, original: str, translation: str) -> bool:
     return False
 
 
+def _replace_param_value(params: dict, key: str, original: str,
+                         translation: str, sub: int | None,
+                         res: set[str] | None = None) -> bool:
+    """Точечная замена листа параметра (мутирует params). True — заменено.
+
+    - Обычная строка: точное совпадение, иначе подстрока (legacy).
+    - JSON-контейнер (база плагина в строке): декодируем, меняем ровно
+      тот лист, который извлекался под индексом :n (или первое точное
+      совпадение при sub=None), перекодируем и проверяем json.loads.
+      Не сошлось — False, файл не трогаем: пропущенная строка лучше
+      мёртвой игры.
+    - Ссылка на ресурс (имя BGM/SE/картинки) — всегда False: перевод
+      имени файла даёт "Failed to load" в игре.
+    """
+    if res:
+        from .resrefs import is_resource_name
+        if is_resource_name(res, original):
+            return False
+    if not isinstance(params, dict) or key not in params:
+        return False
+    val = params[key]
+    if not isinstance(val, str):
+        return False
+    inner = _is_json_container(val)
+    if inner is None:
+        if val == original:
+            params[key] = translation
+            return True
+        if original and original in val:
+            params[key] = val.replace(original, translation, 1)
+            return True
+        return False
+    # контейнер: собираем листья в порядке извлечения
+    leaves: list[str] = []
+    _collect_container_leaves(inner, leaves)
+    if sub is not None:
+        if sub < 0 or sub >= len(leaves) or leaves[sub] != original:
+            return False
+        targets = [sub]
+    else:
+        targets = [i for i, s in enumerate(leaves) if s == original]
+        if not targets:
+            return False
+        targets = targets[:1]
+    for idx in targets:
+        if not _set_container_leaf(inner, idx, translation):
+            return False
+    try:
+        new_val = json.dumps(inner, ensure_ascii=False)
+        json.loads(new_val)  # внутренняя структура обязана парситься
+    except (ValueError, TypeError):
+        return False
+    params[key] = new_val
+    return True
+
+
+def _collect_container_leaves(node, out: list) -> None:
+    """Строковые листья декодированного контейнера в порядке _walk_param_value."""
+    if isinstance(node, dict):
+        children = list(node.values())
+    elif isinstance(node, list):
+        children = list(node)
+    else:
+        return
+    for v in children:
+        if isinstance(v, str):
+            if _is_json_container(v) is not None:
+                _collect_container_leaves(json.loads(v), out)
+            else:
+                out.append(v)
+        elif isinstance(v, (dict, list)):
+            _collect_container_leaves(v, out)
+
+
+def _set_container_leaf(node, idx: int, value: str) -> bool:
+    """Устанавливает idx-й строковый лист (порядок _collect_container_leaves)."""
+    state = {"i": 0}
+
+    def _walk(n) -> bool:
+        if isinstance(n, dict):
+            for k, v in list(n.items()):
+                if isinstance(v, str):
+                    inner = _is_json_container(v)
+                    if inner is not None:
+                        if _walk(inner):
+                            n[k] = json.dumps(inner, ensure_ascii=False)
+                            return True
+                    elif state["i"] == idx:
+                        n[k] = value
+                        return True
+                    else:
+                        state["i"] += 1
+                elif isinstance(v, (dict, list)):
+                    if _walk(v):
+                        return True
+        elif isinstance(n, list):
+            for i, v in enumerate(n):
+                if isinstance(v, str):
+                    inner = _is_json_container(v)
+                    if inner is not None:
+                        if _walk(inner):
+                            n[i] = json.dumps(inner, ensure_ascii=False)
+                            return True
+                    elif state["i"] == idx:
+                        n[i] = value
+                        return True
+                    else:
+                        state["i"] += 1
+                elif isinstance(v, (dict, list)):
+                    if _walk(v):
+                        return True
+        return False
+
+    return _walk(node)
+
+
 def _apply_plugin_params_file(abs_path: str, items: list,
-                              on_skip=None) -> tuple[bool, int]:
+                               on_skip=None,
+                               res: set[str] | None = None) -> tuple[bool, int]:
     """Патчит VALUES параметров в списке плагинов (plugins.js).
 
     Поддерживает JSON-массив и JS-формат `var $plugins = [...]`.
     Ключи/структура не трогаются, только строковые листья.
+    Ссылки на ресурсы (имена аудио/картинок) не пишутся никогда:
+    перевод имени файла даёт "Failed to load" в игре.
     Возвращает (changed, written).
     """
     try:
@@ -909,7 +1269,22 @@ def _apply_plugin_params_file(abs_path: str, items: list,
         params = pl.get("parameters")
         if not isinstance(params, dict):
             continue
-        if _replace_param_leaf(params, e.original, e.translation):
+        # ключ и индекс листа :n (индекс — позиция при извлечении;
+        # сначала пробуем весь остаток как ключ — вдруг ключ сам с ":N")
+        if _key in params:
+            key, sub = _key, None
+        else:
+            maybe_key, colon, maybe_sub = _key.rpartition(":")
+            if colon and maybe_sub.isdigit() and maybe_key in params:
+                key, sub = maybe_key, int(maybe_sub)
+            else:
+                key, sub = _key, None
+        if key not in params:
+            if on_skip:
+                on_skip(e, f"param {_key} not in plugin {pname}")
+            continue
+        if _replace_param_value(params, key, e.original, e.translation,
+                                 sub, res):
             written += 1
         elif on_skip:
             on_skip(e, "param value not found")
@@ -918,15 +1293,34 @@ def _apply_plugin_params_file(abs_path: str, items: list,
     # plugins.js — .js-исходник (парсится движком как JS, не JSON.parse):
     # сырые U+2028/U+2029 из переводов дали бы тот же SyntaxError, что
     # в _replace_js_strings (Очикано). \\uXXXX валидны и в JS, и в JSON.
+    # < > & — против обрыва </script> в HTML-парсере (плагины грузятся
+    # через <script src>).
     try:
         blob = json.dumps(arr, ensure_ascii=False,
                           indent=1 if is_json else None)
-        blob = blob.replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+        blob = (blob.replace("&", "\\u0026")
+                    .replace("<", "\\u003c")
+                    .replace(">", "\\u003e")
+                    .replace("\u2028", "\\u2028")
+                    .replace("\u2029", "\\u2029"))
         if is_json:
             new_text = blob
         else:
             new_text = head + blob + tail
     except (ValueError, TypeError):
+        return False, 0
+    # Валидация перед записью: битый plugins.js = игра не стартует.
+    # JSON-формат должен парситься, JS-формат — содержать баланс [].
+    try:
+        if is_json:
+            json.loads(new_text)
+        else:
+            _s = new_text[new_text.index("["):new_text.rindex("]") + 1]
+            json.loads(re.sub(r",(\s*[\]}])", r"\1", _s))
+    except (ValueError, json.JSONDecodeError):
+        if on_skip:
+            for e in items:
+                on_skip(e, "plugins list validation failed, not written")
         return False, 0
     try:
         with open(abs_path, "w", encoding="utf-8") as f:
@@ -939,14 +1333,21 @@ def _apply_plugin_params_file(abs_path: str, items: list,
 def apply(game_dir: str, entries: list[TranslationEntry],
           backup_root: str | None = None, data_dir: str | None = None,
           target_lang: str = "ru",
-          on_skip=None) -> dict:
+          on_skip=None, res: set[str] | None = None) -> dict:
     """Внедряет переводы обратно в файлы игры. Возвращает статистику.
 
     Гибридный режим: JSON-файлы + опциональная генерация JS-пейлоада
-    для live-подмены.
+    для live-подмены. res — индекс имён ресурсов (resrefs.build_index):
+    ссылки на файлы не подменяются нигде (иначе "Failed to load").
     """
     if data_dir is None:
         data_dir = find_data_dir(game_dir)
+    if res is None:
+        try:
+            from .resrefs import build_index
+            res = build_index(game_dir)
+        except Exception:  # noqa: BLE001
+            res = None
     by_file: dict[str, list[TranslationEntry]] = {}
     for e in entries:
         if e.translation.strip() and e.status != "skip":
@@ -992,8 +1393,15 @@ def apply(game_dir: str, entries: list[TranslationEntry],
                         on_skip(e, f"path not found: {exc}")
                     continue
                 if isinstance(current, str):
+                    new_val = _apply_event_slot(
+                        data, e.json_path, current,
+                        e.original, e.translation)
+                    if new_val is None:
+                        if on_skip:
+                            on_skip(e, "slot changed or key protected")
+                        continue
                     try:
-                        set_by_path(data, e.json_path, e.translation)
+                        set_by_path(data, e.json_path, new_val)
                         written += 1
                     except (KeyError, IndexError, TypeError) as exc:
                         if on_skip:
@@ -1016,13 +1424,28 @@ def apply(game_dir: str, entries: list[TranslationEntry],
             changed, written = _apply_plugin_params_file(
                 abs_path,
                 [e for e in items if _PLUGPARAM_MARK in e.json_path],
-                on_skip)
+                on_skip, res)
             if changed:
                 stats["files"] += 1
                 stats["strings"] += written
             continue
 
         if not rel.endswith(".json"):
+            # заголовок окна index.html: только <title>, остальное святое
+            if rel.lower().endswith((".html", ".htm")):
+                written = 0
+                for e in items:
+                    if e.json_path != "#title":
+                        continue
+                    if _apply_html_title(abs_path, e.original,
+                                         e.translation):
+                        written += 1
+                    elif on_skip:
+                        on_skip(e, "title tag not found/changed")
+                if written:
+                    stats["files"] += 1
+                    stats["strings"] += written
+                continue
             # js-плагин: заменяем литералы по содержимому
             try:
                 with open(abs_path, encoding="utf-8-sig") as f:
@@ -1034,7 +1457,7 @@ def apply(game_dir: str, entries: list[TranslationEntry],
                 if _PLUGIN_MARK not in e.json_path:
                     continue
                 replaced = _replace_js_strings(
-                    new_code, e.original, e.translation)
+                    new_code, e.original, e.translation, res)
                 if replaced is not None:
                     new_code = replaced
                     stats["strings"] += 1
@@ -1064,7 +1487,7 @@ def apply(game_dir: str, entries: list[TranslationEntry],
                 if not isinstance(script, str):
                     continue
                 new_script = _replace_js_strings(
-                    script, e.original, e.translation)
+                    script, e.original, e.translation, res)
                 if new_script is not None:
                     set_by_path(data, path, new_script)
                     written += 1
@@ -1079,8 +1502,14 @@ def apply(game_dir: str, entries: list[TranslationEntry],
                           f"not found ({exc})")
                 continue
             if isinstance(current, str):
+                new_val = _apply_event_slot(
+                    data, e.json_path, current, e.original, e.translation)
+                if new_val is None:
+                    if on_skip:
+                        on_skip(e, "slot changed or key protected")
+                    continue
                 try:
-                    set_by_path(data, e.json_path, e.translation)
+                    set_by_path(data, e.json_path, new_val)
                     written += 1
                 except (KeyError, IndexError, TypeError) as exc:
                     if on_skip:
@@ -1095,6 +1524,59 @@ def apply(game_dir: str, entries: list[TranslationEntry],
         stats["files"] += 1
         stats["strings"] += written
     return stats
+
+
+def _apply_event_slot(data, entry_path: str, current: str,
+                      original: str, translation: str) -> str | None:
+    """Новое значение слота данных или None (не применять).
+
+    Обычный слот: пишем только если файл не изменился с извлечения
+    (current == original) — слепая перезапись затирала бы чужой текст
+    после обновления игры. Слот 657 `KEY = value`: подмена только
+    value-части через _splice_kv (ключ цел всегда).
+    """
+    if current == original:
+        return translation
+    base, sep, idx = entry_path.rpartition(".parameters[")
+    if not sep or not idx.endswith("]") or not idx[:-1].isdigit():
+        return None
+    try:
+        cmd = get_by_path(data, base)
+    except (KeyError, IndexError, TypeError):
+        return None
+    if not isinstance(cmd, dict) or cmd.get("code") != CMD_PLUGIN_CONT:
+        return None
+    return _splice_kv(current, original, translation)
+
+
+def _apply_html_title(abs_path: str, original: str,
+                      translation: str) -> bool:
+    """Меняет <title> в index.html на перевод. True — записано.
+
+    Пишем только если текущий заголовок совпадает с извлечённым
+    (иначе файл чужой/изменился — не трогаем). Кавычки/скобки в
+    переводе экранируем HTML-сущностями, остальное — как есть.
+    """
+    import html as _html
+    try:
+        with open(abs_path, encoding="utf-8-sig") as f:
+            text = f.read()
+    except (OSError, UnicodeDecodeError):
+        return False
+    m = re.search(r"<title[^>]*>(.*?)</title>", text,
+                  re.IGNORECASE | re.DOTALL)
+    if not m or _html.unescape(m.group(1)).strip() != original.strip():
+        return False
+    new_text = text[:m.start(1)] + _html.escape(translation, quote=False) \
+        + text[m.end(1):]
+    if new_text == text:
+        return False
+    try:
+        with open(abs_path, "w", encoding="utf-8") as f:
+            f.write(new_text)
+    except OSError:
+        return False
+    return True
 
 
 # имя старых таймстамп-папок бэкапа: YYYYmmdd_HHMMSS
