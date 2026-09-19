@@ -319,13 +319,16 @@ class WelcomeTab(QWidget):
         key = module.key if module else ""
         variant = getattr(module, "variant", "") or ""
 
-        # ряд «Кириллица»: RPG Maker MV/MZ и Ren'Py
-        cyr_supported = key in ("rpgmaker", "renpy")
+        # ряд «Кириллица»: RPG Maker MV/MZ, Ren'Py и Wolf RPG
+        cyr_supported = key in ("rpgmaker", "renpy", "wolf")
         self.cyr_row.setVisible(cyr_supported)
         if cyr_supported:
             if key == "rpgmaker":
                 from app.core.rpgmaker import fontpatch
                 patched = fontpatch.is_patched(p.game_dir, variant)
+            elif key == "wolf":
+                from app.core.wolf import fontpatch
+                patched = fontpatch.is_patched(p.game_dir)
             else:
                 from app.core.renpy import fontpatch
                 patched = fontpatch.is_patched(p.game_dir)
@@ -363,6 +366,56 @@ class WelcomeTab(QWidget):
         finally:
             self._updating_size = False
 
+    def _live_tentacle(self):
+        """Активное щупальце живой игры или None (без исключений)."""
+        try:
+            return self.main.channel()
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _live_apply_size(self, size: int) -> bool:
+        """Пробует применить размер шрифта к живой игре. True — вышло."""
+        t = self._live_tentacle()
+        if not t:
+            return False
+        mod = self.main.engine_module
+        key = getattr(mod, "key", "") if mod else ""
+        try:
+            if key == "renpy":
+                from app.core import livefont as lf
+                return lf.apply_renpy_font_size_live(t, int(size))
+            if key == "rpgmaker":
+                from app.core import livefont as lf
+                return lf.apply_rpgm_font_size_live(t, int(size))
+            if key == "ajin":
+                from app.core import livefont as lf
+                return lf.apply_ajin_font_size_live(t, int(size))
+        except Exception:  # noqa: BLE001
+            return False
+        return False
+
+    def _live_apply_font(self, font_filename: str = "") -> bool:
+        """Пробует применить шрифт к живой игре. True — вышло."""
+        t = self._live_tentacle()
+        if not t:
+            return False
+        mod = self.main.engine_module
+        key = getattr(mod, "key", "") if mod else ""
+        try:
+            if key == "renpy":
+                from app.core import livefont as lf
+                return lf.apply_renpy_font_live(t)
+            if key == "rpgmaker":
+                from app.core import livefont as lf
+                return lf.apply_rpgm_font_live(t, font_filename or "")
+        except Exception:  # noqa: BLE001
+            return False
+        return False
+
+    def _live_suffix(self, ok: bool) -> str:
+        return ("\n" + TR("dash_font_live_ok")) if ok else (
+            "\n" + TR("dash_font_need_restart"))
+
     def _font_size_change(self, delta: int):
         p = self.main.project
         mod = self.main.engine_module
@@ -383,6 +436,9 @@ class WelcomeTab(QWidget):
         except (OSError, RuntimeError, FileNotFoundError) as e:
             QMessageBox.critical(self, TR("dash_font_size"), str(e))
             self._refresh_font_size()
+            return
+        # живой размер без перезапуска (best-effort, без попапов при драге)
+        self._live_apply_size(new)
 
     def _refresh_stats(self):
         p = self.main.project
@@ -555,16 +611,31 @@ class WelcomeTab(QWidget):
                     QMessageBox.information(
                         self, TR("done"), TR("res_font_already"))
                     return
+                live = self._live_apply_font(report.get("font", ""))
                 QMessageBox.information(
                     self, TR("done"),
-                    TR("res_font_done", font=report.get("font", "")))
-            else:
-                from app.core.renpy import fontpatch
+                    TR("res_font_done", font=report.get("font", ""),
+                       live=self._live_suffix(live)))
+            elif mod.key == "wolf":
+                from app.core.wolf import fontpatch
                 report = fontpatch.patch_font(p.game_dir)
                 if report["replaced"]:
                     QMessageBox.information(
                         self, TR("done"),
-                        TR("res_font_done_renpy", n=report["replaced"]))
+                        TR("res_font_done_renpy", n=report["replaced"],
+                           live=self._live_suffix(False)))
+                else:
+                    QMessageBox.information(
+                        self, TR("done"), TR("res_font_already"))
+            else:
+                from app.core.renpy import fontpatch
+                report = fontpatch.patch_font(p.game_dir)
+                if report["replaced"]:
+                    live = self._live_apply_font("")
+                    QMessageBox.information(
+                        self, TR("done"),
+                        TR("res_font_done_renpy", n=report["replaced"],
+                           live=self._live_suffix(live)))
                 else:
                     QMessageBox.information(
                         self, TR("done"), TR("res_font_already"))
@@ -587,15 +658,26 @@ class WelcomeTab(QWidget):
             if mod.key == "rpgmaker":
                 from app.core.rpgmaker import fontpatch
                 report = fontpatch.patch_font(p.game_dir, mod.variant, path)
+                live = self._live_apply_font(report.get("font", ""))
                 QMessageBox.information(
                     self, TR("done"),
-                    TR("res_font_done", font=report.get("font", "")))
-            else:
-                from app.core.renpy import fontpatch
+                    TR("res_font_done", font=report.get("font", ""),
+                       live=self._live_suffix(live)))
+            elif mod.key == "wolf":
+                from app.core.wolf import fontpatch
                 report = fontpatch.patch_font(p.game_dir, path)
                 QMessageBox.information(
                     self, TR("done"),
-                    TR("res_font_done_renpy", n=report["replaced"]))
+                    TR("res_font_done_renpy", n=report["replaced"],
+                       live=self._live_suffix(False)))
+            else:
+                from app.core.renpy import fontpatch
+                report = fontpatch.patch_font(p.game_dir, path)
+                live = self._live_apply_font("")
+                QMessageBox.information(
+                    self, TR("done"),
+                    TR("res_font_done_renpy", n=report["replaced"],
+                       live=self._live_suffix(live)))
         except Exception as e:
             QMessageBox.critical(self, TR("dash_font"), str(e))
             return
@@ -610,6 +692,9 @@ class WelcomeTab(QWidget):
             if mod.key == "rpgmaker":
                 from app.core.rpgmaker import fontpatch
                 fontpatch.restore_font(p.game_dir, mod.variant)
+            elif mod.key == "wolf":
+                from app.core.wolf import fontpatch
+                fontpatch.restore_font(p.game_dir)
             else:
                 from app.core.renpy import fontpatch
                 fontpatch.restore_font(p.game_dir)

@@ -31,8 +31,17 @@ from app.ui.theme import AnimatedComboBox
 CHANGED_COLOR = QColor(255, 255, 150)  # жёлтый фон для изменённых ячеек
 
 
+def _is_qthread_running(w) -> bool:
+    """isRunning() без исключений: C++-объект мог уже уйти в deleteLater."""
+    try:
+        return bool(w.isRunning())
+    except RuntimeError:
+        return False
+
+
 class NamesWorker(QThread):
     done = Signal(object, object, object, object)
+    failed = Signal(str)
 
     def __init__(self, translator: Translator, tgt: str,
                  var_names: dict, switch_names: dict,
@@ -45,29 +54,65 @@ class NamesWorker(QThread):
         self.switch_names = switch_names
         self.item_names = item_names
         self.state_names = state_names
+        self._cancelled = False
+
+    def cancel(self):
+        """Cooperative отмена: флаг движка + прерывание QThread.
+
+        Движок проверяет cancelled перед каждым сетевым запросом
+        и бросает InterruptedError — поток выходит штатно, без
+        terminate() (тот роняет процесс посреди C-кода SSL/SQLite).
+        """
+        self._cancelled = True
+        try:
+            if self.translator is not None:
+                self.translator.cancel()
+        except Exception:  # noqa: BLE001 — отмена не должна падать
+            pass
+        self.requestInterruption()
+
+    def _is_cancelled(self) -> bool:
+        if self._cancelled or self.isInterruptionRequested():
+            return True
+        try:
+            if getattr(self.translator, "cancelled", False):
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        return False
 
     def run(self):
         v, s, it, st = {}, {}, {}, {}
         try:
+            if self._is_cancelled():
+                return
             v = dict(zip(
                 self.var_names.keys(),
                 self.translator.translate_texts(
                     list(self.var_names.values()), "auto", self.tgt)))
+            if self._is_cancelled():
+                return
             s = dict(zip(
                 self.switch_names.keys(),
                 self.translator.translate_texts(
                     list(self.switch_names.values()), "auto", self.tgt)))
+            if self._is_cancelled():
+                return
             it = dict(zip(
                 self.item_names.keys(),
                 self.translator.translate_texts(
                     list(self.item_names.values()), "auto", self.tgt)))
+            if self._is_cancelled():
+                return
             st = dict(zip(
                 self.state_names.keys(),
                 self.translator.translate_texts(
                     list(self.state_names.values()), "auto", self.tgt)))
+        except InterruptedError:
+            return
         except Exception as e:  # noqa: BLE001
-            print(f"[cheat] names translation failed: {e}")
-        if self.isInterruptionRequested():
+            self.failed.emit(str(e))
+        if self._is_cancelled():
             return
         self.done.emit(v, s, it, st)
 
@@ -89,6 +134,11 @@ class CheatTab(QWidget):
         self.item_names_tr: dict[tuple[str, int], str] = {}
         self.state_names: dict[int, str] = {}
         self._names_worker: NamesWorker | None = None
+        self._names_seq = 0
+        # Отменённые, но ещё бегущие воркеры: держим Python-ссылку до
+        # finished. Без этого последний ref исчезает при замене/очистке
+        # и shiboken сносит C++ QThread посреди run() -> AV 0xC0000409.
+        self._zombie_workers: list[NamesWorker] = []
         self._loading = False
         self._actor_edits: dict[tuple[int, str], int] = {}
 
@@ -117,7 +167,15 @@ class CheatTab(QWidget):
         self._timer.start(500)
 
     def _auto_state(self):
-        if not self.isVisible() or not self.main.channel():
+        if not self.isVisible():
+            return
+        # не слать запросы когда detached: channel() is None без
+        # активного щупальца; перепроверяем перед отправкой
+        try:
+            ch = self.main.channel()
+        except Exception:  # noqa: BLE001
+            return
+        if ch is None:
             return
         # не дергаем, пока пользователь редактирует ячейку
         for tbl in (self.vars_table, self.sw_table,
@@ -126,13 +184,82 @@ class CheatTab(QWidget):
                 return
         self._request_state()
 
+    def _hold_zombie(self, worker: NamesWorker) -> None:
+        """Удерживает отменённый, но ещё бегущий поток до finished.
+
+        finished (когда цикл событий доставит) убирает поток из списка;
+        finished->deleteLater подключает вызывающий код. Завершённые
+        потоки из списка выкидываем сразу — удалять finished QThread
+        безопасно. Список ограничен 8 записями.
+        """
+        try:
+            if not worker.isRunning():
+                return
+        except RuntimeError:  # C++-объект уже удалён
+            return
+        if worker not in self._zombie_workers:
+            self._zombie_workers.append(worker)
+        self._zombie_workers = [
+            w for w in self._zombie_workers if w is worker
+            or _is_qthread_running(w)][-8:]
+        try:
+            worker.finished.connect(
+                lambda _w=worker: self._drop_zombie(_w))
+        except Exception:  # noqa: BLE001, RuntimeError
+            pass
+
+    def _drop_zombie(self, worker: NamesWorker) -> None:
+        try:
+            self._zombie_workers.remove(worker)
+        except ValueError:
+            pass
+
     def cleanup(self):
-        """Останавливает NamesWorker перед удалением вкладки."""
+        """Останавливает NamesWorker без блокировки GUI.
+
+        Cooperative отмена (cancel + requestInterruption) + wait(200)
+        max; если поток не успел — он сам завершится и удалится по
+        finished->deleteLater, висящих запросов не шлём (поколение
+        инвалидируется, поздние done игнорятся).
+        """
         worker = self._names_worker
-        if worker and worker.isRunning():
-            worker.requestInterruption()
-            worker.wait(3000)
         self._names_worker = None
+        self._names_seq += 1
+        # чистим список зомби от уже завершённых (удалять finished
+        # QThread безопасно) — обратного роста списка не будет
+        for z in list(self._zombie_workers):
+            if not _is_qthread_running(z):
+                self._drop_zombie(z)
+        if worker is None:
+            return
+        try:
+            if worker.isRunning():
+                cancel = getattr(worker, "cancel", None)
+                if callable(cancel):
+                    try:
+                        cancel()
+                    except Exception:  # noqa: BLE001
+                        pass
+                else:
+                    try:
+                        worker.requestInterruption()
+                    except Exception:  # noqa: BLE001
+                        pass
+                try:
+                    worker.finished.connect(worker.deleteLater)
+                except Exception:  # noqa: BLE001, RuntimeError
+                    pass
+                worker.wait(200)
+                # поток мог не успеть (блокирующий POST в C-коде):
+                # ссылку держим до finished, иначе shiboken снесёт
+                # бегущий QThread -> AV 0xC0000409
+                self._hold_zombie(worker)
+            try:
+                self.busy_names.stop()
+            except Exception:  # noqa: BLE001
+                pass
+        except RuntimeError:  # C++-объект уже удалён (deleteLater)
+            pass
 
     # ── diff-подсветка: сравнивает старое и новое значение ──
     def _cell_changed(self, table: QTableWidget, row: int, col: int,
@@ -473,9 +600,34 @@ class CheatTab(QWidget):
         if not (self.var_names or self.switch_names
                 or self.item_names or self.state_names):
             return
-        if self._names_worker and self._names_worker.isRunning():
-            self._names_worker.terminate()
-            self._names_worker.wait(2000)
+        self._names_seq += 1
+        seq = self._names_seq
+        old = self._names_worker
+        if old is not None and old.isRunning():
+            # никакого terminate()/wait(2000): cooperative отмена,
+            # старый поток доработает отмену сам и удалится по finished
+            try:
+                cancel = getattr(old, "cancel", None)
+                if callable(cancel):
+                    cancel()
+                else:
+                    old.requestInterruption()
+            except Exception:  # noqa: BLE001, RuntimeError
+                pass
+            try:
+                old.finished.connect(old.deleteLater)
+            except Exception:  # noqa: BLE001, RuntimeError
+                pass
+            # отцепляем сигналы старого, чтобы поздний done не трогал UI;
+            # страховка — проверка поколения в _on_names_translated
+            for sig_name in ("done", "failed"):
+                try:
+                    getattr(old, sig_name).disconnect()
+                except Exception:  # noqa: BLE001, RuntimeError
+                    pass
+            # ссылку держим до finished, иначе shiboken снесёт бегущий
+            # QThread при переназначении _names_worker -> AV 0xC0000409
+            self._hold_zombie(old)
         engine = self.main.create_engine("files")
         if engine is None:
             return
@@ -483,14 +635,25 @@ class CheatTab(QWidget):
                                 glossary=self.main.glossary)
         tgt = self.main.settings.value("target_lang", "ru")
         self.busy_names.start(TR("cheat_names_translating"))
-        self._names_worker = NamesWorker(
+        worker = NamesWorker(
             translator, tgt,
             self.var_names, self.switch_names,
             self.item_names, self.state_names)
-        self._names_worker.done.connect(self._on_names_translated)
-        self._names_worker.start()
+        worker.done.connect(
+            lambda v, s, it, st, _seq=seq:
+            self._on_names_translated(v, s, it, st, _seq))
+        worker.failed.connect(self._on_names_failed)
+        worker.finished.connect(worker.deleteLater)
+        self._names_worker = worker
+        worker.start()
 
-    def _on_names_translated(self, v: dict, s: dict, it: dict, st: dict):
+    def _on_names_failed(self, err: str):
+        self.busy_names.stop()
+
+    def _on_names_translated(self, v: dict, s: dict, it: dict, st: dict,
+                             seq: int | None = None):
+        if seq is not None and seq != self._names_seq:
+            return  # устаревший worker, результат игнорируем
         self.var_names_tr = v
         self.switch_names_tr = s
         self.item_names_tr = it

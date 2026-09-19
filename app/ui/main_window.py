@@ -70,6 +70,9 @@ def _cleanup_legacy_settings(s: QSettings):
             s.setValue(key, "ai" if key == "engine_corrector" else "rotate")
     # системный трей убран из приложения — настройка больше не читается
     s.remove("close_to_tray")
+    # светлая тема удалена (dark-only) — чистим остатки
+    for _k in ("theme", "ui_theme", "theme_name", "color_theme"):
+        s.remove(_k)
 
 
 def _migrate_project_files():
@@ -239,17 +242,105 @@ class MainWindow(QMainWindow):
         engine = (module.variant or module.key) if module else "unknown"
 
         pf = self._project_file(game_dir)
+        bak = pf + ".bak"
         if os.path.exists(pf):
             try:
                 with open(pf, encoding="utf-8") as f:
                     self.project = Project.from_dict(json.load(f))
                 self.project.engine = engine
-            except (json.JSONDecodeError, OSError, KeyError):
-                self.project = Project(game_dir=game_dir, engine=engine)
+            except json.JSONDecodeError:
+                # Битая копия (обрыв записи): карантиним оригинал,
+                # затем пробуем .bak и только потом пустой Project.
+                try:
+                    import time
+                    ts = int(time.time())
+                    corrupt = f"{pf}.corrupt-{ts}.json"
+                    _i = 0
+                    while os.path.exists(corrupt):
+                        _i += 1
+                        corrupt = f"{pf}.corrupt-{ts}-{_i}.json"
+                    try:
+                        os.replace(pf, corrupt)
+                    except OSError:
+                        try:
+                            import shutil
+                            shutil.copy2(pf, corrupt)
+                            os.remove(pf)
+                        except OSError:
+                            pass
+                except Exception:  # noqa: BLE001 — карантин best-effort
+                    pass
+                try:
+                    with open(bak, encoding="utf-8") as f:
+                        self.project = Project.from_dict(json.load(f))
+                    self.project.engine = engine
+                except (OSError, ValueError, KeyError, TypeError):
+                    self.project = Project(game_dir=game_dir, engine=engine)
+            except (OSError, KeyError, ValueError, TypeError,
+                    UnicodeDecodeError):
+                # Не JSON-обрыв (нет доступа/плохая схема): тоже пробуем
+                # .bak для восстановления, иначе пустой Project.
+                # Старые .ob.json читаются как раньше (from_dict
+                # с defaults) — API не ломаем.
+                try:
+                    with open(bak, encoding="utf-8") as f:
+                        self.project = Project.from_dict(json.load(f))
+                    self.project.engine = engine
+                except (OSError, ValueError, KeyError, TypeError):
+                    self.project = Project(game_dir=game_dir, engine=engine)
         else:
-            self.project = Project(game_dir=game_dir, engine=engine)
+            # pf нет — но .bak от прошлой установки мог уцелеть
+            try:
+                with open(bak, encoding="utf-8") as f:
+                    self.project = Project.from_dict(json.load(f))
+                self.project.engine = engine
+            except (OSError, ValueError, KeyError, TypeError):
+                self.project = Project(game_dir=game_dir, engine=engine)
+
+        # ── автоподхват памяти (TM): только tm.get по снапшоту ──
+        # Без import_projects (тяжёлый обход всех *.ob.json) и без движка:
+        # только точные/норм-совпадения из уже загруженной tm2.
+        # Лимит 2000 записей за раз, чтобы не фризить открытие.
+        # Битая tm2 не роняет открытие — всё за try/except.
+        _mem_hits = 0
+        try:
+            tm = getattr(self, "tm", None)
+            entries = getattr(self.project, "entries", None) or []
+            if tm is not None and entries:
+                from app.core.translate.service import _resolve_src as _mem_resolve
+                src = getattr(self.project, "source_lang", "auto") or "auto"
+                tgt = getattr(self.project, "target_lang", "ru") or "ru"
+                for e in list(entries[:2000]):
+                    try:
+                        if e.translation.strip() or e.status == "skip":
+                            continue
+                        if not (e.original or "").strip():
+                            continue
+                        lang = _mem_resolve(e.original, src, tgt)
+                        if not lang:
+                            continue
+                        hit = tm.get(e.original, lang, tgt)
+                        if hit:
+                            e.translation = hit
+                            e.status = "translated"
+                            _mem_hits += 1
+                    except Exception:  # noqa: BLE001 — одна строка не роняет prefill
+                        continue
+                if _mem_hits:
+                    try:
+                        self.save_project()
+                    except Exception:  # noqa: BLE001
+                        pass
+        except Exception:  # noqa: BLE001 — битая tm2 не роняет открытие
+            _mem_hits = 0
 
         self.refresh_all()
+
+        try:
+            if _mem_hits > 0 and hasattr(self, "status_bar"):
+                self.status_bar.set_task(TR("sb_memory", n=_mem_hits))
+        except Exception:  # noqa: BLE001
+            pass
 
         self._add_recent(game_dir, engine)
 
@@ -269,9 +360,31 @@ class MainWindow(QMainWindow):
     def save_project(self):
         if not self.project:
             return
-        with open(self._project_file(self.project.game_dir), "w",
-                  encoding="utf-8") as f:
-            json.dump(self.project.to_dict(), f, ensure_ascii=False)
+        pf = self._project_file(self.project.game_dir)
+        bak = pf + ".bak"
+        # Страховка: предыдущую целую копию — в .bak (битая поверх
+        # хорошей никогда не пишется).
+        try:
+            if os.path.isfile(pf):
+                try:
+                    with open(pf, encoding="utf-8") as f:
+                        json.load(f)  # проверка целостности
+                except (OSError, ValueError):
+                    pass  # pf битый — .bak не трогаем
+                else:
+                    try:
+                        from app.core.io import atomic_write_bytes as _awb
+                        with open(pf, "rb") as _src:
+                            _awb(bak, _src.read())
+                    except (OSError, ValueError):
+                        pass
+        except OSError:
+            pass
+        try:
+            from app.core.io import atomic_write_json as _awj
+            _awj(pf, self.project.to_dict())
+        except (OSError, TypeError, ValueError):
+            pass
 
     def refresh_all(self):
         self.welcome_tab.refresh_dashboard()
@@ -300,6 +413,14 @@ class MainWindow(QMainWindow):
                 else:
                     empty += 1
         self.status_bar.update_project_stats(done, draft, empty, total)
+        # Размер памяти переводов — рядом со сводкой («Память: {total}»).
+        # Битая tm2 не роняет статистику.
+        try:
+            tm = getattr(self, "tm", None)
+            if tm is not None:
+                self.status_bar.set_memory(tm.stats().get("total", 0))
+        except Exception:  # noqa: BLE001
+            pass
 
     # ---------- recent projects ----------
     def _dedup_recent(self):
@@ -510,17 +631,21 @@ class MainWindow(QMainWindow):
         if not t:
             return ""
         return {"rpgmaker": "CDP", "renpy": "Frida", "twine": "HTTP+WS",
-                "tyrano": "CDP"}.get(t.key, t.key)
+                "tyrano": "CDP", "wolf": "EXE"}.get(t.key, t.key)
 
     def _on_sb_client(self, connected: bool):
         self.status_bar.set_connected(connected,
                                       backend=self._backend_name())
 
     def _stop_workers(self):
-        """Мягко останавливает фоновые QThread перед выходом —
-        иначе QThread.destroy во время run() роняет процесс.
-        terminate() не используется: он убивает поток посреди C-кода
-        (requests/SSL/sqlite) и роняет весь процесс до сохранения."""
+        """Мягко останавливает фоновые QThread перед выходом.
+
+        Только cooperative отмена: translator/corrector.cancel() +
+        worker.cancel()/requestInterruption() + wait(800) max.
+        Никакого terminate(): он убивает поток посреди C-кода
+        (requests/SSL/sqlite) и роняет весь процесс с AV до сохранения.
+        Не дождавшийся поток завершится сам и удалится по
+        finished->deleteLater."""
         tt = self.translate_tab
         for worker, cancel in (
                 (tt.worker, getattr(tt.worker.translator, "cancel", None)
@@ -528,6 +653,7 @@ class MainWindow(QMainWindow):
                 (tt.worker_correct,
                  getattr(tt.worker_correct.corrector, "cancel", None)
                  if tt.worker_correct else None),
+                (tt.worker_pull, None),
                 (getattr(self, "_extract_worker", None), None),
                 (getattr(self.cheat_tab, "_names_worker", None)
                  if self.cheat_tab else None, None)):
@@ -535,11 +661,22 @@ class MainWindow(QMainWindow):
                 continue
             try:
                 if cancel:
-                    cancel()
+                    try:
+                        cancel()
+                    except Exception:  # noqa: BLE001
+                        pass
+                worker_cancel = getattr(worker, "cancel", None)
+                if callable(worker_cancel):
+                    try:
+                        worker_cancel()
+                    except Exception:  # noqa: BLE001
+                        pass
                 worker.requestInterruption()
-                if not worker.wait(10000):
-                    worker.terminate()
-                    worker.wait(1000)
+                try:
+                    worker.finished.connect(worker.deleteLater)
+                except Exception:  # noqa: BLE001, RuntimeError
+                    pass
+                worker.wait(800)
             except RuntimeError:   # C++-объект уже удалён (deleteLater)
                 pass
         # вкладки движка: останавливаем их фоновые потоки

@@ -263,6 +263,49 @@ class CorrectWorker(QThread):
             self.failed.emit(str(e))
 
 
+class MemoryPullWorker(QThread):
+    """Подтягивание из памяти переводов: import_projects + prefill.
+
+    Весь import_projects (чтение десятков .ob.json) — здесь, в фоне,
+    GUI не блокируется. Воркер работает только со снапшотом
+    [{id, original}] — живые entries проекта в потоке не мутируют
+    (TM thread-safe). Движок не используется. Возвращает
+    {"results": {id: translation}, "total": N, "imported": n}."""
+
+    done = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, tm, snapshot: list[dict], src: str, tgt: str,
+                 projects_dir: str):
+        super().__init__()
+        self.setObjectName("MemoryPullWorker")
+        self._tm = tm
+        self._snapshot = snapshot
+        self._src = src
+        self._tgt = tgt
+        self._projects_dir = projects_dir
+
+    def run(self):
+        try:
+            imported = self._tm.import_projects(self._projects_dir)
+            if self.isInterruptionRequested():
+                return
+            from types import SimpleNamespace
+            fakes = [SimpleNamespace(id=s["id"], original=s["original"],
+                                     translation="", status="new")
+                     for s in self._snapshot]
+            Translator(engine=None, tm=self._tm).prefill_from_memory(
+                fakes, self._src, self._tgt)
+            if self.isInterruptionRequested():
+                return
+            results = {f.id: f.translation for f in fakes if f.translation}
+            self.done.emit({"results": results,
+                            "total": len(self._snapshot),
+                            "imported": imported})
+        except Exception as e:  # noqa: BLE001
+            self.failed.emit(str(e))
+
+
 class AnalyzeWorker(QThread):
     """Автоглоссарий: LLM выделяет имена и термины из текстов проекта."""
 
@@ -738,6 +781,7 @@ class TranslateTab(QWidget):
         self.main = main_window
         self.worker: TranslateWorker | None = None
         self.worker_correct: CorrectWorker | None = None
+        self.worker_pull: MemoryPullWorker | None = None
         self._loading = False
         self._cancelling = False
         self._cancel_elapsed = 0
@@ -748,6 +792,7 @@ class TranslateTab(QWidget):
         self._selected_file = ""
         self._file_items: list[_FileItem] = []
         self._toast_timer: QTimer | None = None
+        self._mem_cache: dict[int, list[dict]] = {}
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -773,6 +818,13 @@ class TranslateTab(QWidget):
         self.btn_translate.setCursor(Qt.PointingHandCursor)
         self.btn_translate.clicked.connect(self._translate_with_options)
         bar.addWidget(self.btn_translate)
+
+        self.btn_pull = QPushButton(TR("tr_pull_memory"))
+        self.btn_pull.setObjectName("tool_btn")
+        self.btn_pull.setIcon(icon("database", 14, C_TEXT_SECONDARY))
+        self.btn_pull.setCursor(Qt.PointingHandCursor)
+        self.btn_pull.clicked.connect(self.pull_from_memory)
+        bar.addWidget(self.btn_pull)
 
         self.btn_apply = QPushButton(TR("tr_apply"))
         self.btn_apply.setProperty("step", True)
@@ -932,6 +984,20 @@ class TranslateTab(QWidget):
         gb.addStretch(1)
         right_lay.addWidget(self.gloss_bar)
 
+        # ── панель памяти: похожие переводы для выбранной строки ──
+        self.mem_bar = QWidget()
+        self.mem_bar.setVisible(False)
+        self.mem_bar_lay = QHBoxLayout(self.mem_bar)
+        mb = self.mem_bar_lay
+        mb.setContentsMargins(14, 2, 14, 2)
+        mb.setSpacing(6)
+        self.mem_title = QLabel(TR("tr_memory_title"))
+        self.mem_title.setStyleSheet(
+            f"color: {C_TEXT_SECONDARY}; font-size: 11px;")
+        mb.addWidget(self.mem_title)
+        mb.addStretch(1)
+        right_lay.addWidget(self.mem_bar)
+
         self.stack = QStackedWidget()
 
         self.table = QTableWidget(0, 5)
@@ -957,6 +1023,7 @@ class TranslateTab(QWidget):
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._table_menu)
         self.table.currentCellChanged.connect(self._glossary_bar_update)
+        self.table.currentCellChanged.connect(self._memory_bar_update)
         self._copy_shortcut = QShortcut(
             QKeySequence.StandardKey.Copy, self.table,
             activated=self._copy_cell)
@@ -1025,7 +1092,8 @@ class TranslateTab(QWidget):
         self.toast.move((self.width() - self.toast.width()) // 2,
                         self.height() - 64)
 
-    def _flash_saved(self):
+    def _flash_saved(self, text: str | None = None):
+        self.toast.setText(text or TR("tr_saved"))
         self.toast.show()
         self.toast.raise_()
         self._place_toast()
@@ -1045,12 +1113,15 @@ class TranslateTab(QWidget):
             if p else 0
         busy = bool((self.worker and self.worker.isRunning())
                     or (self.worker_correct
-                        and self.worker_correct.isRunning()))
+                        and self.worker_correct.isRunning())
+                    or (self.worker_pull
+                        and self.worker_pull.isRunning()))
         extract_busy = bool(getattr(self.main, "_extract_worker", None)
                             and self.main._extract_worker.isRunning())
         self.btn_extract.setEnabled(
             bool(p) and bool(self.main.engine_module) and not extract_busy)
         self.btn_translate.setEnabled(n > 0 and not busy)
+        self.btn_pull.setEnabled(n > 0 and not busy)
         self.btn_apply.setEnabled(translated > 0)
 
         if busy:
@@ -1245,6 +1316,11 @@ class TranslateTab(QWidget):
         p = self._project()
         if p is None:
             return
+        try:
+            # новый проект/фильтр — старые подсказки памяти невалидны
+            self._mem_cache.clear()
+        except Exception:  # noqa: BLE001
+            pass
         self._loading = True
         try:
             rows = self._filtered()
@@ -1362,6 +1438,152 @@ class TranslateTab(QWidget):
         self.table.setCurrentCell(row, COL_TRANS)
         item.setText(new)
         self._on_item_changed(item)
+
+    # ── память: похожие переводы для выбранной строки ──
+
+    @staticmethod
+    def _mem_short(text: str, limit: int = 40) -> str:
+        t = " ".join((text or "").split())
+        return t if len(t) <= limit else t[:limit - 1] + "…"
+
+    def _memory_bar_update(self, row: int = -1, col: int = -1, *args):
+        """Секция «Похожие из памяти» для выбранной строки.
+
+        suggest_all быстрый (LIMIT 200 + difflib в памяти), вызывается
+        прямо из GUI; результат кэшируется по entry id. Битая tm2
+        панель просто прячет.
+        """
+        try:
+            self.mem_title.show()
+            bar = self.mem_bar_lay
+            while bar.count() > 2:  # title + stretch
+                item = bar.takeAt(1)
+                w = item.widget()
+                if w:
+                    w.deleteLater()
+            if row < 0:
+                row = self.table.currentRow()
+            if row < 0 or not self._project():
+                self.mem_bar.setVisible(False)
+                return
+            orig_item = self.table.item(row, COL_ORIG)
+            trans_item = self.table.item(row, COL_TRANS)
+            if not orig_item:
+                self.mem_bar.setVisible(False)
+                return
+            orig = orig_item.text()
+            if not (orig or "").strip():
+                self.mem_bar.setVisible(False)
+                return
+            entry_id = orig_item.data(Qt.UserRole)
+            p = self._project()
+            src = getattr(p, "source_lang", None) \
+                or self.main.settings.value("source_lang", "auto")
+            tgt = getattr(p, "target_lang", None) \
+                or self.main.settings.value("target_lang", "ru")
+            tm = getattr(self.main, "tm", None)
+            if tm is None:
+                self.mem_bar.setVisible(False)
+                return
+            # точный язык источника (auto -> detect), иначе suggest_all
+            # по ключу 'auto' ничего не найдёт
+            try:
+                from app.core.translate.service import _resolve_src
+                lang = _resolve_src(orig, src, tgt)
+            except Exception:  # noqa: BLE001
+                lang = None
+            if not lang:
+                # строка уже на целевом языке — подсказки не нужны
+                self.mem_bar.setVisible(False)
+                return
+            try:
+                cached = self._mem_cache.get(entry_id)
+            except Exception:  # noqa: BLE001
+                cached = None
+            if cached is None:
+                try:
+                    sug = tm.suggest_all(orig, lang, tgt, limit=3)
+                except Exception:  # noqa: BLE001 — битая tm2
+                    self.mem_bar.setVisible(False)
+                    return
+                try:
+                    self._mem_cache[entry_id] = sug
+                except Exception:  # noqa: BLE001
+                    pass
+            else:
+                sug = cached
+            if not sug:
+                self.mem_bar.setVisible(False)
+                return
+            cur_trans = trans_item.text().strip() if trans_item else ""
+            shown = 0
+            for s in sug[:3]:
+                try:
+                    target = s.get("target", "")
+                    source = s.get("source", "")
+                    score = float(s.get("score", 0.0))
+                except Exception:  # noqa: BLE001
+                    continue
+                if not (target or "").strip():
+                    continue
+                if cur_trans and target.strip() == cur_trans and score >= 0.999:
+                    continue  # точное уже стоит в ячейке
+                pct = int(round(score * 100))
+                lbl = QLabel(
+                    f"{self._mem_short(source)} → "
+                    f"{self._mem_short(target)} ({pct}%)")
+                lbl.setStyleSheet(
+                    f"color: {C_TEXT_SECONDARY}; font-size: 11px; "
+                    "background: transparent;")
+                lbl.setToolTip(source)
+                bar.insertWidget(bar.count() - 1, lbl)
+                btn = QPushButton(TR("tr_memory_take"))
+                btn.setObjectName("chip_filter")
+                btn.setCursor(Qt.PointingHandCursor)
+                btn.setToolTip(TR("tr_memory_tip"))
+                btn.clicked.connect(
+                    lambda checked=False, tt=target, ss=score:
+                        self._memory_apply(tt, ss))
+                bar.insertWidget(bar.count() - 1, btn)
+                shown += 1
+            self.mem_bar.setVisible(shown > 0)
+        except Exception:  # noqa: BLE001 — панель памяти никогда не роняет GUI
+            try:
+                self.mem_bar.setVisible(False)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _memory_apply(self, target: str, score: float = 0.0):
+        """Кнопка «Взять»: подставить перевод из памяти."""
+        try:
+            row = self.table.currentRow()
+            if row < 0:
+                return
+            item = self.table.item(row, COL_TRANS)
+            orig_item = self.table.item(row, COL_ORIG)
+            if not item or not orig_item:
+                return
+            entry_id = orig_item.data(Qt.UserRole)
+            p = self._project()
+            if not p:
+                return
+            e = next((x for x in p.entries if x.id == entry_id), None)
+            if e is None:
+                return
+            e.translation = target
+            e.status = "translated" if score >= 0.999 else "manual"
+            try:
+                self.main.save_project()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                self._mem_cache.pop(entry_id, None)
+            except Exception:  # noqa: BLE001
+                pass
+            self.fill_table()
+            self._update_stats()
+        except Exception:  # noqa: BLE001
+            pass
 
     def _copy_text(self, text: str):
         if text:
@@ -1542,8 +1764,10 @@ class TranslateTab(QWidget):
             return
         translator = Translator(engine, tm=self.main.tm,
                                 glossary=self.main.glossary)
+        # P0: воркеру — копию списка (list), а не живой p.entries:
+        # GUI может переизвлечь проект во время перевода.
         self.worker = TranslateWorker(
-            translator, p.entries,
+            translator, list(p.entries),
             s.value("source_lang", "auto"), s.value("target_lang", "ru"),
             overwrite=self._pending_overwrite)
         self.worker.progressed.connect(self._on_progress)
@@ -1566,7 +1790,7 @@ class TranslateTab(QWidget):
         через таймер (GUI не блокируется, полоса/текст доигрывают плавно)."""
         self._cancelling = True
         self._cancel_elapsed = 0
-        for w in (self.worker, self.worker_correct):
+        for w in (self.worker, self.worker_correct, self.worker_pull):
             if not w:
                 continue
             translator = getattr(w, "translator", None)
@@ -1579,7 +1803,8 @@ class TranslateTab(QWidget):
         self.btn_cancel.setEnabled(False)
         self.main.loading.set_text(TR("tr_cancelling"))
         busy = (self.worker and self.worker.isRunning()) or (
-            self.worker_correct and self.worker_correct.isRunning())
+            self.worker_correct and self.worker_correct.isRunning()) or (
+            self.worker_pull and self.worker_pull.isRunning())
         if not busy:
             self._finish_cancelled()
             return
@@ -1599,7 +1824,8 @@ class TranslateTab(QWidget):
         """
         self._cancel_elapsed += 120
         busy = (self.worker and self.worker.isRunning()) or (
-            self.worker_correct and self.worker_correct.isRunning())
+            self.worker_correct and self.worker_correct.isRunning()) or (
+            self.worker_pull and self.worker_pull.isRunning())
         if busy:
             self._cancel_timer.start(120)
             return
@@ -1659,12 +1885,21 @@ class TranslateTab(QWidget):
         self.btn_cancel.setVisible(False)
         self.btn_cancel.setEnabled(False)
         self.btn_correct.setEnabled(True)
-        if self.worker:
-            self.worker.wait(5000)
-            self.worker = None
-        if self.worker_correct:
-            self.worker_correct.wait(5000)
-            self.worker_correct = None
+        # P0: без wait() в слоте GUI — done/failed уже означают конец run(),
+        # поток либо завершён, либо завершится сам; удаляем без блокировки.
+        for _attr in ("worker", "worker_correct", "worker_pull"):
+            _w = getattr(self, _attr)
+            if _w is None:
+                continue
+            setattr(self, _attr, None)
+            try:
+                if _w.isRunning():
+                    _w.requestInterruption()
+                    _w.finished.connect(_w.deleteLater)
+                else:
+                    _w.deleteLater()
+            except RuntimeError:
+                pass
         if self._cancel_timer:
             self._cancel_timer.stop()
             self._cancel_timer = None
@@ -1684,6 +1919,87 @@ class TranslateTab(QWidget):
         self._cancelling = False
         self._update_steps()
 
+    # ── pull from memory ──
+
+    def pull_from_memory(self):
+        """Подтянуть переводы из памяти (TM + другие проекты) без движка.
+
+        Весь import_projects выполняется в MemoryPullWorker — GUI
+        не блокируется. Воркеру передаётся только снапшот
+        [{id, original}] непереведённых строк."""
+        p = self._project()
+        if not p or not p.entries:
+            return
+        if self.worker_pull and self.worker_pull.isRunning():
+            return
+        if ((self.worker and self.worker.isRunning())
+                or (self.worker_correct
+                    and self.worker_correct.isRunning())):
+            return
+        s = self.main.settings
+        src = s.value("source_lang", "auto")
+        tgt = s.value("target_lang", "ru")
+        snapshot = [
+            {"id": e.id, "original": e.original} for e in p.entries
+            if not (e.translation or "").strip() and e.status != "skip"
+            and (e.original or "").strip()
+        ]
+        if not snapshot:
+            self.lbl_status.setText(TR("tr_pull_none"))
+            return
+        import app as app_paths
+        self.worker_pull = MemoryPullWorker(
+            self.main.tm, snapshot, src, tgt, app_paths.projects_dir())
+        self.worker_pull.done.connect(self._on_pull_done)
+        self.worker_pull.failed.connect(self._on_pull_failed)
+        self._cancelling = False
+        self._last_progress = (0, len(snapshot))
+        self.btn_cancel.setVisible(True)
+        self.btn_cancel.setEnabled(True)
+        self.btn_pull.setEnabled(False)
+        self.btn_translate.setEnabled(False)
+        self.btn_correct.setEnabled(False)
+        self.main.loading.show_loading(TR("tr_pull_working"), TR("tr_cancel"),
+                                       self.cancel_translate)
+        self.worker_pull.start()
+
+    def _on_pull_done(self, payload):
+        if self._cancelling:
+            return
+        results = payload.get("results", {}) or {}
+        total = payload.get("total", 0)
+        imported = payload.get("imported", 0)
+        p = self._project()
+        hits = 0
+        if p and results:
+            for e in p.entries:
+                tr = results.get(e.id)
+                # живые entries могли отредактировать пока шёл фон:
+                # пишем только в пустые
+                if tr and not (e.translation or "").strip():
+                    e.translation = tr
+                    if e.status not in ("manual", "corrected", "skip"):
+                        e.status = "translated"
+                    hits += 1
+        self._finish_translate()
+        self.main.save_project()
+        self._rebuild_file_list()
+        self.fill_table()
+        self.main.refresh_project_stats()
+        msg = TR("tr_pull_done", hits=hits, total=total,
+                 n=imported) if hits else TR("tr_pull_none")
+        self.lbl_status.setText(msg)
+        self._flash_saved(msg)
+
+    def _on_pull_failed(self, msg):
+        if self._cancelling:
+            return
+        self._finish_translate()
+        self.main.save_project()
+        self._rebuild_file_list()
+        self.fill_table()
+        QMessageBox.critical(self, TR("err"), msg)
+
     # ── correct ──
 
     def correct_all(self):
@@ -1701,8 +2017,9 @@ class TranslateTab(QWidget):
         except Exception as e:  # noqa: BLE001
             QMessageBox.warning(self, TR("tr_correct"), str(e))
             return
+        # P0: копию списка — см. выше (живой p.entries мутирует из GUI).
         self.worker_correct = CorrectWorker(
-            corrector, p.entries,
+            corrector, list(p.entries),
             self.main.settings.value("target_lang", "ru"))
         self.worker_correct.progressed.connect(self._on_progress)
         self.worker_correct.corrections_ready.connect(self._on_corrections)
@@ -1839,6 +2156,10 @@ class TranslateTab(QWidget):
                 f"{k}×{v}" for k, v in (stats.get("skipped_by") or {}).items())
             parts.append(TR("tr_apply_skipped", n=stats["skipped_total"],
                             details=details or "—"))
+        if stats.get("long_lines_total"):
+            parts.append(TR(
+                "tr_apply_longlines", n=stats["long_lines_total"],
+                problems="\n".join((stats.get("long_lines") or [])[:8])))
         # гибрид: если игра запущена — внедряем перевод live-хуком (MV/MZ),
         # это покрывает и зашифрованные/asar-сборки
         ch = self.main.channel()
@@ -2270,10 +2591,22 @@ class GlossaryDialog(QDialog):
         self.glossary.set_entries(src, tgt, entries)
 
     def closeEvent(self, event):
-        # Даём воркеру-анализатору штатно завершиться, иначе Qt упадёт
-        # с «QThread: Destroyed while thread ... is still running».
-        if self.analyze_worker and self.analyze_worker.isRunning():
-            self.analyze_worker.requestInterruption()
-            self.analyze_worker.wait(15000)
+        # P0: не блокируем GUI дольше 200мс; незавершённый воркер
+        # доудалится сам по finished (иначе Qt упадёт с
+        # «QThread: Destroyed while thread ... is still running»).
+        _aw = getattr(self, "analyze_worker", None)
+        if _aw is not None:
+            try:
+                if _aw.isRunning():
+                    _aw.requestInterruption()
+                    if _aw.wait(200):
+                        _aw.deleteLater()
+                    else:
+                        _aw.finished.connect(_aw.deleteLater)
+                else:
+                    _aw.deleteLater()
+            except RuntimeError:
+                pass
+            self.analyze_worker = None
         self._save()  # автосохранение при закрытии
         super().closeEvent(event)

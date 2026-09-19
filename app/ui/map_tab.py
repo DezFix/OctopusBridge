@@ -78,12 +78,12 @@ class _LayerPainter:
         return self.pages[page]
 
     def is_upper(self, tile_id: int) -> bool:
-        return bool(self._flags) and \
-            (self._flags[tile_id] & maprender.FLAG_UPPER)
+        return bool(bool(self._flags) and 0 <= tile_id < len(self._flags) and
+                    (self._flags[tile_id] & maprender.FLAG_UPPER))
 
     def is_table(self, tile_id: int) -> bool:
-        return bool(self._flags) and \
-            (self._flags[tile_id] & maprender.FLAG_TABLE)
+        return bool(bool(self._flags) and 0 <= tile_id < len(self._flags) and
+                    (self._flags[tile_id] & maprender.FLAG_TABLE))
 
     def draw_tile(self, painter: QPainter, tile_id: int, dx: int, dy: int):
         t = maprender.TILE
@@ -467,13 +467,24 @@ class MapTab(QWidget):
         th.deleteLater()
 
     def cleanup(self):
-        """Останавливает фоновые рендер-потоки (вызов при смене проекта/выходе)."""
+        """Просит фоновые рендер-потоки остановиться (вызов при смене
+        проекта/выходе). P0: максимум wait(200) на поток — run() выходит
+        по isInterruptionRequested() (проверка на каждой строке),
+        незавершившиеся потоки дочищаются сами через finished."""
         for th in list(self._render_threads):
-            th.requestInterruption()
-        for th in list(self._render_threads):
-            if th.isRunning():
-                th.wait()   # run() выходит по isInterruptionRequested()
-        self._render_threads.clear()
+            try:
+                th.requestInterruption()
+                if th.isRunning() and not th.wait(200):
+                    # не уложился в 200мс — не блокируем GUI дальше:
+                    # поток уже попросил остановку и дочистится сам
+                    # через finished -> _on_thread_finished
+                    # (ссылку в сете держим, чтобы GC не снёс QThread
+                    # раньше времени).
+                    continue
+                self._render_threads.discard(th)
+                th.deleteLater()
+            except RuntimeError:
+                self._render_threads.discard(th)
 
     def _on_render_done(self, token, base, ev, pages, chars, capped):
         if token != self._render_seq or base is None:

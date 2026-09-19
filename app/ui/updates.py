@@ -70,10 +70,29 @@ def check_for_updates(parent=None, delay_ms: int = 1500) -> None:
     QTimer.singleShot(delay_ms, _run)
 
 
+# P0: долгоживущие ссылки на QNetworkAccessManager — локальный net
+# умирал вместе с _query() до прихода reply (GC Python-обёртки).
+_ACTIVE_NETS: list = []
+
+
 def _query(parent) -> None:
+    from PySide6.QtCore import QTimer
+
     net = QNetworkAccessManager(parent)
+    _ACTIVE_NETS.append(net)
+
+    def _release():
+        try:
+            _ACTIVE_NETS.remove(net)
+        except ValueError:
+            pass
+        try:
+            net.deleteLater()
+        except RuntimeError:
+            pass
 
     def _on_reply(reply: QNetworkReply):
+        _release()
         reply.deleteLater()
         if reply.error() != QNetworkReply.NetworkError.NoError:
             return
@@ -97,3 +116,14 @@ def _query(parent) -> None:
     req.setRawHeader(b"User-Agent", b"OctopusBridge")
     reply = net.get(req)
     reply.finished.connect(lambda: _on_reply(reply))
+
+    def _timeout():
+        # 10с без ответа — рвём запрос; finished придёт с ошибкой
+        # OperationCanceledError и _on_reply молча выйдет + освободит net.
+        try:
+            if reply.isRunning():
+                reply.abort()
+        except RuntimeError:
+            _release()
+
+    QTimer.singleShot(10000, _timeout)

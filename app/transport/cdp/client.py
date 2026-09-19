@@ -14,6 +14,11 @@ from PySide6.QtCore import QObject, Signal
 
 from websockets.sync.client import connect as _ws_connect
 
+try:
+    from websockets.exceptions import ConnectionClosed
+except ImportError:  # очень старые websockets — падаем на общий Exception
+    ConnectionClosed = Exception  # type: ignore[assignment,misc]
+
 
 class CDPError(Exception):
     pass
@@ -24,7 +29,7 @@ def _ws_connect_compat(ws_url: str):
     новые kwargs пробуем первыми, при TypeError — урезаем."""
     attempts = [
         {"open_timeout": 10, "max_size": 64 * 1024 * 1024,
-         "ping_interval": None, "compression": None},
+         "ping_interval": 20, "close_timeout": 5, "compression": None},
         {"open_timeout": 10, "max_size": 64 * 1024 * 1024},
         {"open_timeout": 10},
         {},
@@ -73,6 +78,7 @@ class CDPClient(QObject):
 
     def close(self):
         ws, self._ws = self._ws, None
+        reader, self._reader = self._reader, None
         if ws:
             try:
                 ws.close()
@@ -84,6 +90,14 @@ class CDPClient(QObject):
         for p in pend:
             p["error"] = CDPError("connection closed")
             p["done"].set()
+        # reader — daemon; долго GUI не блокируем, join только не из
+        # самого reader-потока, с таймаутом 2с.
+        if reader is not None and reader.is_alive():
+            try:
+                if threading.current_thread() is not reader:
+                    reader.join(timeout=2.0)
+            except Exception:  # noqa: BLE001
+                pass
 
     def is_connected(self) -> bool:
         return self._ws is not None
@@ -108,10 +122,20 @@ class CDPClient(QObject):
         except Exception as e:  # noqa: BLE001
             with self._pend_lock:
                 self._pending.pop(mid, None)
+            self.last_error = f"send failed: {e}"
+            try:
+                self.close()
+            except Exception:  # noqa: BLE001
+                pass
             raise CDPError(f"send failed: {e}") from e
         if not slot["done"].wait(timeout):
             with self._pend_lock:
                 self._pending.pop(mid, None)
+            self.last_error = f"timeout calling {method}"
+            try:
+                self.close()
+            except Exception:  # noqa: BLE001
+                pass
             raise CDPError(f"timeout calling {method}")
         if slot["error"]:
             raise slot["error"]

@@ -33,9 +33,16 @@ class Glossary:
                 self.data = {}
 
     def save(self):
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        with open(self.path, "w", encoding="utf-8") as f:
-            json.dump(self.data, f, ensure_ascii=False, indent=1)
+        os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+        try:
+            from app.core.io import atomic_write_json
+        except ImportError:  # pragma: no cover — прямой импорт при тестах
+            atomic_write_json = None  # type: ignore
+        if atomic_write_json is not None:
+            atomic_write_json(self.path, self.data, indent=1)
+        else:
+            with open(self.path, "w", encoding="utf-8") as f:
+                json.dump(self.data, f, ensure_ascii=False, indent=1)
 
     def terms(self, src: str, tgt: str) -> dict[str, str]:
         """Термины как {термин: перевод} — для трансляторов."""

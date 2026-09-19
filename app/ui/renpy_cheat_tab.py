@@ -55,27 +55,48 @@ class _VarsTableModel(QAbstractTableModel):
     к игре делает вкладка, при неудаче вызывается revert().
     """
 
-    COL_NAME, COL_VALUE = 0, 1
+    COL_NAME, COL_VALUE, COL_FREEZE = 0, 1, 2
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.rows: list[dict] = []
+        # заморозка (Cheat Engine style): имя -> значение, которое
+        # дожимается в игру при каждом обновлении
+        self.frozen: dict[str, object] = {}
 
     def set_rows(self, rows: list[dict]):
         self.beginResetModel()
         self.rows = rows
+        # чистим заморозку исчезнувших переменных — иначе дожатие
+        # пересоздаст в игре переменную, которую та уже удалила
+        alive = {str(v["name"]) for v in rows}
+        for name in list(self.frozen):
+            if name not in alive:
+                del self.frozen[name]
         self.endResetModel()
+
+    def clear_frozen(self):
+        self.frozen.clear()
+
+    def is_frozen(self, name: str) -> bool:
+        return str(name) in self.frozen
 
     def rowCount(self, parent=QModelIndex()):
         return 0 if parent.isValid() else len(self.rows)
 
     def columnCount(self, parent=QModelIndex()):
-        return 2
+        return 3
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
-        if orientation == Qt.Horizontal and role == Qt.DisplayRole:
-            return TR("rpy_var_name") if section == self.COL_NAME \
-                else TR("rpy_var_value")
+        if orientation == Qt.Horizontal:
+            if role == Qt.DisplayRole:
+                if section == self.COL_NAME:
+                    return TR("rpy_var_name")
+                if section == self.COL_VALUE:
+                    return TR("rpy_var_value")
+                return "❄"
+            if role == Qt.ToolTipRole and section == self.COL_FREEZE:
+                return TR("rpy_freeze")
         return None
 
     def flags(self, index):
@@ -86,6 +107,8 @@ class _VarsTableModel(QAbstractTableModel):
             if isinstance(value, bool):
                 return Qt.ItemIsEnabled | Qt.ItemIsUserCheckable
             return Qt.ItemIsEnabled | Qt.ItemIsEditable
+        if index.column() == self.COL_FREEZE:
+            return Qt.ItemIsEnabled | Qt.ItemIsUserCheckable
         return Qt.ItemIsEnabled
 
     def data(self, index, role=Qt.DisplayRole):
@@ -97,6 +120,13 @@ class _VarsTableModel(QAbstractTableModel):
                 return str(v["name"])
             if role == Qt.ToolTipRole:
                 return repr(v.get("value"))
+            return None
+        if index.column() == self.COL_FREEZE:
+            if role == Qt.CheckStateRole:
+                return Qt.Checked if self.is_frozen(v["name"]) \
+                    else Qt.Unchecked
+            if role == Qt.ToolTipRole:
+                return TR("rpy_freeze")
             return None
         # колонка значения
         value = v.get("value")
@@ -113,10 +143,20 @@ class _VarsTableModel(QAbstractTableModel):
         return None
 
     def setData(self, index, value, role=Qt.EditRole):
-        if not index.isValid() or index.column() != self.COL_VALUE:
+        if not index.isValid():
             return False
         row = index.row()
         if not (0 <= row < len(self.rows)):
+            return False
+        if index.column() == self.COL_FREEZE and role == Qt.CheckStateRole:
+            name = str(self.rows[row]["name"])
+            if value == Qt.Checked:
+                self.frozen[name] = self.rows[row].get("value")
+            else:
+                self.frozen.pop(name, None)
+            self.dataChanged.emit(index, index)
+            return True
+        if index.column() != self.COL_VALUE:
             return False
         old = self.rows[row].get("value")
         if isinstance(old, bool) and role == Qt.CheckStateRole:
@@ -215,6 +255,8 @@ class _VarsBaseTab(QWidget):
         self.vars_table.setModel(self._model)
         self.vars_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.Stretch)
+        self.vars_table.horizontalHeader().setSectionResizeMode(
+            _VarsTableModel.COL_FREEZE, QHeaderView.ResizeToContents)
         self.vars_table.setEditTriggers(
             QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
         lay.addWidget(self.vars_table, 1)
@@ -277,6 +319,7 @@ class _VarsBaseTab(QWidget):
         self._vars = []
         self._save_path = None
         self._save_data = None
+        self._model.clear_frozen()
         self._scan_reset()
         self._fill_vars()
 
@@ -285,10 +328,37 @@ class _VarsBaseTab(QWidget):
         variables = json.loads(variables)
         if self._is_save_mode():
             return
+        frozen = self._model.frozen
         self._vars = sorted(
             (v for v in variables if isinstance(v, dict) and "name" in v),
-            key=lambda v: str(v["name"]).lower())
+            key=lambda v: (0 if str(v["name"]) in frozen else 1,
+                           str(v["name"]).lower()))
         self._fill_vars()
+        self._enforce_frozen()
+
+    def _resort_frozen(self):
+        """Замороженные — вверх сразу после клика, не дожидаясь тика."""
+        frozen = self._model.frozen
+        rows = sorted(
+            self._model.rows,
+            key=lambda v: (0 if str(v["name"]) in frozen else 1,
+                           str(v["name"]).lower()))
+        if [id(v) for v in rows] != [id(v) for v in self._model.rows]:
+            self._model.set_rows(rows)
+
+    def _enforce_frozen(self):
+        """Дожимает замороженные значения в игру (Cheat Engine freeze).
+
+        Только живой режим: в сейве одно применение и так постоянно.
+        Молча — успех виден следующим тиком таблицы, ошибки уйдут
+        в статус через _on_ack.
+        """
+        if self._is_save_mode() or not self._model.frozen:
+            return
+        live = {str(v["name"]): v.get("value") for v in self._vars}
+        for name, want in list(self._model.frozen.items()):
+            if name not in live or live[name] != want:
+                self._cheat("var_set", name=name, value=want)
 
     def _on_client(self, connected: bool):
         if not self._is_save_mode():
@@ -372,6 +442,18 @@ class _VarsBaseTab(QWidget):
         if self._loading:
             return
         index = top_left
+        if index.column() == _VarsTableModel.COL_FREEZE:
+            row = index.row()
+            if 0 <= row < len(self._model.rows):
+                name = str(self._model.rows[row]["name"])
+                if self._model.is_frozen(name):
+                    self.lbl_status.setText(TR(
+                        "rpy_frozen", name=name,
+                        value=self._model.frozen[name]))
+                else:
+                    self.lbl_status.setText(TR("rpy_unfrozen", name=name))
+                self._resort_frozen()
+            return
         if index.column() != _VarsTableModel.COL_VALUE:
             return
         row = index.row()
@@ -400,6 +482,8 @@ class _VarsBaseTab(QWidget):
             self._model.apply_edit(row, value)
             if var is not None:
                 var["value"] = value
+            if self._model.is_frozen(name):
+                self._model.frozen[name] = value  # заморозка следует за правкой
             self.lbl_status.setText(TR("rpy_applied", name=name, value=value))
         else:
             self.lbl_status.setText(TR("cheat_no_bridge"))
@@ -417,6 +501,8 @@ class _VarsBaseTab(QWidget):
         self._model.apply_edit(row, value)
         if var is not None:
             var["value"] = value
+        if self._model.is_frozen(name):
+            self._model.frozen[name] = value
         self.lbl_status.setText(
             TR("vars_saved", name=name, value=value))
 

@@ -18,6 +18,26 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, Signal
 
 
+class LaunchResult:
+    """Честный итог launch (не ломая сигнатуру launch()->bool).
+
+    Раньше RpgMakerTentacle.launch возвращал True без attached.emit
+    («игра без читов») — сессия считала запуск успешным, а читов не было.
+    Теперь: читы недоступны => launch возвращает False + error, игра
+    остаётся запущенной (перевод через файлы/ob_runtime.js работает).
+    degraded=True — для логов/диагностики внутри launch.
+    """
+
+    def __init__(self, ok: bool, degraded: bool = False,
+                 error: str = ""):
+        self.ok = ok
+        self.degraded = degraded
+        self.error = error
+
+    def __bool__(self) -> bool:
+        return self.ok
+
+
 class Tentacle(QObject):
     key: str = "base"                  # 'rpgmaker' | 'twine' | 'renpy'
     title: str = "Базовое щупальце"

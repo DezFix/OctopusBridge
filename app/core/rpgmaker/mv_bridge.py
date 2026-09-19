@@ -19,6 +19,8 @@ import re
 import time
 import urllib.request
 
+from app.core.translate.service import build_tr_dict
+
 BRIDGE_PLUGIN_NAME = "octopus_ob"
 BRIDGE_PLUGIN_VERSION = 2
 BRIDGE_PORT_START = 38900
@@ -374,22 +376,11 @@ def _ensure_plugins_entry(game_dir: str) -> bool:
 def update_tr_dict(game_dir: str, entries: list) -> int:
     """Обновляет статический словарь перевода в плагине-мосте.
 
-    Словарь собирается из записей (original -> translation, пустые и
-    skip пропущены). Возвращает число записей словаря (0 — плагин
-    отсутствует или нечего обновлять).
+    Словарь — канонический build_tr_dict из app.core.translate.service
+    (original -> translation, пустые и skip пропущены). Возвращает число
+    записей словаря (0 — плагин отсутствует или нечего обновлять).
     """
-    tr: dict = {}
-    for e in entries:
-        if isinstance(e, dict):
-            orig = e.get("original", "")
-            text = e.get("translation", "") or ""
-            status = e.get("status", "")
-        else:
-            orig = getattr(e, "original", "")
-            text = getattr(e, "translation", "") or ""
-            status = getattr(e, "status", "")
-        if orig and text.strip() and status != "skip":
-            tr[orig] = text
+    tr = build_tr_dict(entries)
     if not tr:
         return 0
     path = os.path.join(game_dir, *plugin_rel(game_dir).split("/"))

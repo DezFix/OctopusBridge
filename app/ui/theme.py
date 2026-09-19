@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """Design system: palette, spacing, radius, typography, QSS.
 
-Тёмная палитра из актуального дизайн-концепта (deep-blue night):
-глубокий фон, сине-стальные панели, акцент 5b7fff, статусные пилюли.
+Тёмная тема — единственная. Светлая удалена решением руководства
+(dark-only): apply_light_theme/apply_theme вырезаны, все виджеты
+рассчитаны на тёмную палитру deep-blue night.
 """
 from __future__ import annotations
 
@@ -666,17 +667,9 @@ def apply_dark_theme(app: QApplication):
     app.setFont(font)
 
 
-def apply_light_theme(app: QApplication):
-    app.setStyle("Fusion")
-    app.setPalette(app.style().standardPalette())
-    app.setStyleSheet("")
-
-
-def apply_theme(app: QApplication, name: str):
-    if name == "light":
-        apply_light_theme(app)
-    else:
-        apply_dark_theme(app)
+def apply_theme(app: QApplication, name: str = "dark"):
+    """Совместимость: тема всегда тёмная, параметр игнорируется."""
+    apply_dark_theme(app)
 
 
 def make_font(size_px: int = 13, bold: bool = False) -> QFont:

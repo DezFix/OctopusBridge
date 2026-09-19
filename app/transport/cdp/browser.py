@@ -111,7 +111,28 @@ def scan_ports(ports, timeout: float = 0.35) -> list[int]:
     from concurrent.futures import ThreadPoolExecutor
 
     def probe(p: int):
-        return p if debugger_ready(p, timeout=timeout) else None
+        try:
+            return p if debugger_ready(p, timeout=timeout) else None
+        except Exception:  # noqa: BLE001
+            return None
 
-    with ThreadPoolExecutor(max_workers=32) as ex:
-        return sorted(p for p in ex.map(probe, ports) if p)
+    plist = list(ports)
+    ex = ThreadPoolExecutor(max_workers=32)
+    try:
+        futs = {ex.submit(probe, p): p for p in plist}
+        out: list[int] = []
+        for fut in futs:
+            try:
+                r = fut.result(timeout=0.5)
+            except Exception:  # noqa: BLE001 — висящий probe пропускаем
+                continue
+            if r is not None:
+                out.append(r)
+        return sorted(out)
+    finally:
+        # висящий probe не должен держать скан: результаты уже собраны
+        # с timeout 0.5с, воркеры отпускаем неблокирующе
+        try:
+            ex.shutdown(wait=False, cancel_futures=True)
+        except TypeError:  # очень старый Python без cancel_futures
+            ex.shutdown(wait=False)

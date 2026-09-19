@@ -8,6 +8,9 @@
 - RPG Maker MV:  www/js/rpg_windows.js — Window_Base.prototype.
   standardFontSize (return 28);
 - Ren'Py:        game/gui.rpy — define gui.text_size = 33.
+- AjinSyoujyo:  data/scenario/first.ks — [deffont size=42 ...]
+  (базовый кегль сообщений Tyrano). Чтение слоистое (override/
+  поверх app.asar), запись только в override/.
 
 Оригинал файла бэкапится рядом (*.ob_backup), повторные правки идут по
 актуальному содержимому. Размер ограничен разумными пределами, чтобы
@@ -37,6 +40,122 @@ _RE_RENPY = re.compile(
 
 
 RENPY_DEFAULT_SIZE = 33
+
+# Кегль Tyrano задаётся в ДВУХ местах (оба читаются при старте):
+# - data/scenario/first.ks: [deffont size=42 ...] (дефолт сообщений);
+# - data/system/Config.tjs: defaultFontSize=37 (им kag.js init
+#   перезаписывает default_font + считает line-height для руби).
+# Патчим ОБА (только ПЕРВОЕ вхождение в каждом файле; поздние
+# режиссёрские [deffont] в сценариях не трогаем). Чтение слоистое
+# (override/ поверх app.asar), запись только в override/.
+_RE_AJIN_DEFFONT = re.compile(
+    r"(\[deffont\b[^\]]*?\bsize\s*=\s*)(\d+)", re.IGNORECASE)
+_RE_AJIN_CONFIG_SIZE = re.compile(r"(defaultFontSize\s*=\s*)(\d+)")
+
+AJIN_FIRST_KS = "data/scenario/first.ks"
+AJIN_CONFIG_TJS = "data/system/Config.tjs"
+# (rel, regex, подпись): порядок = приоритет чтения для UI
+_AJIN_SIZE_FILES = (
+    (AJIN_FIRST_KS, _RE_AJIN_DEFFONT, "first.ks"),
+    (AJIN_CONFIG_TJS, _RE_AJIN_CONFIG_SIZE, "Config.tjs"),
+)
+
+
+def _ajin_override_path(game_dir: str, rel: str) -> str:
+    from app.core.ajin import layout as layout_mod
+    return os.path.join(game_dir, layout_mod.OVERRIDE_REL,
+                        *rel.split("/"))
+
+
+def _ajin_size_of_text(text: str, pat) -> int | None:
+    m = pat.search(text)
+    return int(m.group(2)) if m else None
+
+
+def _ajin_read_size(game_dir: str) -> int | None:
+    """Первый найденный кегль (first.ks, иначе Config.tjs) или None."""
+    from app.core.ajin.layered import LayeredView
+    try:
+        view = LayeredView(game_dir)
+    except (OSError, ValueError):
+        return None
+    for rel, pat, _label in _AJIN_SIZE_FILES:
+        try:
+            raw = view.read_bytes(rel)
+        except OSError:
+            continue
+        if raw is None:
+            continue
+        try:
+            text = raw.decode("utf-8-sig")
+        except (UnicodeDecodeError, ValueError):
+            try:
+                text = raw.decode("cp932")
+            except (UnicodeDecodeError, ValueError):
+                continue
+        size = _ajin_size_of_text(text, pat)
+        if size is not None:
+            return size
+    return None
+
+
+def _ajin_ensure_override(view, game_dir: str, rel: str) -> str:
+    """Физический override-путь с бэкапом asar-оригинала при создании."""
+    out_path = _ajin_override_path(game_dir, rel)
+    if view.has_override(rel):
+        _backup(out_path)
+        return out_path
+    raw = view.read_bytes(rel)
+    if raw is None:
+        raise FileNotFoundError(f"Не удалось прочитать {rel} из app.asar")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path + BACKUP_SUFFIX, "wb") as f:
+        f.write(raw)
+    return out_path
+
+
+def _set_ajin(game_dir: str, size: int) -> dict:
+    from app.core.ajin.layered import LayeredView
+    try:
+        view = LayeredView(game_dir)
+    except (OSError, ValueError) as e:
+        raise FileNotFoundError(f"Нет доступа к файлам игры: {e}")
+    changed: list[str] = []
+    for rel, pat, label in _AJIN_SIZE_FILES:
+        if not view.exists(rel):
+            continue
+        try:
+            lines = view.read_lines(rel)
+        except (OSError, UnicodeDecodeError):
+            continue
+        idx = next((i for i, ln in enumerate(lines)
+                    if pat.search(ln)), None)
+        if idx is None:
+            continue
+        out_path = _ajin_ensure_override(view, game_dir, rel)
+        lines[idx] = pat.sub(lambda m: m.group(1) + str(size),
+                             lines[idx], count=1)
+        view.write_lines(rel, lines)
+        changed.append(f"{label}→{os.path.basename(out_path)}")
+    if not changed:
+        raise FileNotFoundError(
+            "Не найден [deffont size=...] / defaultFontSize в игре")
+    return {"path": ", ".join(changed), "size": size}
+
+
+def _ajin_restore(game_dir: str) -> bool:
+    """Откат обоих файлов кегля. True — хоть один откачен."""
+    ok = False
+    for rel, _pat, _label in _AJIN_SIZE_FILES:
+        backup = _ajin_override_path(game_dir, rel) + BACKUP_SUFFIX
+        if os.path.isfile(backup):
+            try:
+                shutil.copy2(backup, backup[:-len(BACKUP_SUFFIX)])
+                os.remove(backup)
+            except OSError as e:
+                raise RuntimeError(f"Не удалось восстановить {rel}: {e}")
+            ok = True
+    return ok
 
 
 def _renpy_candidates(game_dir: str) -> list[str]:
@@ -132,6 +251,8 @@ def _js_font_size_text(text: str, pat) -> int | None:
 
 def get_font_size(game_dir: str, engine: str) -> int | None:
     """Текущий размер шрифта игры (из файла) или None, если не найден."""
+    if engine == "ajin":
+        return _ajin_read_size(game_dir)
     if engine == "renpy":
         src = _renpy_source(game_dir)
         if src is None:
@@ -158,6 +279,8 @@ def get_font_size(game_dir: str, engine: str) -> int | None:
 def set_font_size(game_dir: str, engine: str, size: int) -> dict:
     """Переписывает размер шрифта в файле игры. Возвращает отчёт."""
     size = max(MIN_SIZE, min(MAX_SIZE, int(size)))
+    if engine == "ajin":
+        return _set_ajin(game_dir, size)
     if engine == "renpy":
         return _set_renpy(game_dir, size)
     sys_json = _system_json(game_dir, engine)
@@ -247,8 +370,12 @@ def _set_renpy(game_dir: str, size: int) -> dict:
 
 def restore_font_size(game_dir: str, engine: str) -> bool:
     """Возвращает оригинал из бэкапа (True — откат выполнен)."""
-    candidates = _renpy_candidates(game_dir) \
-        if engine == "renpy" else [os.path.join(game_dir, "game", "gui.rpy")]
+    if engine == "ajin":
+        return _ajin_restore(game_dir)
+    else:
+        candidates = _renpy_candidates(game_dir) \
+            if engine == "renpy" else [os.path.join(game_dir, "game",
+                                                    "gui.rpy")]
     sys_json = _system_json(game_dir, engine)
     if sys_json:
         candidates.append(sys_json)

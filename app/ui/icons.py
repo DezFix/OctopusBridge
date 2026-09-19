@@ -143,6 +143,12 @@ _LUCIDE: dict[str, str] = {
               '<path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />'),
     "book-bookmark": ('<path d="M10 2v8l3-3 3 3V2" />'
                       '<path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20" />'),
+    "database": ('<ellipse cx="12" cy="5" rx="9" ry="3" />'
+                 '<path d="M3 5V19A9 3 0 0 0 21 19V5" />'
+                 '<path d="M3 12A9 3 0 0 0 21 12" />'),
+    "history": ('<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />'
+                '<path d="M3 3v5h5" />'
+                '<path d="M12 7v5l4 2" />'),
 }
 
 # ── алиасы старых имён (Heroicons-стиль) → Lucide ────────────────────

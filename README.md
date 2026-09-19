@@ -88,6 +88,7 @@ OctopusBridge translates and mods PC games. Translation is **batch-based**: text
 | Ren'Py | ✅ Stable |
 | TyranoScript / TyranoBuilder | ✅ Supported |
 | Twine (SugarCube) | 🧪 Experimental |
+| Wolf RPG Editor | 🧪 Experimental (file translation + font, no cheats) |
 
 ---
 

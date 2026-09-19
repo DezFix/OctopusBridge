@@ -27,4 +27,10 @@ def create_tentacle(engine_key: str) -> Tentacle | None:
     if engine_key == "tyrano":
         from app.engines.tyrano.tentacle import TyranoTentacle
         return TyranoTentacle()
+    if engine_key == "ajin":
+        from app.engines.ajin.tentacle import AjinTentacle
+        return AjinTentacle()
+    if engine_key == "wolf":
+        from app.engines.wolf.tentacle import WolfTentacle
+        return WolfTentacle()
     return None

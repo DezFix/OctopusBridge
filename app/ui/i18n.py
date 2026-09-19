@@ -145,8 +145,16 @@ _STRINGS = {
     "dash_font_bigger": {
         "ru": "Сделать текст игры больше", "en": "Make in-game text bigger"},
     "dash_font_size_hint": {
-        "ru": "Впишется после перезапуска игры.",
-        "en": "Applies after restarting the game.",
+        "ru": "Применяется сразу, если игра запущена, иначе — после перезапуска.",
+        "en": "Applies live if the game is running, else after restart.",
+    },
+    "dash_font_live_ok": {
+        "ru": "Применено к запущенной игре без перезапуска.",
+        "en": "Applied to the running game without restart.",
+    },
+    "dash_font_need_restart": {
+        "ru": "Игра не запущена — вступит в силу после перезапуска.",
+        "en": "Game not running — takes effect after restart.",
     },
     "dash_no_extract": {
         "ru": "Текст ещё не извлечён. Нажмите «Извлечь текст».",
@@ -269,6 +277,13 @@ _STRINGS = {
         "ru": "Принято: {accepted} из {total} предложений",
         "en": "Accepted: {accepted} of {total} suggestions",
     },
+    "tr_pull_memory": {"ru": "Подтянуть из памяти", "en": "Pull from memory"},
+    "tr_pull_working": {"ru": "Ищу совпадения…", "en": "Looking for matches…"},
+    "tr_pull_done": {
+        "ru": "Подтянуто {hits} из {total}, импортировано {n}",
+        "en": "Pulled {hits} of {total}, imported {n}",
+    },
+    "tr_pull_none": {"ru": "Совпадений нет", "en": "No matches found"},
 
     # ── Diff review ──
     "diff_title": {"ru": "Ревизия ИИ-коррекции", "en": "AI Correction Review"},
@@ -327,6 +342,12 @@ _STRINGS = {
     "tr_apply_skipped": {
         "ru": "Пропущено: {n} ({details})",
         "en": "Skipped: {n} ({details})",
+    },
+    "tr_apply_longlines": {
+        "ru": "⚠ Длинных строк (могут налезать): {n}\n{problems}\n"
+              "Уменьшите шрифт на «Домой» или сократите перевод.",
+        "en": "⚠ Overlong lines (may overlap): {n}\n{problems}\n"
+              "Lower the font size on \"Home\" or shorten the translation.",
     },
     "tr_verify_failed": {
         "ru": "Проверка файлов игры НЕ пройдена — перевод откачен, игра не тронута:\n{problems}",
@@ -1042,6 +1063,13 @@ _STRINGS = {
         "ru": "Вставить перевод термина в ячейку перевода",
         "en": "Insert the term's translation into the translation cell",
     },
+    "tr_memory_title": {"ru": "Похожие из памяти:", "en": "Similar from memory:"},
+    "tr_memory_take": {"ru": "Взять", "en": "Take"},
+    "tr_memory_tip": {
+        "ru": "Подставить перевод из памяти",
+        "en": "Use the translation from memory",
+    },
+    "sb_memory": {"ru": "Память: {n}", "en": "Memory: {n}"},
     "glossary_analyze": {"ru": "Анализ терминов (AI)…", "en": "Analyze terms (AI)…"},
     "glossary_analyze_need_ai": {
         "ru": "Анализ требует AI-провайдера. Настройте его в Настройках (провайдер AI).",
@@ -1272,9 +1300,9 @@ _STRINGS = {
     },
     "res_font_done": {
         "ru": "Шрифт {font} скопирован и прописан в игре.\n"
-              "Оригиналы сохранены (*.ob_backup).",
+              "Оригиналы сохранены (*.ob_backup).{live}",
         "en": "Font {font} copied and registered.\n"
-              "Originals saved (*.ob_backup).",
+              "Originals saved (*.ob_backup).{live}",
     },
     "res_no_key": {"ru": "ключ шифрования не найден", "en": "no encryption key"},
     "res_empty": {"ru": "файл пуст или не найден", "en": "file empty or missing"},
@@ -1320,9 +1348,9 @@ _STRINGS = {
     },
     "res_font_done_renpy": {
         "ru": "Заменено шрифтов: {n}. Оригиналы в game/ob_fonts_orig — "
-              "кнопка «Откатить шрифт» вернёт их.",
+              "кнопка «Откатить шрифт» вернёт их.{live}",
         "en": "Replaced fonts: {n}. Originals in game/ob_fonts_orig — "
-              "the «Restore font» button brings them back.",
+              "the «Restore font» button brings them back.{live}",
     },
     "res_font_already": {
         "ru": "Все шрифты игры уже поддерживают кириллицу",
@@ -1349,6 +1377,15 @@ _STRINGS = {
         "en": "Changes apply instantly: numbers/strings on typing, "
               "triggers (yes/no) on toggle. The list refreshes from "
               "the running game.",
+    },
+    "rpy_freeze": {"ru": "Заморозка", "en": "Freeze"},
+    "rpy_frozen": {
+        "ru": "❄ Заморожено: {name} = {value}",
+        "en": "❄ Frozen: {name} = {value}",
+    },
+    "rpy_unfrozen": {
+        "ru": "Заморозка снята: {name}",
+        "en": "Unfrozen: {name}",
     },
     "rpy_applied": {
         "ru": "{name} = {value}",
@@ -1432,11 +1469,19 @@ def TR(key: str, **fmt) -> str:
     if not entry:
         return key
     text = entry.get(_lang, entry.get("ru", key))
-    if fmt:
+    if fmt or ("{" in text and "}" in text):
         try:
             return text.format(**fmt)
         except (KeyError, IndexError):
-            return text
+            # необязательные плейсхолдеры ({live}) — подставляем "".
+            try:
+                import string as _s
+                fields = [f[1] for f in _s.Formatter().parse(text)
+                          if f[1]]
+                safe = {k: fmt.get(k, "") for k in fields}
+                return text.format(**safe)
+            except Exception:  # noqa: BLE001
+                return text
     return text
 
 

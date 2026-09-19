@@ -287,6 +287,46 @@ def _ob_bootstrap():
             pass
         _send({"type": "vars", "variables": names})
 
+    def _ob_set_font_size(n):
+        # Живой размер шрифта без перезапуска: правим gui.text_size,
+        # ключевые текстовые стили и перерисовываем текущий экран.
+        # Всё best-effort: неизвестные стили пропускаем.
+        try:
+            n = int(n)
+        except Exception:
+            return
+        if n < 12:
+            n = 12
+        if n > 64:
+            n = 64
+        try:
+            renpy.store.gui.text_size = n
+        except Exception:
+            pass
+        try:
+            _s = getattr(renpy.store, "style", None)
+            if _s is not None:
+                for _nm in ("default", "text", "dialogue",
+                            "say_dialogue", "say_thought",
+                            "narration_text", "menu_text",
+                            "button_text", "gui_text"):
+                    try:
+                        _st = getattr(_s, _nm, None)
+                        if _st is not None:
+                            _st.size = n
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        try:
+            renpy.style.rebuild()
+        except Exception:
+            pass
+        try:
+            renpy.restart_interaction()
+        except Exception:
+            pass
+
     def _run_cheat(msg):
         ok = True
         error = ""
@@ -321,6 +361,15 @@ def _ob_bootstrap():
             elif cmd == "get_vars":
                 _send_vars()
                 return
+            elif cmd == "font_size":
+                _ob_set_font_size(msg.get("value", 33))
+            elif cmd == "font_reload":
+                _patch_font()
+                _font_clear_faces()
+                try:
+                    renpy.restart_interaction()
+                except Exception:
+                    pass
             else:
                 ok = False
                 error = "unknown cmd: " + str(cmd)

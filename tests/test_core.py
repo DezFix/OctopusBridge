@@ -191,5 +191,180 @@ with tempfile.TemporaryDirectory() as td:
             os.environ["APPDATA"] = old
 print("   OK")
 
+print("9) atomic_write: цел при обрыве + read_json_safe...")
+import json as _json2
+from app.core.io import (atomic_write_bytes, atomic_write_json,
+                         atomic_write_text, read_json_safe)
+with tempfile.TemporaryDirectory() as td:
+    # базовые записи
+    p_txt = os.path.join(td, "a.txt")
+    atomic_write_text(p_txt, "привет")
+    assert open(p_txt, encoding="utf-8").read() == "привет"
+    p_bin = os.path.join(td, "a.bin")
+    atomic_write_bytes(p_bin, b"\x00\x01\x02")
+    assert open(p_bin, "rb").read() == b"\x00\x01\x02"
+    p_js = os.path.join(td, "a.json")
+    big = {"entries": [{"id": i, "t": "x" * 100} for i in range(2000)]}
+    atomic_write_json(p_js, big)
+    with open(p_js, encoding="utf-8") as f:
+        assert _json2.load(f)["entries"][0]["id"] == 0
+    orig_bytes = open(p_js, "rb").read()
+    # read_json_safe: успех и ошибка без исключений
+    obj, err = read_json_safe(p_js)
+    assert err is None and obj["entries"][1999]["id"] == 1999
+    obj2, err2 = read_json_safe(os.path.join(td, "nope.json"))
+    assert obj2 is None and isinstance(err2, Exception)
+    with open(os.path.join(td, "bad.json"), "w", encoding="utf-8") as f:
+        f.write("{не json")
+    obj3, err3 = read_json_safe(os.path.join(td, "bad.json"))
+    assert obj3 is None and err3 is not None
+    # симуляция обрыва: os.replace падает — оригинал обязан уцелеть
+    import app.core.io as _io_mod
+    real_replace = os.replace
+    def _boom(src, dst):
+        raise OSError("simulated crash before replace")
+    os.replace = _boom
+    try:
+        try:
+            atomic_write_json(p_js, {"broken": True})
+            assert False, "должно было упасть"
+        except OSError:
+            pass
+    finally:
+        os.replace = real_replace
+    assert open(p_js, "rb").read() == orig_bytes, "оригинал затёрт при обрыве!"
+    # tmp-мусор после обрыва не остаётся
+    leftovers = [n for n in os.listdir(td) if n.startswith(".tmp-")]
+    assert leftovers == [], leftovers
+    # ошибка сериализации тоже не трогает оригинал
+    try:
+        atomic_write_json(p_js, {"x": object()})
+        assert False, "должно было упасть на TypeError"
+    except TypeError:
+        pass
+    assert open(p_js, "rb").read() == orig_bytes
+print("   OK")
+
+print("10) BackupStore: версионирование + restore_all...")
+from app.core.io import BackupStore
+with tempfile.TemporaryDirectory() as td:
+    src = os.path.join(td, "game.ob.json")
+    with open(src, "w", encoding="utf-8") as f:
+        f.write('{"v": 1}')
+    store_dir = os.path.join(td, "backups")
+    st = BackupStore(store_dir)
+    b1 = st.backup(src)
+    assert b1 and os.path.isfile(b1)
+    assert open(b1, encoding="utf-8").read() == '{"v": 1}'
+    assert os.path.isfile(os.path.join(store_dir, "manifest.json"))
+    # меняем исходник — повторный backup НЕ перезаписывает
+    with open(src, "w", encoding="utf-8") as f:
+        f.write('{"v": 2}')
+    b2 = st.backup(src)
+    assert b2 == b1, (b1, b2)
+    assert open(b1, encoding="utf-8").read() == '{"v": 1}'
+    # restore_all возвращает оригинал из бэкапа (атомарно)
+    r = st.restore_all()
+    assert r["restored"] == 1, r
+    assert open(src, encoding="utf-8").read() == '{"v": 1}'
+    # второй стор на той же папке видит манифест
+    st2 = BackupStore(store_dir)
+    assert st2.backup(src) == b1
+print("   OK")
+
+print("11) Битый .ob.json -> карантин + fallback на .bak...")
+from app.core.models import Project
+with tempfile.TemporaryDirectory() as td:
+    pf = os.path.join(td, "game_abc.ob.json")
+    bak = pf + ".bak"
+    p = Project(game_dir="G", engine="mz")
+    from app.core.models import TranslationEntry as _TE
+    p.entries = [_TE(1, "data/A.json", "[0]", "ctx", "hello", "привет",
+                     "translated")]
+    atomic_write_json(pf, p.to_dict())
+    # страховка как в save_project: целая копия -> .bak
+    atomic_write_bytes(bak, open(pf, "rb").read())
+    # старые .ob.json (минимум полей) читаются
+    old_path = os.path.join(td, "old.ob.json")
+    with open(old_path, "w", encoding="utf-8") as f:
+        _json2.dump({"game_dir": "G"}, f, ensure_ascii=False)
+    assert Project.from_dict(_json2.load(open(old_path, encoding="utf-8"))).game_dir == "G"
+    # бьём основной файл (обрыв JSON)
+    with open(pf, "w", encoding="utf-8") as f:
+        f.write('{"game_dir": "G", "entries": [{')
+    # эмуляция open_project: JSONDecodeError -> карантин + .bak
+    import glob as _glob
+    import time as _time
+    loaded = None
+    try:
+        with open(pf, encoding="utf-8") as f:
+            loaded = Project.from_dict(_json2.load(f))
+        assert False, "должно было упасть на JSONDecodeError"
+    except _json2.JSONDecodeError:
+        ts = int(_time.time())
+        corrupt = f"{pf}.corrupt-{ts}.json"
+        os.replace(pf, corrupt)
+        assert not os.path.exists(pf)
+        assert os.path.isfile(corrupt)
+        with open(bak, encoding="utf-8") as f:
+            loaded = Project.from_dict(_json2.load(f))
+    assert loaded is not None and len(loaded.entries) == 1
+    assert loaded.entries[0].translation == "привет"
+    # оба битые -> пустой Project (не падаем)
+    with open(pf, "w", encoding="utf-8") as f:
+        f.write("{oops")
+    with open(bak, "w", encoding="utf-8") as f:
+        f.write("{oops2")
+    try:
+        with open(pf, encoding="utf-8") as f:
+            _json2.load(f)
+        ok = True
+    except _json2.JSONDecodeError:
+        ok = False
+    assert not ok
+    try:
+        with open(bak, encoding="utf-8") as f:
+            Project.from_dict(_json2.load(f))
+        fell_back = True
+    except (_json2.JSONDecodeError, ValueError, KeyError, TypeError):
+        fell_back = False
+        empty = Project(game_dir="G", engine="mz")
+    assert not fell_back
+    assert empty.entries == []
+print("   OK")
+
+print("12) migrate_appdata не затирает + glossary atomic...")
+with tempfile.TemporaryDirectory() as td:
+    old = os.environ.get("APPDATA")
+    os.environ["APPDATA"] = td
+    try:
+        root = app_paths.user_data_dir()
+        os.makedirs(os.path.join(root, "projects"), exist_ok=True)
+        # целевой глоссарий уже есть — его нельзя затирать
+        os.makedirs(os.path.join(root, "glossary"), exist_ok=True)
+        with open(os.path.join(root, "glossary", "glossary.json"),
+                  "w", encoding="utf-8") as f:
+            f.write('{"keep": 1}')
+        with open(os.path.join(root, "glossary.json"),
+                  "w", encoding="utf-8") as f:
+            f.write('{"new": 2}')
+        app_paths.migrate_appdata()
+        assert open(os.path.join(root, "glossary", "glossary.json"),
+                    encoding="utf-8").read() == '{"keep": 1}'
+        # глоссарий сохраняется атомарно и переживает перезагрузку
+        g2 = Glossary(os.path.join(root, "glossary", "glossary.json"))
+        # битый корень глоссария не должен был затереть хороший
+        g2.set_terms("en", "ru", {"Hi": "Привет"})
+        obj, err = read_json_safe(os.path.join(root, "glossary",
+                                               "glossary.json"))
+        assert err is None and "en->ru" in obj
+        assert _glob.glob(os.path.join(root, "glossary", ".tmp-*.new")) == []
+    finally:
+        if old is None:
+            os.environ.pop("APPDATA", None)
+        else:
+            os.environ["APPDATA"] = old
+print("   OK")
+
 print()
 print("ВСЕ ТЕСТЫ ЯДРА ПРОШЛИ")

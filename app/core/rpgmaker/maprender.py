@@ -230,7 +230,8 @@ def tile_parts(tile_id: int, flags: list[int] | None = None,
     elif is_tile_a2(tile_id):
         set_number = 1
         bx, by = tx * 2, (ty - 2) * 3
-        is_table = bool(flags) and (flags[tile_id] & FLAG_TABLE)
+        is_table = bool(flags) and 0 <= tile_id < len(flags) and \
+            (flags[tile_id] & FLAG_TABLE)
     elif is_tile_a3(tile_id):
         set_number = 2
         bx, by = tx * 2, (ty - 6) * 2

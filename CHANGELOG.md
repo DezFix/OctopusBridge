@@ -2,6 +2,40 @@
 
 All notable changes to the project. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: `X.Y` — `X` is the update number (new features), `Y` fixes for the last update (e.g. `154.6`).
 
+## [7.16] — 2026-09-19
+
+### Removed
+- **Светлая тема удалена (dark-only)** — `apply_light_theme` вырезан, `apply_theme()` оставлен как алиас тёмной для совместимости, ключи `theme/ui_theme` чистятся из QSettings. Все инлайн-стили рассчитаны на deep-blue night.
+
+### Added
+- **Память переводов 2.0 (reuse между проектами)** — `tm.sqlite` WAL + таблица `tm2` с нормализацией пробелов/переносов, `get_fuzzy/suggest_all/stats`, `import_projects()` заливает готовые переводы всех `*.ob.json`, `Translator.prefill_from_memory()` подтягивает их в новый проект без движка.
+- **Атомарная запись** — новый `app/core/io.py` (`tmp+fsync+replace`), `save_project`/глоссарий/Wolf-манифест атомарны, битый `.ob.json` уходит в карантин `.corrupt-*` с fallback на `.bak`.
+- **CDP heartbeat/reconnect** — `ping_interval=20`, `close()` с join reader 2с, `detach()` снимает `addScriptToEvaluateOnNewDocument`, идемпотентный, guard от рекурсии.
+
+### Fixed
+- **Читы без AV** — убран `QThread.terminate()` в `cheat_tab`/`main_window._stop_workers`, кооперативная отмена `NamesWorker.cancel()` + поколения `_names_seq`, `wait()` в GUI не больше 200-800мс. `test_gui` стабильно зелёный.
+- **Движки перевода** — `cancelled` инстанс-атрибут, `Session` под локом, прерываемый sleep, `Bing` токены под `RLock`.
+- **Тентакли** — общий `cdp_page_is_game()`, единый `build_tr_dict`, честный `launch` (True только после `attached`), `proc.terminate` со сверкой exe, Twine WS `timeout 5с` + guard от `../` → 403.
+- **Краш-лог** — `sys.excepthook` первым, ротация 2МБ, без авто-блокнота.
+
+## [7.15] — 2026-09-15
+
+### Added
+- **Wolf RPG Editor: новое ядро поддержки** — детект (`Game.exe` + `Game.ini` + `Data/*.wolf`, вес 105), извлечение из DXA-v8 архивов (свой read-only декодер: XOR-ключи через CRC32, Huffman + LZ, автодетект известных keyString), структурный парсер `Game.dat` / `*Database.dat` / `CommonEvent.dat` / `.mps` (t_str, команды событий, route-skip), внедрение в loose-файлы `Data/<Папка>/<inner>` с бэкапом `.wolf.ob_backup` (перепаковка не нужна), защита контрольных кодов и имён ресурсов (индекс стемов + отчёт `res_skipped`), замена TTF на кириллический (после перезапуска — нативный процесс без канала), запуск игры из дашборда. Статус экспериментальный: покрытие проверено структурно (290k+ строк, roundtrip apply/restore), читов нет.
+- **Живой шрифт без перезапуска (RPG Maker, Ren'Py)** — размер и шрифт применяются к запущенной игре сразу: RPGM через JS-оценку (`standardFontSize`, `$dataSystem`, `@font-face` + сброс окон сцены, ES5, cscript-тест), Ren'Py через новые команды агента `font_size`/`font_reload` (`gui.text_size` + стили + `restart_interaction`). В дашборде/ресурсах — пометка «применено без перезапуска» либо «вступит после перезапуска»; спин размера больше не спамит попапами.
+
+### Fixed
+- **Wolf apply: двухфазное чтение** — все внутренности архива читаются до бэкапа `.wolf` (раньше переименование архива роняло чтение остальных файлов группы с «cannot read inner»); извлечение читает и loose-файлы после apply (повторный apply/переизвлечение находят перевод).
+- **Тесты: реестр движков + Wolf-проект в GUI** — `test_gui` обновлён под 5 движков, `tests/test_wolf.py` (синтетика + cscript-harness живого JS).
+
+## [7.14] — 2026-09-14
+
+### Added
+- **RPG Maker: автоперенос длинных строк под ширину бокса** — русский перевод в 1.5–2 раза длиннее японского, а окно сообщений слова не переносит (текст обрезался за краем). Рантайм-хук переносит по словам с замером реальной ширины шрифтом окна (`Bitmap.measureTextWidth`); коды (`\C[]`, `\V[]`, `\N[]`, `\I[]`, `\G`) сохраняются и учитываются в замере (имена — настоящие, переменные — с запасом), CJK/URL режутся посимвольно, `\FS[`/`{`/} пропускаются, поправка −168px при портрете. Только `Window_Message`/`Window_ScrollText`, меню не трогаем; тумблер `window.__octopus_trWrap`, любая ошибка = старый текст.
+
+### Fixed
+- **RPG Maker: исполняемый тест переноса** — алгоритм гоняется через `cscript` со стабами (замер, окна, `$game*`): влезание в ширину, CJK-нарезка, коды на первой строке, переменные, гейт окон, идемпотентность. Плюс пойманы и исправлены два бага: мёртвая ветвь нарезки и расхождение замеров упаковки/проверки на кодах; утечка глобального мока `subprocess.Popen` из тестов 11/12 закрыта.
+
 ## [7.13] — 2026-09-14
 
 ### Added

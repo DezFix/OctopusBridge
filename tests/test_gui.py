@@ -19,10 +19,12 @@ QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.critical = staticmethod(lambda *a, **k: QMessageBox.Ok)
 
 from app.engines.registry import MODULES, detect_engine
+from app.engines.ajin import AjinModule
 from app.engines.rpgmaker import RpgMakerModule
 from app.engines.renpy import RenPyModule
 from app.engines.twine import TwineModule
 from app.engines.tyrano import TyranoModule
+from app.engines.wolf import WolfModule
 from app.ui.i18n import TR
 from app.ui.main_window import MainWindow
 
@@ -66,8 +68,18 @@ def make_tyrano(root: str) -> None:
         f.write("こんにちは。\n[wait time=\"500\"]\n")
 
 
+def make_wolf(root: str) -> None:
+    os.makedirs(os.path.join(root, "Data"))
+    open(os.path.join(root, "Game.exe"), "w").close()
+    with open(os.path.join(root, "Game.ini"), "w", encoding="utf-8") as f:
+        f.write("Start=0\nSoftModeFlag=0\nWindowModeFlag=1\n")
+    with open(os.path.join(root, "Data", "BasicData.wolf"), "wb") as f:
+        f.write(b"DX\x08\x00" + b"\x00" * 100)
+
+
 print("1) Реестр движков...")
-assert MODULES == [RpgMakerModule, RenPyModule, TwineModule, TyranoModule]
+assert MODULES == [AjinModule, RpgMakerModule, RenPyModule, TwineModule,
+                   TyranoModule, WolfModule]
 with tempfile.TemporaryDirectory() as td:
     make_rpgm(td, "mv")
     mod = detect_engine(td)
@@ -82,6 +94,11 @@ with tempfile.TemporaryDirectory() as td:
 with tempfile.TemporaryDirectory() as td:
     make_tyrano(td)
     assert isinstance(detect_engine(td), TyranoModule)
+with tempfile.TemporaryDirectory() as td:
+    make_wolf(td)
+    mod = detect_engine(td)
+    assert isinstance(mod, WolfModule), type(mod)
+    assert {"files", "font"} <= mod.features
 with tempfile.TemporaryDirectory() as td:
     assert detect_engine(td) is None
 print("   OK")
@@ -127,6 +144,15 @@ with tempfile.TemporaryDirectory() as td:
     # вкладка читов/переменных не добавляется
     assert roles == ["translate"]
     assert "cheats" not in w.engine_module.features
+with tempfile.TemporaryDirectory() as td:
+    make_wolf(td)
+    assert w.open_project(td) == "wolf"
+    roles = [r for _, r in w._engine_tabs]
+    # Wolf RPG: только файловый перевод (нативный процесс без канала),
+    # шрифт — заменой TTF (после перезапуска), размер не поддерживается
+    assert roles == ["translate"]
+    assert "cheats" not in w.engine_module.features
+    assert "font" in w.engine_module.features
 print("   OK")
 
 print("4) Настройки: 4 вкладки (Основные/Файлы/ИИ корректор/Система)...")
@@ -204,7 +230,8 @@ for key in ("settings_corr_tab", "settings_glossary_box",
             "settings_cache_cleaned", "settings_cache_nothing",
             "settings_cache_open",
             "tr_verify_failed", "tr_verify_restored", "tr_verify_broken",
-            "tr_apply_skipped"):
+            "tr_apply_skipped", "tr_apply_longlines",
+            "dash_font_live_ok", "dash_font_need_restart"):
     assert TR(key), key
 print("   OK")
 

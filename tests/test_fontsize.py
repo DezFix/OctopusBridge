@@ -128,5 +128,81 @@ with tempfile.TemporaryDirectory() as td:
             pass
 print("   OK")
 
+def make_ajin(root: str) -> str:
+    path = os.path.join(root, "resources", "app", "override",
+                        "data", "scenario", "first.ks")
+    os.makedirs(os.path.dirname(path))
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("[deffont size=42 face=mfrules bold=false]\n"
+                "SAMPLE_LINE\n")
+    cfg = os.path.join(root, "resources", "app", "override",
+                       "data", "system", "Config.tjs")
+    os.makedirs(os.path.dirname(cfg))
+    with open(cfg, "w", encoding="utf-8") as f:
+        f.write(";config\n;defaultFontSize=37 ;defaultLineSpacing=4\n")
+    return path
+
+
+def make_ajin_asar(path: str, content: bytes) -> None:
+    """Минимальный asar с одним first.ks (без игровых данных)."""
+    from app.core import asar as asar_mod
+    tree = {"files": {"data": {"files": {
+        "scenario": {"files": {
+            "first.ks": {"size": len(content), "offset": "0"}}}}}}}
+    with open(path, "wb") as f:
+        asar_mod._write_header(f, tree)
+        f.write(content)
+
+
+print("6) Ajin: [deffont] + Config.tjs через override-слой...")
+with tempfile.TemporaryDirectory() as td:
+    p = make_ajin(td)
+    cfg = os.path.join(td, "resources", "app", "override",
+                       "data", "system", "Config.tjs")
+    assert fontsize.get_font_size(td, "ajin") == 42  # first.ks в приоритете
+    r = fontsize.set_font_size(td, "ajin", 30)
+    assert r["size"] == 30, r
+    with open(p, encoding="utf-8") as f:
+        text = f.read()
+    assert "[deffont size=30 " in text and "SAMPLE_LINE" in text
+    with open(cfg, encoding="utf-8") as f:
+        assert "defaultFontSize=30" in f.read()
+    assert os.path.exists(p + fontsize.BACKUP_SUFFIX)
+    assert os.path.exists(cfg + fontsize.BACKUP_SUFFIX)
+    assert fontsize.get_font_size(td, "ajin") == 30
+    assert fontsize.restore_font_size(td, "ajin") is True
+    assert fontsize.get_font_size(td, "ajin") == 42
+    with open(cfg, encoding="utf-8") as f:
+        assert "defaultFontSize=37" in f.read()
+    # нет тегов — честно None/ошибка, а не выдуманное значение
+    with open(p, "w", encoding="utf-8") as f:
+        f.write("SAMPLE_LINE\n")
+    with open(cfg, "w", encoding="utf-8") as f:
+        f.write(";config\n")
+    assert fontsize.get_font_size(td, "ajin") is None
+    try:
+        fontsize.set_font_size(td, "ajin", 30)
+        raise AssertionError("должен был упасть")
+    except FileNotFoundError:
+        pass
+with tempfile.TemporaryDirectory() as td:
+    # файл только в asar: читаем оттуда, пишем в override с бэкапом
+    os.makedirs(os.path.join(td, "resources", "app", "override"))
+    asar_p = os.path.join(td, "resources", "app.asar")
+    make_ajin_asar(asar_p, "[deffont size=42]\n".encode("utf-8"))
+    assert fontsize.get_font_size(td, "ajin") == 42
+    r = fontsize.set_font_size(td, "ajin", 28)
+    assert r["size"] == 28
+    ovr = os.path.join(td, "resources", "app", "override",
+                       "data", "scenario", "first.ks")
+    with open(ovr, encoding="utf-8") as f:
+        assert "[deffont size=28]" in f.read()
+    with open(ovr + fontsize.BACKUP_SUFFIX, "rb") as f:
+        assert f.read() == "[deffont size=42]\n".encode("utf-8")
+    assert fontsize.restore_font_size(td, "ajin") is True
+with tempfile.TemporaryDirectory() as td:
+    assert fontsize.get_font_size(td, "ajin") is None
+print("   OK")
+
 print()
 print("ВСЕ ТЕСТЫ РАЗМЕРА ШРИФТА ПРОШЛИ")

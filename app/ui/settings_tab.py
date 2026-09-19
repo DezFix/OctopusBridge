@@ -462,7 +462,19 @@ class SettingsDialog(QDialog):
         self.accept()
 
     def closeEvent(self, event):
-        for w in self._ping_workers.values():
-            if w.isRunning():
-                w.wait(5000)
+        # P0: не блокируем GUI дольше 200мс на воркер; незавершённые
+        # PingWorker доудалятся сами по finished.
+        for w in list(self._ping_workers.values()):
+            try:
+                if w.isRunning():
+                    w.requestInterruption()
+                    if w.wait(200):
+                        w.deleteLater()
+                    else:
+                        w.finished.connect(w.deleteLater)
+                else:
+                    w.deleteLater()
+            except RuntimeError:
+                pass
+        self._ping_workers.clear()
         super().closeEvent(event)

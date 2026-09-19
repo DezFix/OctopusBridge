@@ -13,7 +13,10 @@ import psutil
 _RPGM_NAMES = {"game.exe", "nw.exe", "nwjs.exe", "rpgmaker.exe"}
 # хелперы NW.js — не игра, даже если лежат в папке игры
 _RPGM_HELPER_HINTS = ("notification_helper", "crashpad", "crash_reporter",
-                      "nwjc", "update", "uninstall", "unins", "setup")
+                       "nwjc", "update", "uninstall", "unins", "setup")
+# хелперы Electron-сборок (анинсталлеры, крашпады) — не игра
+_AJIN_HELPER_HINTS = ("uninstall", "unins", "setup", "update",
+                      "crashpad", "crash_reporter", "notification_helper")
 _RENPY_NAMES_SUFFIX = (".exe",)
 _RENPY_HINTS = ("renpy",)
 
@@ -37,9 +40,49 @@ def exe_of(pid: int) -> str:
         return ""
 
 
-def terminate(pid: int, timeout: float = 3.0) -> bool:
-    """Мягко завершает процесс (и детей — Chromium плодит subprocess'ы)."""
+def terminate(pid: int, timeout: float = 3.0,
+              expected_dir: str = "", expected_exe: str = "") -> bool:
+    """Мягко завершает процесс (и детей — Chromium плодит subprocess'ы).
+
+    Защита от убийства чужой игры: перед terminate сверяем живой exe
+    path (и cmdline — не дочерний renderer/gpu) через psutil. Если
+    expected_dir/expected_exe заданы, а живой exe им не соответствует
+    (PID переиспользовался ОС, игра обновилась) — возвращаем False
+    и ничего не трогаем.
+    """
     try:
+        if not pid_exists(pid):
+            return False
+        if expected_dir or expected_exe:
+            live_exe = exe_of(pid)
+            if not live_exe:
+                return False
+            try:
+                norm_live = os.path.normpath(live_exe).lower()
+            except (ValueError, OSError):
+                return False
+            if expected_exe:
+                try:
+                    norm_exp = os.path.normpath(expected_exe).lower()
+                except (ValueError, OSError):
+                    return False
+                if norm_live != norm_exp and not norm_live.startswith(
+                        norm_exp + os.sep):
+                    return False
+            if expected_dir:
+                try:
+                    norm_dir = os.path.normpath(expected_dir).lower()
+                except (ValueError, OSError):
+                    return False
+                if not norm_live.startswith(norm_dir + os.sep) \
+                        and norm_live != norm_dir:
+                    # exe обязан лежать в папке ожидаемой игры
+                    return False
+            # cmdline: дочерние Chromium-процессы (renderer/gpu/utility
+            # с --type=...) не убиваем точечно — только главный процесс
+            cl = cmdline_of(pid)
+            if cl and not is_main_chromium_process(cl):
+                return False
         proc = psutil.Process(pid)
         victims = proc.children(recursive=True) + [proc]
         for p in victims:
@@ -119,8 +162,8 @@ def find_game_processes(engine_key: str,
                         game_dir: str = "") -> list[dict]:
     """Ищет запущенные процессы, похожие на игру данного движка.
 
-    engine_key: 'rpgmaker' | 'renpy' ('twine' живёт в браузере — ищется
-    через CDP, а не через psutil).
+    engine_key: 'rpgmaker' | 'renpy' | 'ajin' ('twine' живёт в браузере —
+    ищется через CDP, а не через psutil).
     Для RPG Maker возвращаются только ГЛАВНЫЕ процессы Game.exe
     (без renderer/gpu-детей Chromium).
     Возвращает [{"pid", "name", "exe", "port"}], exe внутри
@@ -164,6 +207,27 @@ def find_game_processes(engine_key: str,
             elif engine_key == "renpy":
                 match = name.endswith(_RENPY_NAMES_SUFFIX) and \
                     _looks_like_renpy(exe, game_dir)
+            elif engine_key == "ajin":
+                # Electron-игра с произвольным именем exe: главный
+                # Chromium-процесс, чей exe лежит в папке игры рядом
+                # с resources/app.asar (маркер Electron-сборки).
+                if name.endswith(".exe") and not any(
+                        h in name for h in _AJIN_HELPER_HINTS):
+                    try:
+                        in_dir = norm_dir and os.path.normpath(
+                            exe).lower().startswith(norm_dir)
+                    except (ValueError, OSError):
+                        in_dir = False
+                    if in_dir:
+                        cmdline = cmdline_of(info["pid"])
+                        if is_main_chromium_process(cmdline):
+                            root = os.path.dirname(exe)
+                            if os.path.isfile(os.path.join(
+                                    root, "resources", "app.asar")) or \
+                                    os.path.isfile(os.path.join(
+                                        root, "resources", "app",
+                                        "package.json")):
+                                match = True
             if match:
                 found.append({"pid": info["pid"], "name": info.get("name"),
                               "exe": exe,

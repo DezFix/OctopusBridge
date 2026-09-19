@@ -14,14 +14,104 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import time
+from typing import Callable
 
+from app.core import process as proc
 from app.transport.cdp import browser
 from app.transport.cdp.client import CDPClient, CDPError
 from app.core.tentacles.base import Tentacle
+from app.core.translate.service import build_tr_dict  # noqa: F401 — реэкспорт
 
 BINDING_NAME = "__octopus_send"
 CONSOLE_PREFIX = "__octopus__"
+
+# Кандидаты портов для сканирования CDP (общие для NW.js/Electron-игр).
+# Per-engine SCAN_PORTS-константы в наследниках — алиасы этого списка
+# (оставлены для совместимости импортов).
+DEFAULT_SCAN_PORTS = [9222, 9229, 9333] + list(range(9000, 9101)) + \
+    list(range(26000, 26051))
+
+
+def probe_game_port(pid: int, ports=None,
+                    check: Callable[[int, int], bool] | None = None) -> int:
+    """Порт CDP-отладчика процесса pid.
+
+    Порядок: --remote-debugging-port из cmdline -> DevToolsActivePort
+    -> брутфорс SCAN_PORTS с per-engine предикатом check(port, pid).
+    Без check брутфорс не подтверждает принадлежность (возвращает 0,
+    чтобы не подцепить чужой Chromium).
+    """
+    exe = proc.exe_of(pid)
+    game_dir = os.path.dirname(exe) if exe else ""
+    port = proc.debug_port_from_cmdline(proc.cmdline_of(pid))
+    if port:
+        return port
+    port = browser.port_from_devtools_file(exe, game_dir)
+    if port:
+        return port
+    return bruteforce_port(pid, ports=ports, check=check)
+
+
+def bruteforce_port(pid: int | None = None, ports=None,
+                    check: Callable[[int, int], bool] | None = None) -> int:
+    """Перебор живых CDP-портов; первый прошедший check(port, pid).
+
+    check is None — чужой порт подтвердить нечем, возвращаем 0.
+    """
+    if check is None:
+        return 0
+    candidates = browser.scan_ports(ports or DEFAULT_SCAN_PORTS)
+    if not candidates:
+        time.sleep(2.0)
+        candidates = browser.scan_ports(ports or DEFAULT_SCAN_PORTS)
+    for port in candidates:
+        try:
+            if check(port, pid):
+                return port
+        except Exception:  # noqa: BLE001 — битый порт, идём дальше
+            continue
+    return 0
+
+
+def cdp_page_is_game(port: int, pid: int | None, probe_js: str,
+                     engine_key: str = "") -> bool:
+    """Общая проверка CDP-порта: page-цель + probe-JS + принадлежность pid.
+
+    Per-engine предикаты (_port_is_rpgm_game, _port_is_tyrano) — тонкие
+    обёртки над этой функцией: отличаются только probe_js и engine_key.
+    SCAN_PORTS остаются per-engine (алиасы DEFAULT_SCAN_PORTS).
+    """
+    target = browser.pick_page_target(port, ".html")
+    if not target:
+        return False
+    client = CDPClient()
+    if not client.connect(target["webSocketDebuggerUrl"]):
+        return False
+    try:
+        client.call("Runtime.enable")
+        ok, val = client.evaluate(probe_js)
+        if not (ok and val is True):
+            return False
+        try:
+            info = client.call("SystemInfo.getProcessInfo", timeout=3)
+            procs = info.get("processInfo") or []
+            browser_pid = next((p.get("id") for p in procs
+                                if p.get("type") == "browser"), None)
+            if browser_pid is not None:
+                return pid is not None and int(browser_pid) == int(pid)
+        except CDPError:
+            pass
+        if engine_key:
+            # Без точного browser-pid: не цепляем чужой Chromium, когда
+            # рядом несколько игр одного движка.
+            return len(proc.find_game_processes(engine_key)) <= 1
+        return True
+    except CDPError:
+        return False
+    finally:
+        client.close()
 
 # Транспортная прослойка, встраиваемая в начало каждого пейлоада.
 # ES5-only: старые NW.js (RPG Maker MV, Chromium 41-49) не знают
@@ -57,6 +147,16 @@ class CDPTentacle(Tentacle):
         super().__init__(parent)
         self._client: CDPClient | None = None
         self._pid: int | None = None
+        self._script_id: str | None = None
+        self._detaching: bool = False
+
+    def _sleep_retry(self) -> bool:
+        """Пауза 1с кусочками 5x0.2; False если попросили detach."""
+        for _ in range(5):
+            if self._detaching:
+                return False
+            time.sleep(0.2)
+        return True
 
     # ── подключение ──
     def connect_debugger(self, port: int, url_hint: str = "",
@@ -80,7 +180,8 @@ class CDPTentacle(Tentacle):
             target = browser.pick_page_target(port, url_hint)
             if not target:
                 last_err = "Не найдена page-цель отладчика."
-                time.sleep(1.0)
+                if not self._sleep_retry():
+                    return False
                 continue
             self.log.emit(f"Цель: {(target.get('url') or '')[:80]}")
             client = CDPClient()
@@ -90,11 +191,13 @@ class CDPTentacle(Tentacle):
                         + (client.last_error or "?"))
             self.log.emit(f"Попытка {attempt + 1}: {last_err}")
             client = None
-            time.sleep(1.0)
+            if not self._sleep_retry():
+                return False
         if client is None:
             self.error.emit(last_err)
             return False
         self._client = client
+        self._script_id = None
         client.event.connect(self._on_event)
         client.closed.connect(self._on_closed)
         try:
@@ -124,8 +227,9 @@ class CDPTentacle(Tentacle):
         # старых ядрах — тогда просто инъекция в текущую страницу)
         try:
             self._client.call("Page.enable")
-            self._client.call("Page.addScriptToEvaluateOnNewDocument",
-                              {"source": src})
+            res = self._client.call("Page.addScriptToEvaluateOnNewDocument",
+                                    {"source": src})
+            self._script_id = (res or {}).get("identifier")
         except CDPError:
             pass
         ok, val = self._client.evaluate(src)
@@ -168,11 +272,39 @@ class CDPTentacle(Tentacle):
 
     # ── общий API ──
     def detach(self):
-        client, self._client = self._client, None
-        if client:
-            client.close()
-        self._pid = None
-        self.detached.emit("")
+        if self._detaching:
+            return
+        self._detaching = True
+        try:
+            client, self._client = self._client, None
+            script_id, self._script_id = self._script_id, None
+            if client is not None:
+                if script_id:
+                    try:
+                        client.call(
+                            "Page.removeScriptToEvaluateOnNewDocument",
+                            {"identifier": script_id}, timeout=3.0)
+                    except Exception:  # noqa: BLE001
+                        pass
+                try:
+                    client.event.disconnect(self._on_event)
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    client.closed.disconnect(self._on_closed)
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    client.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            self._pid = None
+            try:
+                self.detached.emit("")
+            except RuntimeError:
+                pass
+        finally:
+            self._detaching = False
 
     def is_attached(self) -> bool:
         return self._client is not None and self._client.is_connected()

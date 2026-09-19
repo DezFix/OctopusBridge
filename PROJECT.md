@@ -14,6 +14,7 @@ OctopusBridge — десктопное приложение для Windows, пр
 | Ren'Py (7.x / 8.x) | исходники `.rpy`, скомпилированные `.rpyc` (legacy и RPC2), архивы `.rpa` (v1, v2.0, v3.0) | стабильный |
 | TyranoScript / TyranoBuilder | `data/scenario/*.ks`, Electron-сборки | поддерживается |
 | Twine (SugarCube) | HTML-стори `*.html`, сейвы `.save` (LZ-String) | экспериментальный |
+| Wolf RPG Editor | `Data/*.wolf` (DXA-v8), `Game.dat`/`*Database.dat`/`CommonEvent.dat`/`.mps`; внедрение в loose-`Data/` | экспериментальный |
 
 Движок определяется автоматически по структуре папки игры (весовой детектор). Для каждой игры ведётся проект `.ob.json` (пути, переводы, настройки), проекты хранятся в `%APPDATA%\OctopusBridge`.
 
@@ -50,6 +51,8 @@ OctopusBridge — десктопное приложение для Windows, пр
 ### 3.5. Ресурсы и прочее
 - Браузер ресурсов игры: просмотр/прослушивание/просмотр видео (QMediaPlayer), сохранение файлов; работа внутри `app.asar` (Electron).
 - Патч шрифта Ren'Py (Noto Sans — кириллица вместо квадратиков), размер шрифта в игре.
+- Патч шрифтов Wolf RPG (TTF в корне игры, после перезапуска).
+- Живое применение шрифта/размера без перезапуска (RPG Maker через CDP/мост, Ren'Py через агента).
 - Трей в системной панели, drag-and-drop проекта, проверка обновлений (GitHub API), тёмная тема.
 
 ## 4. Архитектура
@@ -72,7 +75,7 @@ app/
   engines/                  — модули движков (детекция + интеграция в UI)
     base.py                   абстрактный EngineModule
     registry.py               реестр движков, детекция по весу
-    rpgmaker/  renpy/  tyrano/  twine/
+    rpgmaker/  renpy/  tyrano/  twine/  wolf/
   core/                     — логика, независимая от UI
     renpy/  parser.py (тексты, .rpyc/.rpa), rpa.py (архивы), agent.py (агент для Frida)
     rpgmaker/ parser.py, maprender.py, event-команды, crypto.py (шифрование),
@@ -86,7 +89,9 @@ app/
   transport/                — транспорты
     cdp/  client.py (WebSocket CDP), browser.py (поиск портов отладки)
     frida_rpc/  injector.py (внедрение Python-кода в процесс Ren'Py)
-  core/assets/fonts/        — NotoSans-Regular.ttf (патч шрифтов)
+    wolf/ dxa.py (DXA-v8: XOR/Huffman/LZ, read-only), parser.py
+           (Game/Database/CommonEvent/.mps, loose-apply), fontpatch.py
+    core/assets/fonts/        — NotoSans-Regular.ttf (патч шрифтов)
 tests/                      — функциональные тесты (10 файлов)
 build_app.py                — сборка .exe (PyInstaller)
 setup.iss                   — установщик (Inno Setup)

@@ -50,9 +50,22 @@ class EngineError(Exception):
 
 class BaseEngine:
     name = "base"
-    # флаг отмены: класс-атрибут, чтобы подклассы без __init__-вызова
-    # суперкласса (GoogleFreeEngine и др.) читали его без инициализации
-    cancelled = False
+
+    def __init__(self) -> None:
+        # флаг отмены — инстанс-атрибут (раньше был класс-атрибутом
+        # и cancel() одного движка останавливал все экземпляры).
+        self.cancelled = False
+
+    def _sleep_cancellable(self, seconds: float) -> None:
+        """Прерываемый sleep: проверка self.cancelled каждые 0.5с."""
+        end = time.monotonic() + max(0.0, seconds)
+        while True:
+            if self.cancelled:
+                raise InterruptedError("cancelled")
+            remain = end - time.monotonic()
+            if remain <= 0:
+                return
+            time.sleep(min(0.5, remain))
 
     def cancel(self):
         """Просит движок остановиться. Проверки выполняются в
@@ -84,6 +97,7 @@ class AIEngine(BaseEngine):
 
     def __init__(self, base_url: str = "https://openrouter.ai/api/v1",
                  api_key: str = "", model: str = "", batch_size: int = 8):
+        super().__init__()
         self.base_url = (base_url or "https://openrouter.ai/api/v1").rstrip("/")
         self.api_key = api_key or ""
         self.model = model or ""
@@ -253,7 +267,13 @@ class GoogleFreeEngine(BaseEngine):
            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
     def __init__(self):
+        super().__init__()
         self._ratelimit_until = 0.0
+        self._rl_lock = threading.Lock()
+        # P0: requests.Session не потокобезопасен, а translate() гоняет
+        # пакеты из ThreadPoolExecutor. Сериализуем доступ локом
+        # (на потом — пул сессий по одной на поток через threading.local).
+        self._sess_lock = threading.Lock()
         self._session = requests.Session()
         self._session.headers.update({
             "User-Agent": self._UA,
@@ -261,22 +281,34 @@ class GoogleFreeEngine(BaseEngine):
         })
 
     def _rate_limited(self) -> bool:
-        return time.time() < self._ratelimit_until
+        with self._rl_lock:
+            return time.time() < self._ratelimit_until
 
     def _mark_rate_limited(self, duration: float = _RATE_LIMIT_COOLDOWN) -> None:
-        self._ratelimit_until = time.time() + duration
+        with self._rl_lock:
+            self._ratelimit_until = time.time() + duration
 
     def _is_rate_limit(self, r) -> bool:
         """429/403 или переадресация на страницу капчи /sorry/."""
         return (getattr(r, "status_code", 200) in (429, 403)
                 or "sorry" in getattr(r, "url", ""))
 
+    def _sget(self, *args, **kwargs):
+        """GET через общий Session под локом (Session не потокобезопасен)."""
+        with self._sess_lock:
+            return self._session.get(*args, **kwargs)
+
+    def _spost(self, *args, **kwargs):
+        """POST через общий Session под локом (Session не потокобезопасен)."""
+        with self._sess_lock:
+            return self._session.post(*args, **kwargs)
+
     def ping(self) -> bool:
         try:
-            self._session.get(self.URL_SINGLE,
-                              params={"client": "gtx", "sl": "en",
-                                      "tl": "ru", "dt": "t", "q": "hi"},
-                              timeout=5)
+            self._sget(self.URL_SINGLE,
+                       params={"client": "gtx", "sl": "en",
+                               "tl": "ru", "dt": "t", "q": "hi"},
+                       timeout=5)
             return True
         except requests.RequestException:
             return False
@@ -291,7 +323,7 @@ class GoogleFreeEngine(BaseEngine):
         if self._rate_limited():
             raise EngineError("Google: rate-limit кулдаун")
         try:
-            r = self._session.post(
+            r = self._spost(
                 self.URL_FAST,
                 headers={"X-Goog-API-Key": self.FAST_KEY,
                          "Content-Type": "application/json+protobuf"},
@@ -333,7 +365,7 @@ class GoogleFreeEngine(BaseEngine):
             if self._rate_limited():
                 raise EngineError("Google: rate-limit кулдаун")
             try:
-                r = self._session.get(self.URL_SINGLE, params={
+                r = self._sget(self.URL_SINGLE, params={
                     "client": "gtx", "sl": src, "tl": target,
                     "dt": "t", "q": q}, timeout=30)
                 if self._is_rate_limit(r):
@@ -349,8 +381,9 @@ class GoogleFreeEngine(BaseEngine):
             except (requests.RequestException, ValueError, TypeError,
                     KeyError, IndexError):
                 if attempt < 2:
-                    time.sleep(6.0 * (attempt + 1) if self._rate_limited()
-                               else 1.0 * (attempt + 1))
+                    self._sleep_cancellable(
+                        6.0 * (attempt + 1) if self._rate_limited()
+                        else 1.0 * (attempt + 1))
         return [self._translate_one(t, src, target) for t in texts]
 
     # ── 3. translate.google.com/m: HTML-фолбэк ──
@@ -362,7 +395,7 @@ class GoogleFreeEngine(BaseEngine):
         if self._rate_limited():
             raise EngineError("Google: rate-limit кулдаун")
         try:
-            r = self._session.get(self.URL_M, params={
+            r = self._sget(self.URL_M, params={
                 "sl": src, "tl": target, "q": text}, timeout=30)
             if self._is_rate_limit(r):
                 self._mark_rate_limited()
@@ -392,7 +425,7 @@ class GoogleFreeEngine(BaseEngine):
             if self._rate_limited():
                 raise EngineError("Google: rate-limit кулдаун")
             try:
-                r = self._session.get(self.URL_SINGLE, params={
+                r = self._sget(self.URL_SINGLE, params={
                     "client": "gtx", "sl": src, "tl": target,
                     "dt": "t", "q": text}, timeout=30)
                 if self._is_rate_limit(r):
@@ -405,8 +438,9 @@ class GoogleFreeEngine(BaseEngine):
                     KeyError, IndexError) as e:
                 last_err = e
                 if attempt < 2:
-                    time.sleep(6.0 * (attempt + 1) if self._rate_limited()
-                               else 1.0 * (attempt + 1))
+                    self._sleep_cancellable(
+                        6.0 * (attempt + 1) if self._rate_limited()
+                        else 1.0 * (attempt + 1))
         try:
             return self._translate_m(text, src, target)
         except InterruptedError:
@@ -478,6 +512,7 @@ class BingEngine(BaseEngine):
            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
     def __init__(self):
+        super().__init__()
         self._session = requests.Session()
         self._session.headers.update({
             "User-Agent": self._UA,
@@ -485,37 +520,61 @@ class BingEngine(BaseEngine):
                       "image/avif,image/webp,image/apng,*/*;q=0.8",
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
         })
+        # P0: токены и Session трогают несколько потоков (Rotate крутит
+        # Bing-сессии из пула) — защищаем локом.
+        self._lock = threading.RLock()
         self._ig: str | None = None
         self._iid: str | None = None
         self._token: str | None = None
         self._key: str | None = None
 
+    def _sget(self, *args, **kwargs):
+        with self._lock:
+            sess = self._session
+        # сам HTTP вне токен-лока не держим дольше нужного: Session
+        # используется только здесь и в _translate_one под тем же локом
+        # (сериализация запросов — цена потокобезопасности, см. Google).
+        with self._lock:
+            return sess.get(*args, **kwargs)
+
+    def _spost(self, *args, **kwargs):
+        with self._lock:
+            return self._session.post(*args, **kwargs)
+
     # ── токены ──
     def _load_tokens(self):
-        if self._ig and self._token:
-            return
-        r = self._session.get(self.HOST_URL, timeout=15)
+        with self._lock:
+            if self._ig and self._token:
+                return
+        r = self._sget(self.HOST_URL, timeout=15)
         r.raise_for_status()
         html = r.text
-        m = re.search(r'IG\s*[:=]\s*["\']([^"\']+)["\']', html)
-        if m and "+_G.IG+" not in m.group(1):
-            self._ig = m.group(1)
-        m = re.search(r'id="tta_outGDCont"[^>]*data-iid="([^"]+)"', html)
-        if not m:
-            m = re.search(r'_iid\s*=\s*["\']([^"\']+)["\']', html)
-        if m:
-            self._iid = m.group(1)
-        m = re.search(r"params_AbusePreventionHelper\s*=\s*\[([^\]]+)\]", html)
-        if m:
-            parts = [p.strip().strip('"').strip("'") for p in m.group(1).split(",")]
-            if parts:
-                self._key = parts[0]
-            if len(parts) > 1:
-                self._token = parts[1]
-        if not self._iid:
-            self._iid = "translator.5028"
-        if not (self._ig and self._token):
-            raise EngineError("Bing: не удалось получить токены переводчика")
+        with self._lock:
+            if self._ig and self._token:
+                return  # другой поток уже загрузил, пока шёл GET
+            m = re.search(r'IG\s*[:=]\s*["\']([^"\']+)["\']', html)
+            if m and "+_G.IG+" not in m.group(1):
+                self._ig = m.group(1)
+            m = re.search(r'id="tta_outGDCont"[^>]*data-iid="([^"]+)"', html)
+            if not m:
+                m = re.search(r'_iid\s*=\s*["\']([^"\']+)["\']', html)
+            if m:
+                self._iid = m.group(1)
+            m = re.search(r"params_AbusePreventionHelper\s*=\s*\[([^\]]+)\]", html)
+            if m:
+                parts = [p.strip().strip('"').strip("'") for p in m.group(1).split(",")]
+                if parts:
+                    self._key = parts[0]
+                if len(parts) > 1:
+                    self._token = parts[1]
+            if not self._iid:
+                self._iid = "translator.5028"
+            if not (self._ig and self._token):
+                raise EngineError("Bing: не удалось получить токены переводчика")
+
+    def _reset_tokens(self):
+        with self._lock:
+            self._ig = self._iid = self._token = self._key = None
 
     def ping(self) -> bool:
         try:
@@ -540,13 +599,16 @@ class BingEngine(BaseEngine):
                 raise InterruptedError("cancelled")
             try:
                 self._load_tokens()
+                with self._lock:
+                    ig, iid, key, token = (
+                        self._ig, self._iid, self._key, self._token)
                 api_url = self.HOST_URL.replace("Translator", "ttranslatev3")
-                url = f"{api_url}?isVertical=1&&IG={self._ig}&IID={self._iid}"
-                r = self._session.post(
+                url = f"{api_url}?isVertical=1&&IG={ig}&IID={iid}"
+                r = self._spost(
                     url,
                     data={"text": text, "fromLang": src, "to": target,
                           "tryFetchingGenderDebiasedTranslations": "true",
-                          "key": self._key, "token": self._token},
+                          "key": key, "token": token},
                     headers={"Referer": self.HOST_URL,
                              "Origin": "https://www.bing.com",
                              "Accept": "application/json",
@@ -566,10 +628,9 @@ class BingEngine(BaseEngine):
                 last_err = e
                 # токены могли протухнуть или страница изменилась —
                 # полный сброс и повторная загрузка
-                self._ig = self._iid = self._token = self._key = None
+                self._reset_tokens()
                 if attempt < 2:
-                    import time
-                    time.sleep(0.8 * (attempt + 1))
+                    self._sleep_cancellable(0.8 * (attempt + 1))
         raise EngineError(
             f"Bing Translator unavailable: {last_err}") from last_err
 
@@ -589,6 +650,7 @@ class MyMemoryEngine(BaseEngine):
     _WORKERS = 6
 
     def __init__(self, api_key: str = ""):
+        super().__init__()
         self.api_key = api_key or ""
 
     def ping(self) -> bool:
@@ -646,6 +708,7 @@ class LibreTranslateEngine(BaseEngine):
     DEFAULT_URL = "https://libretranslate.com"
 
     def __init__(self, base_url: str = "", api_key: str = ""):
+        super().__init__()
         self.base_url = (base_url or self.DEFAULT_URL).rstrip("/")
         self.api_key = api_key or ""
 
@@ -704,6 +767,7 @@ class RotateEngine(BaseEngine):
     BING_SESSIONS = 2
 
     def __init__(self):
+        super().__init__()
         self._engines = [GoogleFreeEngine()] + [
             BingEngine() for _ in range(self.BING_SESSIONS)]
         self._cursor = 0

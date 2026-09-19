@@ -272,5 +272,88 @@ with tempfile.TemporaryDirectory() as td:
     assert out == "Здравствуйте.\r\n[wait time=\"500\"]\r\n".encode("utf-8"), out
 print("   OK")
 
+print("12) Кнопки меню: text= у glink/ptext/mtext/notice...")
+with tempfile.TemporaryDirectory() as td:
+    scenario = os.path.join(td, "data", "scenario")
+    os.makedirs(scenario)
+    os.makedirs(os.path.join(td, "tyrano"))
+    ks = os.path.join(scenario, "menu.ks")
+    with open(ks, "w", encoding="utf-8") as f:
+        f.write('[glink color="red" size="20" text="START" target="*start"]\n'
+                '[ptext text="TITLE" size="40"]\n'
+                '[mtext text="MSG"]\n'
+                '[notice text="SAVED"]\n'
+                '[button graphic="ok.png" target="*ok"]\n')
+    entries = parser.extract(td)
+    texts = [e.original for e in entries]
+    assert texts == ["START", "TITLE", "MSG", "SAVED"], texts
+    assert all(".tag[" in e.json_path and e.json_path.endswith(".text")
+               for e in entries)
+    for e in entries:
+        e.translation = "RU_" + e.original
+        e.status = "translated"
+    stats = parser.apply(td, entries)
+    assert stats["strings"] == 4, stats
+    out = open(ks, encoding="utf-8").read()
+    assert 'text="RU_START"' in out and 'target="*start"' in out
+    assert 'text="RU_TITLE"' in out
+    assert '[button graphic="ok.png" target="*ok"]' in out  # без text — цел
+print("   OK")
+
+print("12b) Защита меню: кавычки в text= не ломают тег...")
+from app.core.tyrano.parser import is_tag_translation_safe as _safe
+assert _safe("Обычный текст")
+assert _safe('Текст с "кавычкой"')  # уйдёт в '...'
+assert _safe("Со скобкой [x]")  # движок учитывает кавычки — безопасно
+assert not _safe("Строка\nс переносом")
+assert not _safe("Обе 'кавычки' и \"тут\"")
+with tempfile.TemporaryDirectory() as td:
+    scenario = os.path.join(td, "data", "scenario")
+    os.makedirs(scenario)
+    os.makedirs(os.path.join(td, "tyrano"))
+    ks = os.path.join(scenario, "menu.ks")
+    with open(ks, "w", encoding="utf-8") as f:
+        f.write('[glink text="GO" target="*x"]\n'
+                '[glink text="BR" target="*y"]\n')
+    entries = parser.extract(td)
+    assert [e.original for e in entries] == ["GO", "BR"]
+    entries[0].translation = 'ВПЕРЁД "ВПЕРЁД"'  # только " — сменим кавычки
+    entries[0].status = "translated"
+    entries[1].translation = "НАЗАД 'Х' \"У\""  # оба вида кавычек — пропуск
+    entries[1].status = "translated"
+    stats = parser.apply(td, entries)
+    assert stats["strings"] == 1, stats
+    out = open(ks, encoding="utf-8").read()
+    assert "text='ВПЕРЁД \"ВПЕРЁД\"'" in out and 'target="*x"' in out
+    assert 'text="BR"' in out  # опасная запись не тронута
+print("   OK")
+
+print("12c) Выражения в text=: переводится только литерал, код цел...")
+from app.core.tyrano.parser import split_text_attr as _split
+assert _split("&f.item[35][1]") == ("skip", [])
+assert _split("&f.x + f.y + ''") == ("skip", [])
+assert _split("START")[0] == "plain"
+kind, parts = _split("&'HELLO' + f.x[0] + ''")
+assert kind == "expr" and parts == [(0, "HELLO")], (kind, parts)
+with tempfile.TemporaryDirectory() as td:
+    scenario = os.path.join(td, "data", "scenario")
+    os.makedirs(scenario)
+    os.makedirs(os.path.join(td, "tyrano"))
+    ks = os.path.join(scenario, "menu.ks")
+    with open(ks, "w", encoding="utf-8") as f:
+        f.write("[ptext text=\"&'HELLO' + f.x[0] + ''\"]\n"
+                "[ptext text=\"&f.item[1][2]\"]\n")
+    entries = parser.extract(td)
+    assert [(e.original, e.json_path) for e in entries] == [
+        ("HELLO", "line[1].tag[0].text#0")], entries
+    entries[0].translation = "ПРИВЕТ"
+    entries[0].status = "translated"
+    stats = parser.apply(td, entries)
+    assert stats["strings"] == 1, stats
+    out = open(ks, encoding="utf-8").read()
+    assert "text=\"&'ПРИВЕТ' + f.x[0] + ''\"" in out, out
+    assert 'text="&f.item[1][2]"' in out
+print("   OK")
+
 print()
 print("ВСЕ ТЕСТЫ TYRANO ПРОШЛИ")

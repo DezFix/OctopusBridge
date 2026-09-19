@@ -35,6 +35,7 @@ from http import server as http_server
 from urllib.parse import quote
 
 from app.core.tentacles.base import Tentacle
+from app.core.translate.service import build_tr_dict  # noqa: F401 — реэкспорт
 
 # ── JS-пэйлоад ────────────────────────────────────────────────────────
 #  {WS_URL} — подставляется HTTP-сервером при инжекции
@@ -429,6 +430,24 @@ class _InjectingHTTPHandler(http_server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=self.__class__.directory, **kwargs)
 
+    def _safe_local(self, raw_path: str) -> str | None:
+        """Локальный путь строго внутри directory (защита от ../ -> 403).
+
+        normpath + startswith: выход за корень игры (папки проекта,
+        системные файлы) отдаём как 403, а не 404/файл.
+        """
+        base = os.path.abspath(self.__class__.directory or ".")
+        try:
+            local = os.path.abspath(self.translate_path(raw_path))
+        except Exception:  # noqa: BLE001
+            return None
+        norm_local = os.path.normpath(local)
+        norm_base = os.path.normpath(base)
+        if norm_local == norm_base or norm_local.startswith(
+                norm_base + os.sep):
+            return norm_local
+        return None
+
     def do_GET(self):
         # Только голый корень редиректим на файл игры.
         # /index.html отдаём как есть, иначе при игре-в-index.html
@@ -458,7 +477,10 @@ class _InjectingHTTPHandler(http_server.SimpleHTTPRequestHandler):
         _noq = self.path.split("?")[0].lower()
         is_html = _noq.endswith(".html") or _noq.endswith(".htm")
         if is_html and (self._inject_html or self._shield_html):
-            local = self.translate_path(self.path)
+            local = self._safe_local(self.path)
+            if local is None:
+                self.send_error(403, "Forbidden")
+                return
             if os.path.isfile(local):
                 try:
                     with open(local, "rb") as f:
@@ -526,7 +548,10 @@ class _InjectingHTTPHandler(http_server.SimpleHTTPRequestHandler):
         Полная замена super().do_GET: буфер 64 КБ с перехватом обрывов
         клиента (WebView2/браузер закрывают соединение при навигации,
         отмене загрузки — это не ошибка сервера)."""
-        local = self.translate_path(path)
+        local = self._safe_local(path)
+        if local is None:
+            self.send_error(403, "Forbidden")
+            return
         if not os.path.isfile(local):
             self.send_error(404, "File not found")
             return
@@ -742,13 +767,22 @@ class _WSServer:
             ws, loop = self._ws, self._loop
         if not ws or not loop or loop.is_closed():
             return False
-        data = json.dumps(obj, ensure_ascii=False)
+        try:
+            data = json.dumps(obj, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return False
+        fut = None
         try:
             fut = asyncio.run_coroutine_threadsafe(ws.send(data), loop)
             if threading.current_thread() is not self._thread:
-                fut.result(timeout=10)
+                fut.result(timeout=5)
             return True
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 — таймаут/обрыв, не вешаем поток
+            try:
+                if fut is not None:
+                    fut.cancel()
+            except Exception:  # noqa: BLE001
+                pass
             return False
 
     def has_client(self) -> bool:
@@ -782,23 +816,6 @@ def _find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
-
-
-def build_tr_dict(entries) -> dict:
-    """Словарь original->translation для live-перевода (пустые пропущены)."""
-    tr: dict = {}
-    for e in entries:
-        if isinstance(e, dict):
-            orig = e.get("original", "")
-            text = e.get("translation", "") or ""
-            status = e.get("status", "")
-        else:
-            orig = getattr(e, "original", "")
-            text = getattr(e, "translation", "") or ""
-            status = getattr(e, "status", "")
-        if orig and text.strip() and status != "skip":
-            tr[orig] = text
-    return tr
 
 
 def load_tr_dict(game_dir: str, projects_root: str | None = None) -> dict:

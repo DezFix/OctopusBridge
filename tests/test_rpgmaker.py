@@ -356,9 +356,14 @@ with tempfile.TemporaryDirectory() as td:
     killed = []
     tentacle_mod.proc.find_game_processes = lambda *a, **k: [{
         "pid": 4242, "name": "Game.exe", "exe": game_exe, "port": 0}]
-    tentacle_mod.proc.terminate = lambda pid, timeout=3.0: (
+    # живой exe PID 4242 — наша игра (защита от чужого процесса в launch
+    # сверяет exe_of перед terminate; фейковый pid мокаем)
+    tentacle_mod.proc.exe_of = lambda pid: game_exe
+    tentacle_mod.proc.terminate = lambda pid, timeout=3.0, **_k: (
         killed.append(pid) or True)
     tentacle_mod.browser.free_port = lambda: 7777
+    import subprocess as _spmod12
+    _real_Popen12 = _spmod12.Popen
     tentacle_mod.subprocess.Popen = FakePopen
     t._connect_page = lambda port, url_hint="", wait=20.0: True
     assert t.launch(td) is True
@@ -377,7 +382,8 @@ with tempfile.TemporaryDirectory() as td:
     t.error.connect(lambda s: errs.append(s))
     tentacle_mod.proc.find_game_processes = lambda *a, **k: [{
         "pid": 4242, "name": "Game.exe", "exe": game_exe, "port": 0}]
-    tentacle_mod.proc.terminate = lambda pid, timeout=3.0: False
+    tentacle_mod.proc.exe_of = lambda pid: game_exe
+    tentacle_mod.proc.terminate = lambda pid, timeout=3.0, **_k: False
     assert t.launch(td) is False
     assert errs
 print("   OK")
@@ -1074,6 +1080,9 @@ with tempfile.TemporaryDirectory() as td:
         t2.error.connect(lambda s: errs.append(s))
         assert t2.launch(empty) is False
         assert errs and "exe" in errs[0].lower() or "исполняемый" in errs[0]
+    # чиним за собой глобальный мок: дальше идут тесты, которым нужен
+    # настоящий subprocess.Popen (иначе всё поломается молча)
+    tentacle_mod.subprocess.Popen = _real_Popen12
 print("   OK")
 
 print()
@@ -1706,6 +1715,212 @@ with tempfile.TemporaryDirectory() as td:
                            encoding="utf-8"))
     assert _pl58[0]["parameters"]["label"] == "Привет", _pl58
     assert not _st58.get("verify_failed"), _st58.get("verify_failed")
+print("   OK")
+
+print()
+print("59) Автоперенос: структура JS, ES5, хуки диалогов...")
+from app.core.rpgmaker.payloads import _TRANSLATION_PAYLOAD as _TR59
+
+
+def _js_balanced59(src: str) -> bool:
+    """Баланс скобок вне строк/комментариев/regex (замена JS-парсера).
+
+    Regex-литералы отличаются от деления эвристикой по предыдущему
+    значимому токену: после `= ( , : [ ! & | ? { } ;` и ключевых слов —
+    regex, иначе деление.
+    """
+    st: list[str] = []
+    i, n = 0, len(src)
+    pairs = {")": "(", "]": "[", "}": "{"}
+    kw = ("return", "typeof", "instanceof", "in", "of", "new",
+          "delete", "void", "throw", "case", "do", "else")
+
+    def _prev_is_regex_pos(p: int) -> bool:
+        j = p - 1
+        while j >= 0 and src[j] in " \t\r\n":
+            j -= 1
+        if j < 0:
+            return True
+        c = src[j]
+        if c in "(=,:[!&|?{};~^%*<>+-":
+            return True
+        if c.isalnum() or c in "_$":
+            k = j
+            while k >= 0 and (src[k].isalnum() or src[k] in "_$"):
+                k -= 1
+            return src[k + 1:j + 1] in kw
+        return False
+
+    def _skip_regex(p: int) -> int:
+        # p — на открывающем `/`; возвращает позицию после флагов
+        k = p + 1
+        in_cls = False
+        while k < n:
+            c = src[k]
+            if c == "\\":
+                k += 2
+                continue
+            if c == "[":
+                in_cls = True
+            elif c == "]":
+                in_cls = False
+            elif c == "/" and not in_cls:
+                k += 1
+                while k < n and src[k].isalpha():
+                    k += 1  # флаги g/i/m
+                return k
+            elif c == "\n":
+                return p + 1  # не regex, а деление
+            k += 1
+        return p + 1
+
+    while i < n:
+        c = src[i]
+        if c in "\"'":
+            q = c
+            i += 1
+            while i < n:
+                if src[i] == "\\":
+                    i += 2
+                    continue
+                if src[i] == q:
+                    break
+                i += 1
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and src[i + 1] == "/":
+            j = src.find("\n", i)
+            i = n if j == -1 else j + 1
+            continue
+        if c == "/" and i + 1 < n and src[i + 1] == "*":
+            j = src.find("*/", i + 2)
+            i = n if j == -1 else j + 2
+            continue
+        if c == "/" and i + 1 < n and src[i + 1] not in "/=*":
+            if _prev_is_regex_pos(i):
+                i = _skip_regex(i)
+                continue
+            i += 1
+            continue
+        if c in "([{":
+            st.append(c)
+        elif c in ")]}":
+            if not st or st.pop() != pairs[c]:
+                return False
+        i += 1
+    return not st
+
+
+assert _js_balanced59(_TR59), "пейлоад: скобки не сошлись"
+assert "=>" not in _TR59 and "`" not in _TR59, "пейлоад: не ES5"
+import re as _re59
+assert not _re59.search(r"\b(const|let)\b", _TR59), "пейлоад: не ES5"
+# перенос: функции, замер шрифтом окна, гейт по типу окна
+for _marker in ("obWrapLine", "obWrapForWindow", "obPlainForMeasure",
+                "obMeasureWidth", "contentsWidth", "Window_Message",
+                "Window_ScrollText", "__octopus_trWrapForWindow"):
+    assert _marker in _TR59, _marker
+# \FS[ / \{ \} — пропуск строк со сменой размера (метрику не угадаем)
+assert "FS\\[" in _TR59
+# тумблер по умолчанию включён, отключаемый из игры
+assert "__octopus_trWrap = true" in _TR59
+print("   OK")
+
+print()
+print("60) Автоперенос: алгоритм выполняется (cscript-стаб)...")
+import shutil as _sh60
+if _sh60.which("cscript") is None:
+    print("   SKIP: нет cscript")
+else:
+    from app.core.rpgmaker import payloads as _pl60
+    _src60 = _pl60._TRANSLATION_PAYLOAD
+    _a60 = _src60.index("window.__octopus_trWrap = true;")
+    _b60 = _src60.index(
+        "window.__octopus_trWrapForWindow = obWrapForWindow;") + len(
+        "window.__octopus_trWrapForWindow = obWrapForWindow;")
+    _block60 = _src60[_a60:_b60]
+    # тестовые строки — только ASCII+\uXXXX (кодировка консоли cscript)
+    _ru60 = "".join(f"\\u{ord(c):04x}" for c in
+                    "В этой игре вы можете выбрать отдельные заставки для каждой")
+    _cjk60 = "\\u3053\\u3093\\u306b\\u3061\\u306f" * 12
+    _harness60 = (
+        "var window = {};\n"
+        "var document = {title: \"\"};\n"
+        "function Bitmap(w, h) { this.fontFace = \"\"; this.fontSize = 28; }\n"
+        "Bitmap.prototype.measureTextWidth = function (s) {\n"
+        "  var w = 0;\n"
+        "  for (var i = 0; i < s.length; i++) {\n"
+        "    var c = s.charCodeAt(i);\n"
+        "    w += (c >= 0x3000 || (c >= 0xFF00 && c <= 0xFFEF)) ? 2 : 1;\n"
+        "  }\n"
+        "  return w;\n"
+        "};\n"
+        "function Window_Message() {}\n"
+        "function Window_ScrollText() {}\n"
+        "var $gameMessage = { faceName: function () { return \"\"; } };\n"
+        "var $gameActors = { actor: function () { return null; } };\n"
+        "var $gameParty = { members: function () { return []; } };\n"
+        "var $dataSystem = { currencyUnit: \"G\" };\n"
+        + _block60 + "\n"
+        "function mkwin() {\n"
+        "  var win = new Window_Message();\n"
+        "  win.contentsWidth = function () { return 50; };\n"
+        "  win.contents = {fontFace: \"\", fontSize: 28};\n"
+        "  return win;\n"
+        "}\n"
+        "function fit(s, w) {\n"
+        "  var lines = s.split(\"\\n\");\n"
+        "  for (var i = 0; i < lines.length; i++) {\n"
+        "    if (obMeasureWidth(w, obPlainForMeasure(lines[i])) > 50) return false;\n"
+        "  }\n"
+        "  return true;\n"
+        "}\n"
+        "var fails = [];\n"
+        "function check(name, cond) { if (!cond) fails.push(name); }\n"
+        "var win = mkwin();\n"
+        "// 1. короткая строка не меняется\n"
+        "check(\"short\", obWrapLine(\"abc def\", 50, win) === \"abc def\");\n"
+        "// 2. длинная русская строка переносится и влезает\n"
+        "var long_ru = \"" + _ru60 + "\";\n"
+        "var w2 = obWrapLine(long_ru, 50, win);\n"
+        "check(\"ru-wrapped\", w2.indexOf(\"\\n\") >= 0);\n"
+        "check(\"ru-fit\", fit(w2, win));\n"
+        "check(\"ru-idem\", obWrapLine(w2, 50, win) === w2);\n"
+        "// 3. CJK без пробелов режется посимвольно\n"
+        "var w3 = obWrapLine(\"" + _cjk60 + "\", 50, win);\n"
+        "check(\"cjk-wrapped\", w3.indexOf(\"\\n\") >= 0);\n"
+        "check(\"cjk-fit\", fit(w3, win));\n"
+        "check(\"cjk kept\", w3.replace(/\\n/g, \"\") === \"" + _cjk60 + "\");\n"
+        "// 4. коды цвета сохраняются на первой строке\n"
+        "var w4 = obWrapLine(\"\\\\C[2] \" + long_ru, 50, win);\n"
+        "check(\"code-first\", w4.split(\"\\n\")[0].indexOf(\"\\\\C[2]\") === 0);\n"
+        "check(\"code-fit\", fit(w4, win));\n"
+        "// 5. переменные и FS-строки: без падений\n"
+        "check(\"var-fit\", fit(obWrapLine(\"\\\\V[1] \" + long_ru, 50, win), win));\n"
+        "var fsline = \"\\\\FS[30] \" + long_ru;\n"
+        "check(\"fs-passthrough\", obWrapLine(fsline, 50, win) === fsline);\n"
+        "// 6. гейт по типу окна\n"
+        "check(\"plain-win\", obWrapForWindow({}, long_ru) === long_ru);\n"
+        "check(\"msg-win\", obWrapForWindow(win, long_ru).indexOf(\"\\n\") >= 0);\n"
+        "// 7. пустая строка\n"
+        "check(\"empty\", obWrapLine(\"\", 50, win) === \"\");\n"
+        "if (fails.length) { WScript.Echo(\"FAIL: \" + fails.join(\",\")); WScript.Quit(1); }\n"
+        "WScript.Echo(\"HARNESS-OK\");\n"
+    )
+    _js60 = os.path.join(tempfile.gettempdir(), "ob_wrap_test.js")
+    with open(_js60, "w", encoding="utf-8") as _f60:
+        _f60.write(_harness60)
+    import subprocess as _sp60
+    try:
+        _r60 = _sp60.run(["cscript", "//Nologo", "//E:JScript", _js60],
+                         capture_output=True, text=True, timeout=60)
+    finally:
+        try:
+            os.remove(_js60)
+        except OSError:
+            pass
+    assert _r60.returncode == 0, (_r60.stdout, _r60.stderr)
+    assert "HARNESS-OK" in _r60.stdout, (_r60.stdout, _r60.stderr)
 print("   OK")
 
 print()

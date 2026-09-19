@@ -88,6 +88,7 @@ OctopusBridge переводит и модифицирует игры на ПК.
 | Ren'Py | ✅ Стабильно |
 | TyranoScript / TyranoBuilder | ✅ Поддерживается |
 | Twine (SugarCube) | 🧪 Экспериментально |
+| Wolf RPG Editor | 🧪 Экспериментально (перевод файлов + шрифт, без читов) |
 
 ---
 

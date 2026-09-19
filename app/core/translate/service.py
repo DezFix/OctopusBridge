@@ -24,6 +24,29 @@ TARGET_TOKENS = 1500
 MAX_BATCH_LINES = 100
 
 
+def build_tr_dict(entries) -> dict:
+    """Словарь original->translation для live-перевода (пустые пропущены).
+
+    Каноническая реализация (раньше копипаста в engines/rpgmaker/tentacle,
+    engines/twine/tentacle и core/rpgmaker/mv_bridge.update_tr_dict).
+    Принимает TranslationEntry или dict'ы; записи со status='skip',
+    пустым original или пустым translation пропускаются.
+    """
+    tr: dict = {}
+    for e in entries:
+        if isinstance(e, dict):
+            orig = e.get("original", "")
+            text = e.get("translation", "") or ""
+            status = e.get("status", "")
+        else:
+            orig = getattr(e, "original", "")
+            text = getattr(e, "translation", "") or ""
+            status = getattr(e, "status", "")
+        if orig and text.strip() and status != "skip":
+            tr[orig] = text
+    return tr
+
+
 def _estimate_tokens(text: str) -> int:
     """Грубая оценка токенов: CJK ~1 токен на символ, латиница ~1/4."""
     if re.search(r"[\u3000-\u9fff\uf900-\ufaff\uac00-\ud7af]", text):
@@ -266,6 +289,51 @@ class Translator:
         return out
 
     # ---------- записи проекта ----------
+    def prefill_from_memory(
+        self,
+        entries: list[TranslationEntry],
+        src_lang: str,
+        tgt_lang: str,
+    ) -> int:
+        """Подтянуть переводы из памяти (ТМ) для записей без перевода.
+
+        Точное совпадение + совпадение по нормализованной строке
+        (пробелы/переносы) — делает TranslationMemory.get().
+        Записям с найденным переводом ставит status='translated'.
+        Пропускает записи с уже готовым переводом и status='skip'.
+        Возвращает число подтянутых строк. Движок не используется.
+        """
+        if not self.tm:
+            return 0
+        n = 0
+        for e in entries:
+            if e.translation.strip() or e.status == "skip":
+                continue
+            if not e.original.strip():
+                continue
+            lang = _resolve_src(e.original, src_lang, tgt_lang)
+            if not lang:
+                continue
+            hit = self.tm.get(e.original, lang, tgt_lang)
+            if hit is None and lang != src_lang:
+                #declared пара может отличаться (en vs auto)
+                try:
+                    hit = self.tm.get(e.original, src_lang, tgt_lang)
+                except Exception:
+                    hit = None
+            if hit is None:
+                #reuse между проектами с разным source_lang:
+                #тот же таргет, строка та же — перевод забираем
+                try:
+                    hit = self.tm.get_any_src(e.original, tgt_lang)
+                except Exception:
+                    hit = None
+            if hit:
+                e.translation = hit
+                e.status = "translated"
+                n += 1
+        return n
+
     def translate_entries(
         self,
         entries: list[TranslationEntry],

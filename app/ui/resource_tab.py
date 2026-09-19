@@ -1041,6 +1041,26 @@ class ResourceTab(QWidget):
             f.write(body)
 
     # ── font (RPGM: авто-шрифт / свой файл / откат; Ren'Py — на главной) ──
+    def _live_apply_font(self, font_filename: str = "") -> bool:
+        try:
+            t = self.main.channel()
+        except Exception:  # noqa: BLE001
+            return False
+        if not t:
+            return False
+        try:
+            from app.core import livefont as lf
+            return lf.apply_rpgm_font_live(t, font_filename or "")
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _live_suffix(self, ok: bool) -> str:
+        try:
+            return ("\n" + TR("dash_font_live_ok")) if ok else (
+                "\n" + TR("dash_font_need_restart"))
+        except Exception:  # noqa: BLE001
+            return ""
+
     def _patch_font(self):
         p = self.main.project
         if not p:
@@ -1055,9 +1075,10 @@ class ResourceTab(QWidget):
         if report.get("already"):
             QMessageBox.information(self, TR("done"), TR("res_font_already"))
             return
+        live = self._live_apply_font(report.get("font", ""))
         QMessageBox.information(
             self, TR("done"),
-            TR("res_font_done", font=report["font"]))
+            TR("res_font_done", font=report["font"], live=self._live_suffix(live)))
 
     def _patch_font_choose(self):
         p = self.main.project
@@ -1075,9 +1096,10 @@ class ResourceTab(QWidget):
             QMessageBox.critical(self, TR("res_font"), str(e))
             return
         self.btn_font_restore.setEnabled(True)
+        live = self._live_apply_font(report.get("font", ""))
         QMessageBox.information(
             self, TR("done"),
-            TR("res_font_done", font=report["font"]))
+            TR("res_font_done", font=report["font"], live=self._live_suffix(live)))
 
     def _restore_font(self):
         p = self.main.project

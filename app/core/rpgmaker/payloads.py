@@ -350,6 +350,221 @@ if (!window.__octopus_trInit) {
     }
   }
 
+  // ── автоперенос длинных строк под ширину окна ──
+  // Русский перевод в 1.5-2 раза длиннее японского оригинала, а окно
+  // сообщений RPG Maker слова само не переносит: длинные строки
+  // обрезаются за краем бокса. Переносим по словам с замером реальной
+  // ширины шрифтом окна. ТОЛЬКО диалоги/прокрутка: однострочные меню
+  // трогать нельзя (поедет вёрстка). Любая ошибка замера = старый
+  // текст без переноса (хуже не будет).
+  window.__octopus_trWrap = true;
+  var obCodeTokRe = /\\[A-Za-z]+\[[^\]]*\]|\\[A-Za-z]|\\[{}\\|.!^_\\]/g;
+
+  function obMeasureWidth(win, text) {
+    try {
+      var bmp = window.__octopus_measureBmp || null;
+      if (!bmp) {
+        bmp = new Bitmap(8, 8);
+        window.__octopus_measureBmp = bmp;
+      }
+      if (win && win.contents) {
+        try { bmp.fontFace = win.contents.fontFace; } catch (e1) {}
+        try { bmp.fontSize = win.contents.fontSize; } catch (e2) {}
+      }
+      return bmp.measureTextWidth(text);
+    } catch (e) { return -1; }
+  }
+
+  function obResolveNameCode(code) {
+    // \N[n]/\P[n] подставляем настоящими именами для замера
+    try {
+      var m = /\\([NP])\[(\d+)\]/.exec(code);
+      if (!m) return null;
+      var idx = parseInt(m[2], 10);
+      if (m[1] === "N" && window.$gameActors) {
+        var a = window.$gameActors.actor(idx);
+        if (a) return a.name();
+      }
+      if (m[1] === "P" && window.$gameParty) {
+        var mem = window.$gameParty.members();
+        if (mem && mem[idx - 1]) return mem[idx - 1].name();
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  function obPlainForMeasure(text) {
+    return text.replace(obCodeTokRe, function (code) {
+      var head = code.charAt(1);
+      if (head === "V" || head === "N" || head === "P") {
+        var resolved = obResolveNameCode(code);
+        // переменные неизвестны заранее: закладываемся с запасом,
+        // лучше перенести раньше, чем вылезти за край
+        return (resolved !== null && resolved !== undefined)
+          ? String(resolved) : "\u3042\u3042\u3042\u3042";
+      }
+      if (head === "I") return "  ";  // иконка ~32px
+      if (head === "G") {
+        try {
+          if (window.$dataSystem && window.$dataSystem.currencyUnit) {
+            return window.$dataSystem.currencyUnit;
+          }
+        } catch (e) {}
+        return "";
+      }
+      return "";
+    });
+  }
+
+  function obWrapLine(line, maxWidth, win) {
+    if (!line || maxWidth <= 0) return line;
+    // коды размера шрифта (\FS[n], \{, \}) меняют метрику на лету —
+    // такие строки не трогаем (как было, без регрессий)
+    if (/\\FS\[|\\[{}]/.test(line)) return line;
+    if (obMeasureWidth(win, obPlainForMeasure(line)) <= maxWidth) {
+      return line;  // влезает: поведение 1-в-1 как раньше
+    }
+    // токены: коды клеятся к следующему слову
+    var toks = [], tre = /(\\[A-Za-z]+\[[^\]]*\]|\\[A-Za-z]|\\[{}\\|.!^_\\]|[^\s\\]+|\s+)/g, m;
+    while ((m = tre.exec(line))) toks.push(m[0]);
+    var atoms = [], pend = "", i, t;
+    for (i = 0; i < toks.length; i++) {
+      t = toks[i];
+      if (t.charAt(0) === "\\") { pend += t; continue; }
+      if (/^\s+$/.test(t)) continue;  // пробелы-перегородки: join даст один
+      atoms.push({raw: pend + t, vis: t});
+      pend = "";
+    }
+    if (pend) {
+      if (atoms.length) atoms[atoms.length - 1].raw += pend;
+      else atoms.push({raw: pend, vis: ""});
+    }
+    // коды без слов — к соседям (состояние цвета должно сохраниться):
+    // ведущие — вперёд (красят следующий текст), хвостовые — назад
+    var clean = [], carry = "";
+    for (i = 0; i < atoms.length; i++) {
+      if (!atoms[i].vis) { carry += atoms[i].raw; continue; }
+      atoms[i].raw = carry + atoms[i].raw;
+      carry = "";
+      clean.push(atoms[i]);
+    }
+    if (carry) {
+      if (clean.length) clean[clean.length - 1].raw += carry;
+      else return line;  // одни коды без слов — нечего переносить
+    }
+    if (!clean.length) return line;
+    // жадная упаковка по измеренной ширине; мерим всегда через
+    // obPlainForMeasure (коды -> подстановки), иначе замеры упаковки
+    // и проверки разъедутся (напр. \V[1] = 0 против запаса 8)
+    var out = [], cur = [];
+    function curW(list) {
+      var raws = [];
+      for (var k = 0; k < list.length; k++) raws.push(list[k].raw);
+      return obMeasureWidth(win, obPlainForMeasure(raws.join(" ")));
+    }
+    function atomW(a) {
+      return obMeasureWidth(win, obPlainForMeasure(a.raw));
+    }
+    for (i = 0; i < clean.length; i++) {
+      var a = clean[i];
+      if (!cur.length && atomW(a) > maxWidth) {
+        // слово длиннее строки целиком (URL, CJK без пробелов):
+        // режем посимвольно, коды — на первый кусок
+        var chunks = obSplitAtom(a, maxWidth, win);
+        for (var c = 0; c < chunks.length - 1; c++) out.push([chunks[c]]);
+        cur = [chunks[chunks.length - 1]];
+        continue;
+      }
+      var trial = cur.concat([a]);
+      if (cur.length && curW(trial) > maxWidth) {
+        out.push(cur);
+        cur = [a];
+      } else {
+        cur = trial;
+      }
+    }
+    if (cur.length) out.push(cur);
+    if (out.length <= 1) return line;
+    var res = [];
+    for (i = 0; i < out.length; i++) {
+      var raws = [];
+      for (var k = 0; k < out[i].length; k++) raws.push(out[i][k].raw);
+      res.push(raws.join(" "));
+    }
+    return res.join("\n");
+  }
+
+  function obSplitAtom(atom, maxWidth, win) {
+    // делит переполненное слово посимвольно: [{raw,vis}...]
+    // ведущие коды — на первый кусок, хвостовые (сброс цвета) — на последний
+    var codeSrc = "\\\\[A-Za-z]+\\[[^\\]]*\\]|\\\\[A-Za-z]|\\\\[{}\\\\|.!^_\\\\]";
+    var lead = new RegExp("^((?:" + codeSrc + ")*)([\\s\\S]*)$").exec(atom.raw);
+    var prefix = lead ? lead[1] : "";
+    var rest = lead ? lead[2] : atom.vis;
+    var trail = new RegExp("((?:" + codeSrc + ")*)$").exec(rest);
+    var suffix = trail ? trail[1] : "";
+    var core = rest.slice(0, rest.length - suffix.length);
+    if (!core) return [atom];
+    // замер с префиксом: коды дают ширину подстановок (напр. \V[1])
+    var prePlain = obPlainForMeasure(prefix);
+    var chunks = [], curV = "";
+    for (var i = 0; i < core.length; i++) {
+      var trial = curV + core.charAt(i);
+      if (curV && obMeasureWidth(win, prePlain + trial) > maxWidth) {
+        chunks.push(curV);
+        curV = core.charAt(i);
+      } else {
+        curV = trial;
+      }
+    }
+    if (curV) chunks.push(curV);
+    if (!chunks.length) return [atom];
+    var out = [];
+    for (var j = 0; j < chunks.length; j++) {
+      out.push({raw: (j === 0 ? prefix : "")
+        + chunks[j] + (j === chunks.length - 1 ? suffix : ""),
+        vis: chunks[j]});
+    }
+    return out;
+  }
+
+  function obWrapForWindow(win, text) {
+    // точка входа из convertEscapeCharacters: только окна сообщений
+    try {
+      if (window.__octopus_trWrap === false) return text;
+      if (typeof text !== "string") return text;
+      var isMsg = false, isScroll = false;
+      try {
+        isMsg = (typeof Window_Message !== "undefined")
+          && (win instanceof Window_Message);
+        isScroll = !isMsg && (typeof Window_ScrollText !== "undefined")
+          && (win instanceof Window_ScrollText);
+      } catch (e) {}
+      if (!isMsg && !isScroll) return text;
+      var maxW = -1;
+      try { maxW = win.contentsWidth ? win.contentsWidth() : -1; } catch (e) {}
+      if (!(maxW > 0)) return text;
+      if (isMsg) {
+        // строка с портретом уже: текст начинается правее
+        try {
+          if (window.$gameMessage && window.$gameMessage.faceName
+              && window.$gameMessage.faceName()) {
+            maxW -= 168;
+          }
+        } catch (e) {}
+        if (!(maxW > 0)) return text;
+      }
+      var lines = String(text).split("\n"), i, changed = false, res = [];
+      for (i = 0; i < lines.length; i++) {
+        var w = obWrapLine(lines[i], maxW, win);
+        if (w !== lines[i]) changed = true;
+        res.push(w);
+      }
+      return changed ? res.join("\n") : text;
+    } catch (e) { return text; }
+  }
+  window.__octopus_trWrapForWindow = obWrapForWindow;
+
   var _trPoll = setInterval(function () {
     if (typeof Window_Base === "undefined"
         || typeof Bitmap === "undefined") return;
@@ -359,7 +574,12 @@ if (!window.__octopus_trInit) {
     trSafePatch(Window_Base.prototype.convertEscapeCharacters, function () {
       var obCvt = Window_Base.prototype.convertEscapeCharacters;
       Window_Base.prototype.convertEscapeCharacters = function (text) {
-        return obCvt.call(this, window.__octopus_trApply(text));
+        var translated = obCvt.call(this, window.__octopus_trApply(text));
+        // автоперенос под ширину окна — только диалоги/прокрутка
+        // (внутри obWrapForWindow проверяется тип окна)
+        return window.__octopus_trWrapForWindow
+          ? window.__octopus_trWrapForWindow(this, translated)
+          : translated;
       };
     });
     // имена акторов (меню, статусы, сообщения \N[x])
@@ -478,7 +698,7 @@ if (!window.__octopus_trInit) {
       405: [0]    // прокручиваемый текст
     };
     function obSplitKV(s) {
-      // `KEY = value` -> {head, val}, иначе null. Ключ — компактный
+      // «KEY = value» -> {head, val}, иначе null. Ключ — компактный
       // идентификатор без пробелов (зеркало parser._split_kv_line).
       if (typeof s !== "string") return null;
       var eq = s.indexOf("=");
@@ -491,7 +711,7 @@ if (!window.__octopus_trInit) {
     }
     function obApplyKVParam(ps, i) {
       // Целое совпадение — как обычно; иначе подмена только value-части
-      // (`KEY = value`): ключ, по которому плагин разбирает строку,
+      // («KEY = value»): ключ, по которому плагин разбирает строку,
       // остаётся байт-в-байт.
       var v = ps[i];
       if (typeof v !== "string") return;

@@ -28,8 +28,48 @@ import shutil
 
 from app.core.models import TranslationEntry
 
-# Теги, чей атрибут text="..." — видимый текст (переводим)
-_TEXT_ATTR_TAGS = {"link", "button", "ruby"}
+# Теги, чей атрибут text="..." — видимый текст (переводим).
+# glink — графические кнопки меню (TyranoBuilder), ptext/mtext —
+# позиционированный текст (заголовки/подписи меню), notice — всплывашки.
+# Без них меню с текстовыми (не нарисованными) кнопками не переводится.
+_TEXT_ATTR_TAGS = {"link", "button", "ruby", "glink", "ptext", "mtext",
+                   "notice"}
+
+# Ссылки на переменные в выражениях: f.x / tf.x / sf.x
+_DOTTED_RE = re.compile(r"\b(?:tf|f|sf)\.[A-Za-z_]\w*")
+_OP_RE = re.compile(r"[+\-*/%()\[\]]")
+_RE_STR_LIT = re.compile(r"'[^']*'|\"[^\"]*\"")
+
+
+def split_text_attr(text: str):
+    """Режим значения text=: как его переводить.
+
+    - ("plain", [("", text)]) — обычный текст целиком;
+    - ("expr", [(номер, литерал), ...]) — JS-выражение (&x + f.y[0]):
+      переводятся ТОЛЬКО строковые литералы, код не трогаем;
+    - ("skip", []) — чистый код (&f.item[35][1]): перевода нет.
+
+    Иначе переводчик калечит выражение ('affection' -> 'Привязанность'
+    внутри '+...+f.x[0]') и меню показывает артефакты с кодом.
+    """
+    s = text.strip()
+    if s.startswith("&"):
+        expr = True
+    elif s.startswith("%") and (_DOTTED_RE.search(s) or "[" in s):
+        expr = True
+    elif ("'" in s or '"' in s) and _DOTTED_RE.search(s):
+        expr = True
+    elif ("'" not in s and '"' not in s) and _DOTTED_RE.search(s) \
+            and _OP_RE.search(s):
+        return "skip", []
+    else:
+        return "plain", [("", text)]
+    lits = [(i, m.group(0)[1:-1])
+            for i, m in enumerate(_RE_STR_LIT.finditer(s))]
+    real = [(i, lit) for i, lit in lits if lit.strip()]
+    if not real:
+        return "skip", []
+    return "expr", real
 
 # Блочные теги JS-кода: содержимое между ними не переводится
 _SCRIPT_BLOCK_OPEN = {"iscript", "script"}
@@ -226,15 +266,26 @@ class _Extractor:
                         [t for t in tokens if t[0] == "tag"])
 
     def _tag_texts(self, file: str, rel: str, n: int, tags: list):
-        """text="..." у link/button/ruby (стиль [link text="..."])."""
+        """text="..." у link/button/ruby/glink/ptext/... Выражения
+        (&x + f.y[0]) делятся на литералы: код не переводим."""
         for k, (_kind, tag) in enumerate(tags):
-            if _tag_name(tag) not in _TEXT_ATTR_TAGS:
+            name = _tag_name(tag)
+            if name not in _TEXT_ATTR_TAGS:
                 continue
             attrs = _tag_attrs(tag)
             text = attrs.get("text")
-            if text:
+            if not text:
+                continue
+            kind, parts = split_text_attr(text)
+            if kind == "skip":
+                continue
+            if kind == "plain":
                 self.add(file, f"line[{n}].tag[{k}].text",
-                         f"{rel}:{n} {_tag_name(tag)}", text)
+                         f"{rel}:{n} {name}", text)
+            else:
+                for li, lit in parts:
+                    self.add(file, f"line[{n}].tag[{k}].text#{li}",
+                             f"{rel}:{n} {name} str", lit)
 
 
 def extract(game_dir: str) -> list[TranslationEntry]:
@@ -288,7 +339,8 @@ def _is_var_safe(original: str, translation: str) -> bool:
 
 # ── внедрение ──
 
-_PATH_RE = re.compile(r"line\[(\d+)\](?:\.seg\[(\d+)\]|\.tag\[(\d+)\]\.text)?")
+_PATH_RE = re.compile(
+    r"line\[(\d+)\](?:\.seg\[(\d+)\]|\.tag\[(\d+)\]\.text(?:#(\d+))?)?")
 
 
 def apply(game_dir: str, entries: list[TranslationEntry],
@@ -340,8 +392,10 @@ def apply(game_dir: str, entries: list[TranslationEntry],
                 new_line, ok = _replace_seg(line, int(m.group(2)),
                                             e.original, e.translation)
             elif m.group(3) is not None:
+                lit = int(m.group(4)) if m.group(4) is not None else None
                 new_line, ok = _replace_tag_attr(line, int(m.group(3)),
-                                                 e.original, e.translation)
+                                                 e.original, e.translation,
+                                                 lit=lit)
             else:
                 ok = False
                 if line.strip() == e.original:
@@ -446,9 +500,42 @@ def _replace_seg(line: str, seg_idx: int, original: str,
     return "".join(v for _k, v in tokens), True
 
 
+def is_tag_translation_safe(translation: str) -> bool:
+    """Можно ли класть перевод в text="..." без поломки меню.
+
+    Внутри атрибута смертельны: переводы строк (рвут .ks) и
+    неразрешимый конфликт кавычек (нечем обрамить значение —
+    кнопка/строка исчезнет). Скобки [ ] безопасны: парсер движка
+    (как и наш) учитывает кавычки — в рабочем патче сотни text=
+    со скобками. Одиночная " решается сменой обрамления на '...'.
+    """
+    if "\n" in translation or "\r" in translation:
+        return False
+    if '"' in translation and "'" in translation:
+        return False
+    return True
+
+
+_RE_TEXT_ATTR = re.compile(
+    r'(?<![\w-])text\s*=\s*("[^"]*"|\'[^\']*\')')
+
+
 def _replace_tag_attr(line: str, tag_idx: int, original: str,
-                      translation: str) -> tuple[str, bool]:
-    """Заменяет text="..." у tag_idx-го тега (0-based)."""
+                         translation: str,
+                         lit: int | None = None) -> tuple[str, bool]:
+    """Заменяет text="..." у tag_idx-го тега (0-based).
+
+    lit — номер строкового литерала внутри выражения
+    (&'...' + f.x[0]): заменяется только литерал, код вокруг цел.
+    Без lit — весь text целиком.
+
+    Кавычки обрамления подбираются под перевод: если в нём есть ",
+    значение пишется в '...'. Небезопасный перевод (переводы строк /
+    двойной конфликт кавычек) не пишется вовсе — меню остаётся
+    на исходном языке, но целое.
+    """
+    if not is_tag_translation_safe(translation):
+        return line, False
     tokens = _split_tokens(line)
     tag_count = 0
     for i, (kind, value) in enumerate(tokens):
@@ -460,14 +547,56 @@ def _replace_tag_attr(line: str, tag_idx: int, original: str,
         if _tag_name(value) not in _TEXT_ATTR_TAGS:
             return line, False
         attrs = _tag_attrs(value)
-        if attrs.get("text") != original:
+        cur = attrs.get("text")
+        if cur is None:
             return line, False
-        # точная замена внутри атрибута
-        new_tag = _RE_ATTR.sub(
-            lambda m: (f"{m.group(1)}={m.group(2)}"
-                       if m.group(1) != "text"
-                       else f'{m.group(1)}="{translation}"'),
-            value)
+        if lit is None:
+            if cur != original:
+                return line, False
+            # точная замена внутри атрибута с безопасными кавычками
+            q = "'" if '"' in translation else '"'
+            new_tag, n = _RE_TEXT_ATTR.subn(
+                f"text={q}{translation}{q}", value, count=1)
+            if n != 1:
+                return line, False
+        else:
+            # замена lit-го непустого литерала внутри выражения
+            found = [(j, m) for j, m in
+                     enumerate(_RE_STR_LIT.finditer(cur))]
+            found = [(j, m) for j, m in found
+                     if m.group(0)[1:-1].strip()]
+            if lit < 0 or lit >= len(found):
+                return line, False
+            _j, m = found[lit]
+            if m.group(0)[1:-1] != original:
+                return line, False
+            # кавычки литерала: которых нет в переводе
+            q0 = m.group(0)[0]
+            q_lit = q0 if q0 not in translation else (
+                "'" if q0 == '"' else '"')
+            if q_lit in translation:
+                return line, False
+            start, end = m.span()
+            content = cur[:start] + q_lit + translation + q_lit + cur[end:]
+            # обрамление всего атрибута: которых нет в содержимом
+            if '"' not in content:
+                q_all = '"'
+            elif "'" not in content:
+                q_all = "'"
+            else:
+                return line, False
+            new_tag, n = _set_text_attr(value, q_all, content)
+            if n != 1:
+                return line, False
         tokens[i] = ("tag", new_tag)
         return "".join(v for _k, v in tokens), True
     return line, False
+
+
+def _set_text_attr(tag: str, quote: str, content: str) -> tuple[str, int]:
+    """Ставит text=<quote>content<quote> в тег. Возвращает (тег, число)."""
+    m = _RE_TEXT_ATTR.search(tag)
+    if not m:
+        return tag, 0
+    return (tag[:m.start()] + f"text={quote}{content}{quote}"
+            + tag[m.end():], 1)

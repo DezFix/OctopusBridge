@@ -17,12 +17,14 @@ import time
 
 from app.core import process as proc
 from app.transport.cdp import browser
-from app.transport.cdp.client import CDPClient, CDPError
-from app.core.tentacles.cdp_base import CDPTentacle
+from app.core.tentacles.cdp_base import (
+    CDPTentacle, DEFAULT_SCAN_PORTS, bruteforce_port,
+    cdp_page_is_game,
+    probe_game_port as _base_probe,
+)
 
-# Кандидаты портов для сканирования (как у RPG Maker)
-SCAN_PORTS = [9222, 9229, 9333] + list(range(9000, 9101)) + \
-    list(range(26000, 26051))
+# Кандидаты портов для сканирования (алиас общей константы из cdp_base)
+SCAN_PORTS = DEFAULT_SCAN_PORTS
 
 # признак страницы Tyrano
 _TYRANO_PROBE = ("!!(window.kag && window.kag.variables) || "
@@ -217,54 +219,15 @@ class TyranoTentacle(CDPTentacle):
         return self._pid if self._pid else None
 
 
-# ── Поиск порта для attach ──
+# ── Поиск порта для attach (тонкие обёртки над cdp_base) ──
 
 def probe_game_port(pid: int) -> int:
-    exe = proc.exe_of(pid)
-    game_dir = os.path.dirname(exe) if exe else ""
-    port = proc.debug_port_from_cmdline(proc.cmdline_of(pid))
-    if port:
-        return port
-    port = browser.port_from_devtools_file(exe, game_dir)
-    if port:
-        return port
-    return _bruteforce_port(pid)
+    return _base_probe(pid, SCAN_PORTS, _port_is_tyrano)
 
 
 def _bruteforce_port(pid: int) -> int:
-    candidates = browser.scan_ports(SCAN_PORTS)
-    if not candidates:
-        time.sleep(2.0)
-        candidates = browser.scan_ports(SCAN_PORTS)
-    for port in candidates:
-        if _port_is_tyrano(port, pid):
-            return port
-    return 0
+    return bruteforce_port(pid, SCAN_PORTS, _port_is_tyrano)
 
 
 def _port_is_tyrano(port: int, pid: int) -> bool:
-    target = browser.pick_page_target(port, ".html")
-    if not target:
-        return False
-    client = CDPClient()
-    if not client.connect(target["webSocketDebuggerUrl"]):
-        return False
-    try:
-        client.call("Runtime.enable")
-        ok, val = client.evaluate(_TYRANO_PROBE)
-        if not (ok and val is True):
-            return False
-        try:
-            info = client.call("SystemInfo.getProcessInfo", timeout=3)
-            procs = info.get("processInfo") or []
-            browser_pid = next((p.get("id") for p in procs
-                                if p.get("type") == "browser"), None)
-            if browser_pid is not None:
-                return int(browser_pid) == int(pid)
-        except CDPError:
-            pass
-        return True
-    except CDPError:
-        return False
-    finally:
-        client.close()
+    return cdp_page_is_game(port, pid, _TYRANO_PROBE)

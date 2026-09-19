@@ -19,15 +19,19 @@ import time
 
 from app.core import process as proc
 from app.transport.cdp import browser
-from app.transport.cdp.client import CDPClient, CDPError
-from app.core.tentacles.cdp_base import CDPTentacle
+from app.core.tentacles.cdp_base import (
+    CDPTentacle, DEFAULT_SCAN_PORTS, bruteforce_port,
+    cdp_page_is_game,
+    probe_game_port as _base_probe,
+)
+from app.core.translate.service import build_tr_dict  # noqa: F401 — реэкспорт
 from app.core.rpgmaker import mv_bridge
 from app.core.rpgmaker import variant as rpgm_variant
 from app.core.rpgmaker.payloads import PAYLOAD, _TRANSLATION_PAYLOAD
 
-# Кандидаты портов для сканирования
-SCAN_PORTS = [9222, 9229, 9333] + list(range(9000, 9101)) + \
-    list(range(26000, 26051))
+# Кандидаты портов для сканирования (алиас общей константы из cdp_base;
+# оставлено для совместимости импортов).
+SCAN_PORTS = DEFAULT_SCAN_PORTS
 
 # признак страницы RPG Maker / NW.js
 _RPGM_PROBE = ("!!(window.$gameMessage || window.$dataSystem || "
@@ -35,23 +39,8 @@ _RPGM_PROBE = ("!!(window.$gameMessage || window.$dataSystem || "
 
 # PAYLOAD и _TRANSLATION_PAYLOAD — в app.core.rpgmaker.payloads
 # (ядро без Qt; здесь реэкспорт для совместимости).
-
-
-def build_tr_dict(entries) -> dict:
-    """Словарь original->translation для live-перевода (пустые пропущены)."""
-    tr: dict = {}
-    for e in entries:
-        if isinstance(e, dict):
-            orig = e.get("original", "")
-            text = e.get("translation", "") or ""
-            status = e.get("status", "")
-        else:
-            orig = getattr(e, "original", "")
-            text = getattr(e, "translation", "") or ""
-            status = getattr(e, "status", "")
-        if orig and text.strip() and status != "skip":
-            tr[orig] = text
-    return tr
+# build_tr_dict — канонический из app.core.translate.service
+# (здесь реэкспорт для совместимости: from ...tentacle import build_tr_dict).
 
 
 def _nwjs_profile_dirs(game_dir: str) -> list[str]:
@@ -266,7 +255,27 @@ class RpgMakerTentacle(CDPTentacle):
                 self.log.emit(
                     f"Игра запущена без отладки (pid {pid}) — закрываю "
                     "и запускаю заново с отладочным портом.")
-            if not proc.terminate(pid, timeout=5.0):
+            # Защита от убийства чужого процесса: PID мог переиспользоваться
+            # ОС между find_game_processes и terminate, либо exe уже другой
+            # (обновление/перезапись). Сверяем живой exe path с папкой нашей
+            # игры; сомневаемся — только log, terminate не зовём. Второй
+            # рубеж — сам proc.terminate(expected_dir=...) сверяет exe/cmdline
+            # через psutil перед убийством.
+            _live_exe = proc.exe_of(pid)
+            if not _live_exe or not os.path.normpath(
+                    _live_exe).lower().startswith(norm_dir):
+                self.log.emit(
+                    f"PID {pid} больше не принадлежит игре "
+                    f"({_live_exe or 'нет exe'}) — не завершаю, "
+                    "запускаю новый экземпляр.")
+                break
+            try:
+                _killed = proc.terminate(
+                    pid, timeout=5.0, expected_dir=game_dir)
+            except TypeError:
+                # мок в старых тестах без expected_dir — старый вызов
+                _killed = proc.terminate(pid, timeout=5.0)
+            if not _killed:
                 self.error.emit(
                     "Не удалось закрыть уже запущенную игру. "
                     "Закройте её вручную и нажмите «Запустить» снова.")
@@ -312,15 +321,17 @@ class RpgMakerTentacle(CDPTentacle):
             # «кнопка не работает» (окно вспыхнуло и закрылось).
             # Такое бывает при --disable-devtools в package.json
             # (обе лабораторные игры) — порт просто не поднимается.
-            # attached НЕ эмитим (читов нет), но возвращаем True:
-            # _pid/_proc сохранены для watchdog, welcome_tab покажет
-            # «запущена без читов» и кнопку «Стоп».
+            # Честно: читов нет => attached не эмитим и возвращаем False,
+            # чтобы UI показал ошибку, а не «подключено». Игра остаётся
+            # запущенной (перевод через файлы работает).
             self.log.emit(
                 "Отладчик недоступен (в package.json есть "
                 "--disable-devtools?) — игра остаётся запущенной, "
-                "перевод работает через ob_runtime.js, "
-                "читы недоступны до перезапуска с отладкой.")
-            return True
+                "перевод работает через ob_runtime.js.")
+            self.error.emit(
+                "Запущено без читов (нет debug-порта): игра осталась "
+                "запущенной, читы недоступны до перезапуска с отладкой.")
+            return False
         return True
 
     def _launch_mv(self, port: int) -> bool:
@@ -343,12 +354,14 @@ class RpgMakerTentacle(CDPTentacle):
         if self._connect_page(port, url_hint=".html", wait=10.0):
             self.log.emit("Подключено через CDP (расширенная сборка).")
             return True
+        # Честно: моста и CDP нет => читы недоступны, attached не эмитим.
         self.log.emit(
             "Игра запущена без отладки: официальный рантайм MV "
-            "не поддерживает remote debugging. Читы заработают после "
-            "перезапуска через OctopusBridge; перевод применяется "
-            "напрямую к файлам игры.")
-        return True
+            "не поддерживает remote debugging.")
+        self.error.emit(
+            "Запущено без читов (нет debug-порта и моста MV): игра "
+            "осталась запущенной, перевод применяется к файлам игры.")
+        return False
 
     def attach(self, pid: int) -> bool:
         # MV: мост может быть уже поднят (игра запущена с нашим плагином)
@@ -667,54 +680,15 @@ class RpgMakerTentacle(CDPTentacle):
         return None
 
 
-# ── Поиск порта ──
+# ── Поиск порта (тонкие обёртки над cdp_base; логика одна) ──
 
 def probe_game_port(pid: int) -> int:
-    exe = proc.exe_of(pid)
-    game_dir = os.path.dirname(exe) if exe else ""
-    port = proc.debug_port_from_cmdline(proc.cmdline_of(pid))
-    if port:
-        return port
-    port = browser.port_from_devtools_file(exe, game_dir)
-    if port:
-        return port
-    return _bruteforce_port(pid)
+    return _base_probe(pid, SCAN_PORTS, _port_is_rpgm_game)
 
 
 def _bruteforce_port(pid: int) -> int:
-    candidates = browser.scan_ports(SCAN_PORTS)
-    if not candidates:
-        time.sleep(2.0)
-        candidates = browser.scan_ports(SCAN_PORTS)
-    for port in candidates:
-        if _port_is_rpgm_game(port, pid):
-            return port
-    return 0
+    return bruteforce_port(pid, SCAN_PORTS, _port_is_rpgm_game)
 
 
 def _port_is_rpgm_game(port: int, pid: int) -> bool:
-    target = browser.pick_page_target(port, ".html")
-    if not target:
-        return False
-    client = CDPClient()
-    if not client.connect(target["webSocketDebuggerUrl"]):
-        return False
-    try:
-        client.call("Runtime.enable")
-        ok, val = client.evaluate(_RPGM_PROBE)
-        if not (ok and val is True):
-            return False
-        try:
-            info = client.call("SystemInfo.getProcessInfo", timeout=3)
-            procs = info.get("processInfo") or []
-            browser_pid = next((p.get("id") for p in procs
-                                if p.get("type") == "browser"), None)
-            if browser_pid is not None:
-                return int(browser_pid) == int(pid)
-        except CDPError:
-            pass
-        return len(proc.find_game_processes("rpgmaker")) <= 1
-    except CDPError:
-        return False
-    finally:
-        client.close()
+    return cdp_page_is_game(port, pid, _RPGM_PROBE, engine_key="rpgmaker")
