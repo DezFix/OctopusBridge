@@ -272,6 +272,10 @@ class MemoryPullWorker(QThread):
     (TM thread-safe). Движок не используется. Возвращает
     {"results": {id: translation}, "total": N, "imported": n}."""
 
+    # Отпечаток папки проектов с прошлого запуска: повторные нажатия
+    # без новых/изменённых .ob.json пропускают import (только bulk-поиск).
+    _last_fprint: dict[str, tuple] = {}
+
     done = Signal(object)
     failed = Signal(str)
 
@@ -287,7 +291,21 @@ class MemoryPullWorker(QThread):
 
     def run(self):
         try:
-            imported = self._tm.import_projects(self._projects_dir)
+            # import_projects — только если папка проектов изменилась
+            # с прошлого раза (дешёвый listdir+stat, без чтения).
+            # Повторные нажатия идут сразу в bulk-поиск по TM.
+            try:
+                from app.core.translate.memory import TranslationMemory
+                fprint = TranslationMemory.projects_fingerprint(
+                    self._projects_dir)
+            except Exception:  # noqa: BLE001
+                fprint = None
+            if fprint is None or fprint != MemoryPullWorker._last_fprint.get(
+                    self._projects_dir):
+                imported = self._tm.import_projects(self._projects_dir)
+                MemoryPullWorker._last_fprint[self._projects_dir] = fprint
+            else:
+                imported = 0
             if self.isInterruptionRequested():
                 return
             from types import SimpleNamespace

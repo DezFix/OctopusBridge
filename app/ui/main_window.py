@@ -297,50 +297,7 @@ class MainWindow(QMainWindow):
             except (OSError, ValueError, KeyError, TypeError):
                 self.project = Project(game_dir=game_dir, engine=engine)
 
-        # ── автоподхват памяти (TM): только tm.get по снапшоту ──
-        # Без import_projects (тяжёлый обход всех *.ob.json) и без движка:
-        # только точные/норм-совпадения из уже загруженной tm2.
-        # Лимит 2000 записей за раз, чтобы не фризить открытие.
-        # Битая tm2 не роняет открытие — всё за try/except.
-        _mem_hits = 0
-        try:
-            tm = getattr(self, "tm", None)
-            entries = getattr(self.project, "entries", None) or []
-            if tm is not None and entries:
-                from app.core.translate.service import _resolve_src as _mem_resolve
-                src = getattr(self.project, "source_lang", "auto") or "auto"
-                tgt = getattr(self.project, "target_lang", "ru") or "ru"
-                for e in list(entries[:2000]):
-                    try:
-                        if e.translation.strip() or e.status == "skip":
-                            continue
-                        if not (e.original or "").strip():
-                            continue
-                        lang = _mem_resolve(e.original, src, tgt)
-                        if not lang:
-                            continue
-                        hit = tm.get(e.original, lang, tgt)
-                        if hit:
-                            e.translation = hit
-                            e.status = "translated"
-                            _mem_hits += 1
-                    except Exception:  # noqa: BLE001 — одна строка не роняет prefill
-                        continue
-                if _mem_hits:
-                    try:
-                        self.save_project()
-                    except Exception:  # noqa: BLE001
-                        pass
-        except Exception:  # noqa: BLE001 — битая tm2 не роняет открытие
-            _mem_hits = 0
-
         self.refresh_all()
-
-        try:
-            if _mem_hits > 0 and hasattr(self, "status_bar"):
-                self.status_bar.set_task(TR("sb_memory", n=_mem_hits))
-        except Exception:  # noqa: BLE001
-            pass
 
         self._add_recent(game_dir, engine)
 

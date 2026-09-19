@@ -305,7 +305,10 @@ class Translator:
         """
         if not self.tm:
             return 0
-        n = 0
+        # Группируем по реальному языку строки и тянем PACKETом
+        # (lookup_many: один проход, один коммит). Поштучный tm.get()
+        # с commit на хит здесь запрещён — 3000 строк вешали GUI.
+        groups: dict[str, list] = {}
         for e in entries:
             if e.translation.strip() or e.status == "skip":
                 continue
@@ -314,24 +317,27 @@ class Translator:
             lang = _resolve_src(e.original, src_lang, tgt_lang)
             if not lang:
                 continue
-            hit = self.tm.get(e.original, lang, tgt_lang)
-            if hit is None and lang != src_lang:
-                #declared пара может отличаться (en vs auto)
-                try:
-                    hit = self.tm.get(e.original, src_lang, tgt_lang)
-                except Exception:
-                    hit = None
-            if hit is None:
-                #reuse между проектами с разным source_lang:
-                #тот же таргет, строка та же — перевод забираем
-                try:
-                    hit = self.tm.get_any_src(e.original, tgt_lang)
-                except Exception:
-                    hit = None
-            if hit:
-                e.translation = hit
-                e.status = "translated"
-                n += 1
+            groups.setdefault(lang, []).append(e)
+        n = 0
+        for lang, group in groups.items():
+            if self.cancelled:
+                break
+            found = self.tm.lookup_many(
+                [e.original for e in group], lang, tgt_lang)
+            if lang != src_lang:
+                missing = [e.original for e in group if e.original not in found]
+                if missing:
+                    try:
+                        extra = self.tm.lookup_many(missing, src_lang, tgt_lang)
+                    except Exception:
+                        extra = {}
+                    found.update(extra)
+            for e in group:
+                hit = found.get(e.original)
+                if hit:
+                    e.translation = hit
+                    e.status = "translated"
+                    n += 1
         return n
 
     def translate_entries(

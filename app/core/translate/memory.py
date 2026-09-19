@@ -165,6 +165,86 @@ class TranslationMemory:
             ).fetchone()
         return row[0] if row else None
 
+    def lookup_many(self, sources: list[str], src_lang: str,
+                      tgt_lang: str) -> dict[str, str]:
+        """Пакетный поиск для prefill: один проход, один коммит.
+
+        Для каждой строки: точное совпадение -> норм -> любой src
+        (тот же tgt). Счётчик hits инкрементируется одним UPDATE
+        в конце, а не commit на строку (иначе 3000 строк = 3000
+        fsync и секунды виса). Возвращает {original: target}."""
+        out: dict[str, str] = {}
+        if not sources:
+            return out
+        norms = [normalize_source(s) for s in sources]
+        hit_norms: set[tuple[str, str]] = set()
+        with self._lock:
+            for s, norm in zip(sources, norms):
+                if not norm or s in out:
+                    continue
+                row = self.db.execute(
+                    "SELECT target FROM tm2 WHERE source=? AND src_lang=?"
+                    " AND tgt_lang=?",
+                    (s, src_lang, tgt_lang),
+                ).fetchone()
+                if row:
+                    out[s] = row[0]
+                    hit_norms.add((norm, src_lang))
+                    continue
+                row = self.db.execute(
+                    "SELECT target FROM tm2 WHERE norm_source=?"
+                    " AND src_lang=? AND tgt_lang=?",
+                    (norm, src_lang, tgt_lang),
+                ).fetchone()
+                if row:
+                    out[s] = row[0]
+                    hit_norms.add((norm, src_lang))
+                    continue
+                row = self.db.execute(
+                    "SELECT target FROM tm2 WHERE norm_source=? AND tgt_lang=?"
+                    " LIMIT 1",
+                    (norm, tgt_lang),
+                ).fetchone()
+                if row:
+                    out[s] = row[0]
+            if hit_norms:
+                self.db.executemany(
+                    "UPDATE tm2 SET hits=hits+1 WHERE norm_source=?"
+                    " AND src_lang=?",
+                    list(hit_norms),
+                )
+                self.db.commit()
+        return out
+
+    @staticmethod
+    def projects_fingerprint(projects_dir: str) -> tuple[int, float, int]:
+        """Дешёвый отпечаток папки проектов (без чтения файлов).
+
+        (число .ob.json, max mtime, суммарный размер). Повторное
+        нажатие «Подтянуть» с тем же отпечатком пропускает
+        import_projects — только быстрый bulk-поиск по TM.
+        """
+        count = 0
+        max_mtime = 0.0
+        total = 0
+        try:
+            names = os.listdir(projects_dir)
+        except OSError:
+            return (0, 0.0, 0)
+        for name in names:
+            if not name.endswith(".ob.json"):
+                continue
+            p = os.path.join(projects_dir, name)
+            try:
+                st = os.stat(p)
+            except OSError:
+                continue
+            count += 1
+            total += st.st_size
+            if st.st_mtime > max_mtime:
+                max_mtime = st.st_mtime
+        return (count, max_mtime, total)
+
     def get_fuzzy(
         self,
         source: str,
