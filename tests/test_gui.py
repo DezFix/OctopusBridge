@@ -24,6 +24,7 @@ from app.engines.rpgmaker import RpgMakerModule
 from app.engines.renpy import RenPyModule
 from app.engines.twine import TwineModule
 from app.engines.tyrano import TyranoModule
+from app.engines.unity import UnityModule
 from app.engines.wolf import WolfModule
 from app.ui.i18n import TR
 from app.ui.main_window import MainWindow
@@ -79,7 +80,7 @@ def make_wolf(root: str) -> None:
 
 print("1) Реестр движков...")
 assert MODULES == [AjinModule, RpgMakerModule, RenPyModule, TwineModule,
-                   TyranoModule, WolfModule]
+                   TyranoModule, WolfModule, UnityModule]
 with tempfile.TemporaryDirectory() as td:
     make_rpgm(td, "mv")
     mod = detect_engine(td)

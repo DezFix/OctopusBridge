@@ -1143,8 +1143,8 @@ _STRINGS = {
         "en": "Teleport to event",
     },
     "map_player_map": {
-        "ru": "Текущая карта игрока: #{map_id}",
-        "en": "Player current map: #{map_id}",
+        "ru": "Текущая карта игрока: #{map_id} ({x}, {y})",
+        "en": "Player current map: #{map_id} ({x}, {y})",
     },
     "map_ctx_teleport": {
         "ru": "Телепорт сюда",

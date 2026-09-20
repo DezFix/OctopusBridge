@@ -1,0 +1,62 @@
+# -*- coding: utf-8 -*-
+"""Модуль Unity (Mono/IL2CPP) — детект, извлечение и внедрение.
+
+Текст лежит в .assets/.bundle/.resource (TextAsset, MonoBehaviour,
+TextMesh/GUIText) — парсинг через UnityPy (см. app/core/unity/parser.py,
+ленивый импорт; без UnityPy extract -> [], apply -> no-unitypy).
+Читов нет (нативного канала к процессу Unity нет, вкладка только
+translate); шрифт — будущий font-patch (заглушка font_patch()).
+"""
+from __future__ import annotations
+
+from app.engines.base import EngineModule
+from app.ui.i18n import TR
+
+
+class UnityModule(EngineModule):
+    key = "unity"
+    title = "Unity"
+    variant = ""
+    features = {"file-translation", "font-patch"}
+
+    @classmethod
+    def detect(cls, game_dir: str) -> int:
+        from app.core.unity import parser
+        return parser.detect(game_dir)
+
+    def __init__(self, game_dir: str):
+        self.game_dir = game_dir
+
+    @property
+    def display(self) -> str:
+        return "Unity"
+
+    def extract(self, game_dir: str) -> list:
+        from app.core.unity import parser
+        return parser.extract(game_dir)
+
+    def apply(self, game_dir: str, entries: list, **kwargs) -> dict:
+        from app.core.unity import parser
+        # target_lang приходит из проекта (Project.target_lang через UI),
+        # по умолчанию — 'ru' (контракт как у WolfModule).
+        return parser.apply(game_dir, entries,
+                            target_lang=kwargs.get("target_lang", "ru"))
+
+    def font_patch(self, game_dir: str = "", **kwargs) -> dict:
+        """Заглушка замены шрифта (Font x2 в resources/sharedassets0).
+
+        Реальный патч TMP/Unity-Font — TODO; пока честно отвечаем,
+        что ничего не сделано, чтобы UI не врал о «готово».
+        """
+        _ = (game_dir, kwargs)
+        return {"patched": False, "reason": "todo"}
+
+    def file_view(self, game_dir: str):
+        from app.core.rpgmaker.fileview import DiskFileView
+        return DiskFileView(game_dir)
+
+    def ui_tabs(self, main_window) -> list[tuple]:
+        translate = main_window.translate_tab
+        return [
+            (translate, TR("tab_translate"), "translate"),
+        ]

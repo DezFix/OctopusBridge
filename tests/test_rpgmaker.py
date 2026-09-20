@@ -1924,4 +1924,185 @@ else:
 print("   OK")
 
 print()
+print("61) Телепорт: JS с reserveTransfer(mapId,x,y) + запрет в бою...")
+_tp61 = RpgMakerTentacle._cheat_expr("teleport", mapId=3, x=1, y=2)
+assert _tp61 is not None and "reserveTransfer" in _tp61, _tp61
+assert "3, 1, 2" in _tp61, _tp61
+assert "$gameParty.inBattle()" in _tp61, "телепорт обязан блокироваться в бою"
+assert "=>" not in _tp61, "чит обязан быть ES5 (старый NW.js MV)"
+assert RpgMakerTentacle._cheat_expr("teleport", mapId=1, x=0, y=0) is not None
+assert RpgMakerTentacle._cheat_expr("teleport_nope") is None
+# send_cheat("teleport", mapId=.., x=.., y=..) как шлёт map_tab:
+# тот же JS уходит в evaluate, ack ok
+_t61 = RpgMakerTentacle()
+_seen61, _ack61 = {}, []
+_t61.cheat_ack.connect(lambda *a: _ack61.append(a))
+_t61.evaluate = lambda expr, await_promise=False, timeout=15.0: (
+    _seen61.update(expr=expr) or True, "teleported")
+assert _t61.send_cheat("teleport", mapId=3, x=1, y=2) is True
+assert _ack61 and _ack61[0][0] == "teleport" and _ack61[0][1] is True, _ack61
+assert "reserveTransfer" in _seen61.get("expr", "") \
+    and "3, 1, 2" in _seen61.get("expr", ""), _seen61.get("expr")
+print("   OK")
+
+print()
+print("62) State: request_state достаёт mapId/playerX/playerY "
+      "(CDP-строка, мост-строка, binding-push)...")
+_fake62 = {"type": "state", "gold": 500, "mapId": 7, "playerX": 12,
+           "playerY": 9, "party": [], "items": [],
+           "variables": [0, 5], "switches": [False, True]}
+_wire62 = json.dumps(_fake62, ensure_ascii=False)
+# CDP-ветка: evaluate("JSON.stringify(...)") возвращает str
+_t62 = RpgMakerTentacle()
+_got62, _expr62 = {}, []
+_t62.state_received.connect(lambda d: _got62.update(d=d))
+
+
+def _eval62(expr, await_promise=False, timeout=15.0):
+    _expr62.append(expr)
+    return True, _wire62
+
+
+_t62.evaluate = _eval62
+assert _t62.request_state() is True
+# запрос идёт через коллектор пейлоада, а не произвольный JS
+assert _expr62 and "__octopus_collectState" in _expr62[0], _expr62
+_d62 = _got62.get("d")
+assert isinstance(_d62, dict), _d62
+assert _d62.get("mapId") == 7, _d62
+assert _d62.get("playerX") == 12 and _d62.get("playerY") == 9, _d62
+# HTTP-мост: bridge_eval тоже отдаёт str (двойной JSON) — тот же путь
+_t62m = RpgMakerTentacle()
+_got62m = {}
+_t62m.state_received.connect(lambda d: _got62m.update(d=d))
+_t62m.evaluate = lambda expr, await_promise=False, timeout=15.0: (
+    True, _wire62)
+assert _t62m.request_state() is True
+assert _got62m.get("d", {}).get("playerX") == 12, _got62m.get("d")
+# push из игры (binding/console, type=state) — тот же словарь
+_t62p = RpgMakerTentacle()
+_got62p = {}
+_t62p.state_received.connect(lambda d: _got62p.update(d=d))
+_t62p._handle_raw_message(_wire62)
+assert _got62p.get("d", {}).get("mapId") == 7 \
+    and _got62p.get("d", {}).get("playerY") == 9, _got62p.get("d")
+# пейлоад реально шлёт эти поля (источник правды для UI)
+from app.core.rpgmaker.payloads import PAYLOAD as _PAY62
+for _m62 in ("__octopus_collectState", 'type: "state"', "mapId",
+             "playerX", "playerY"):
+    assert _m62 in _PAY62, _m62
+print("   OK")
+
+print()
+print("63) Читы: все команды UI (cheat/map вкладки) маппятся в JS...")
+_cmds63 = [
+    ("gold_set", {"value": 100}), ("gold_add", {"value": -1000}),
+    ("game_speed", {"value": 2}), ("heal_all", {}), ("clear_states", {}),
+    ("win_battle", {}), ("through", {"value": True}),
+    ("click_tp", {"value": False}), ("speed", {"value": 4}),
+    ("reload_map", {}), ("open_menu", {}), ("open_items", {}),
+    ("open_skills", {}), ("open_equip", {}), ("open_status", {}),
+    ("open_save", {}), ("open_load", {}), ("open_options", {}),
+    ("open_gameend", {}),
+    ("give_item", {"kind": "weapon", "id": 3, "count": 1}),
+    ("var_set", {"index": 2, "value": "x"}),
+    ("switch_set", {"index": 7, "value": True}),
+    ("actor_set", {"actorId": 1, "field": "level", "value": 5}),
+    ("teleport", {"mapId": 3, "x": 1, "y": 2}),
+]
+for _c63, _k63 in _cmds63:
+    _e63 = RpgMakerTentacle._cheat_expr(_c63, **_k63)
+    assert _e63, f"{_c63} {_k63} не маппится (unknown cmd)"
+    assert "=>" not in _e63, _c63
+assert RpgMakerTentacle._cheat_expr("no_such_cheat") is None
+assert RpgMakerTentacle._cheat_expr("var_set", index=2, value="x") == \
+    '$gameVariables.setValue(2, "x")'
+assert RpgMakerTentacle._cheat_expr("switch_set", index=7, value=True) == \
+    "$gameSwitches.setValue(7, true)"
+print("   OK:", len(_cmds63), "команд")
+
+print()
+print("64) Позиция игрока: подпись карты с координатами, плейсхолдеры "
+      "подставляются через kwargs (не TR().format())...")
+from app.ui.i18n import TR as _TR64
+from app.ui.map_tab import player_map_label as _lbl64
+_s64 = _TR64("map_player_map", map_id=7, x=12, y=9)
+assert "7" in _s64 and "12" in _s64 and "9" in _s64, _s64
+assert _lbl64({"mapId": 7, "playerX": 12, "playerY": 9}) == _s64
+assert _lbl64({"mapId": 3}) != "" and "#3" in _lbl64({"mapId": 3}), \
+    _lbl64({"mapId": 3})
+assert _lbl64({}) == "" and _lbl64(None) == "" \
+    and _lbl64({"playerX": 1}) == ""
+print("   OK:", _s64)
+
+print()
+print("65) Вкладка карт: клик по пустой клетке -> teleport, "
+      "state показывает карту+позицию и открывает карту игрока...")
+import os as _os65
+_os65.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+from PySide6.QtCore import QObject as _QObject65, Signal as _Signal65
+from PySide6.QtWidgets import QApplication as _QA65
+_qapp65 = _QA65.instance() or _QA65([])
+from PySide6.QtWidgets import QMessageBox as _MB65
+_MB65.information = staticmethod(lambda *a, **k: _MB65.Ok)
+from app.ui.map_tab import MapTab as _MapTab65
+
+
+class _FakeMain65(_QObject65):
+    bridge_state = _Signal65(str)
+    bridge_cheat_ack = _Signal65(str, bool, str, str)
+    bridge_client = _Signal65(bool)
+
+    def __init__(self):
+        super().__init__()
+        self.cheats = []
+        self.states = 0
+        self.project = None
+        self.engine_module = None
+
+    def channel(self):
+        return self
+
+
+class _Ch65:
+    def __init__(self, outer):
+        self._outer = outer
+
+    def send_cheat(self, cmd, **kw):
+        self._outer.cheats.append((cmd, kw))
+        return True
+
+    def request_state(self):
+        self._outer.states += 1
+        return True
+
+
+_FakeMain65.channel = lambda self: _Ch65(self)
+_m65 = _FakeMain65()
+_mt65 = _MapTab65(_m65)
+# клик по пустой клетке загруженной карты — команда телепорта в канал
+_mt65._map_id = 7
+_mt65._map_data = {"width": 20, "height": 15,
+                   "data": [0] * 20 * 15 * 6, "events": []}
+_mt65.select_event_at(12, 9)
+assert ("teleport", {"mapId": 7, "x": 12, "y": 9}) in _m65.cheats, \
+    _m65.cheats
+# клик вне границ — тихо, без команды
+_n65 = len(_m65.cheats)
+_mt65.select_event_at(99, 99)
+assert len(_m65.cheats) == _n65, _m65.cheats
+# state: подпись с картой и координатами + автовыбор карты игрока
+_mt65._maps = [(7, "Start")]
+_mt65._fill_maps()
+_mt65._map_data = None
+_mt65._on_state({"type": "state", "mapId": 7, "playerX": 12, "playerY": 9})
+_qapp65.processEvents()
+assert "7" in _mt65.lbl_player_map.text() \
+    and "12" in _mt65.lbl_player_map.text() \
+    and "9" in _mt65.lbl_player_map.text(), \
+    _mt65.lbl_player_map.text()
+assert _mt65._map_id == 7, _mt65._map_id
+print("   OK:", _mt65.lbl_player_map.text())
+
+print()
 print("ВСЕ ТЕСТЫ RPG MAKER ПРОШЛИ")

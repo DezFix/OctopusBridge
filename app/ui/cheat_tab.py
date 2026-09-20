@@ -664,8 +664,16 @@ class CheatTab(QWidget):
         self._names_worker = None
 
     # ── обработка нового состояния ──
-    def _on_state(self, state: str):
-        state = json.loads(state)
+    def _on_state(self, state):
+        # bridge_state — str (json), но принимаем и готовый dict:
+        # json.loads(dict) роняет вкладку с TypeError.
+        if not isinstance(state, dict):
+            try:
+                state = json.loads(state)
+            except (TypeError, ValueError):
+                return
+            if not isinstance(state, dict):
+                return
         # сохраняем предыдущее для diff-подсветки
         self._prev_state = self.state
         self.state = state

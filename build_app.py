@@ -31,7 +31,7 @@ BUILD_DIR = os.path.join(ROOT, "build")
 # Обязательные пакеты (module -> имя пакета для pip).
 REQUIRED_MIN = {
     "PySide6": "PySide6", "requests": "requests", "websockets": "websockets",
-    "psutil": "psutil", "frida": "frida",
+    "psutil": "psutil", "frida": "frida", "UnityPy": "UnityPy==1.25.3",
 }
 
 # Исключаем неиспользуемые тяжёлые пакеты, чтобы exe оставался лёгким.
@@ -43,7 +43,12 @@ EXCLUDES_MIN = [
     "torch", "torchvision", "torchaudio", "torch_directml",
     "transformers", "tokenizers", "safetensors",
     "accelerate", "datasets", "peft", "einops", "triton", "sympy",
-    "networkx", "sklearn", "scipy", "pandas", "matplotlib", "PIL",
+    "networkx", "sklearn", "scipy", "pandas", "matplotlib",
+    # NOTE: PIL/Pillow НЕ исключаем — UnityPy==1.25.3 жёстко зависит от
+    # Pillow (Texture & Sprite handling: UnityPy/classes import PIL.Image).
+    # Было "PIL" в этом списке — PyInstaller вырезал Pillow и ломал
+    # `import UnityPy` в собранном exe (no-unitypy ветка вместо перевода).
+    # Pillow ~3 МБ — оставляем ради рабочего Unity-парсера.
     "IPython", "jupyter_client", "stanza",
 ]
 

@@ -8,11 +8,12 @@ from app.engines.renpy import RenPyModule
 from app.engines.rpgmaker import RpgMakerModule
 from app.engines.twine import TwineModule
 from app.engines.tyrano import TyranoModule
+from app.engines.unity import UnityModule
 from app.engines.wolf import WolfModule
 
 MODULES: list[type[EngineModule]] = [
     AjinModule, RpgMakerModule, RenPyModule, TwineModule, TyranoModule,
-    WolfModule]
+    WolfModule, UnityModule]
 
 
 def detect_engine(game_dir: str) -> EngineModule | None:

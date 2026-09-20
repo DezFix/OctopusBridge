@@ -38,6 +38,23 @@ MAX_VIEW = 8192
 _DIR_ROW = {2: 0, 4: 1, 6: 2, 8: 3}
 
 
+def player_map_label(state: dict | None) -> str:
+    """Подпись «где игрок»: номер карты + координаты из state игры.
+
+    Поля присылает JS-пейлоад (__octopus_collectState: mapId/playerX/
+    playerY). Пустой state или отсутствие mapId — пустая строка.
+    ВАЖНО: подстановка — kwargs прямо в TR(), а не TR().format():
+    голый TR() без kwargs затирает незаполненные {поля} в "".
+    """
+    if not isinstance(state, dict):
+        return ""
+    mid = state.get("mapId")
+    if mid is None:
+        return ""
+    return TR("map_player_map", map_id=mid,
+              x=state.get("playerX", 0), y=state.get("playerY", 0))
+
+
 def _layer_scale(w: int, h: int) -> float:
     return min(1.0, MAX_BASE / max(w, h, 1) / maprender.TILE)
 
@@ -391,6 +408,20 @@ class MapTab(QWidget):
     def showEvent(self, event):
         super().showEvent(event)
         self.reload()
+        self._request_state()
+
+    def _request_state(self):
+        """Попросить игру прислать state (карта + координаты игрока).
+
+        Без этого вкладка зависит от чужого таймера (CheatTab) и при
+        открытии в одиночку никогда не узнаёт, где персонаж.
+        """
+        try:
+            ch = self.main.channel()
+        except Exception:  # noqa: BLE001
+            return
+        if ch:
+            ch.request_state()
 
     def reload(self):
         game_dir = self._game_dir()
@@ -595,7 +626,7 @@ class MapTab(QWidget):
             if cond["switch1_valid"]:
                 sw_id = cond["switch1_id"]
                 act_sw = menu.addAction(
-                    TR("map_ctx_toggle_sw").format(id=sw_id))
+                    TR("map_ctx_toggle_sw", id=sw_id))
                 act_sw.triggered.connect(
                     lambda sid=sw_id: self._toggle_switch_live(sid))
         else:
@@ -621,6 +652,14 @@ class MapTab(QWidget):
         ev = self._event_at(x, y)
         if ev:
             self._edit_event_dialog(ev)
+            return
+        # пустая клетка — телепорт (контракт вкладки в docstring):
+        # без карты или вне границ делать нечего
+        if not self._map_data:
+            return
+        w, h, *_ = maprender.map_layers(self._map_data)
+        if 0 <= x < w and 0 <= y < h:
+            self._send_teleport(self._map_id, x, y)
 
     # ── диалог редактирования события ──
     def _edit_event_dialog(self, ev: dict):
@@ -641,7 +680,7 @@ class MapTab(QWidget):
                     default=0) + 1
         ev = {
             "id": ev_id,
-            "name": TR("ev_new_name").format(id=ev_id),
+            "name": TR("ev_new_name", id=ev_id),
             "x": x,
             "y": y,
             "note": "",
@@ -750,10 +789,15 @@ class MapTab(QWidget):
         current = state.get("mapId")
         if current is None:
             return
-        self.lbl_player_map.setText(
-            TR("map_player_map").format(map_id=current))
+        self.lbl_player_map.setText(player_map_label(state))
         for r in range(self.map_list.count()):
             it = self.map_list.item(r)
             if it.data(Qt.UserRole) == current:
                 self.map_list.scrollToItem(it)
+                if self._map_data is None:
+                    # карта игрока ещё не открыта — показываем её,
+                    # чтобы было видно позицию и работали клики.
+                    # Выбор пользователя не отбираем: только если
+                    # ничего не загружено.
+                    self.map_list.setCurrentRow(r)
                 break
