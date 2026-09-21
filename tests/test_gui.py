@@ -318,6 +318,27 @@ assert [e.id for e in filter_entries_by_src_lang(_mini, {"en"})] == [2, 3]
 assert [e.id for e in filter_entries_by_src_lang(_mini, set())] == [1, 2, 3]
 print("   OK")
 
+print("11) Диалог перевода: старый дропдаун + галочки языков...")
+from app.ui.translate_tab import _TranslateDialog
+# движок без официальных языков: дропдаун скрыт, галочки с суммой
+dlg = _TranslateDialog([], None, w,
+                       [("en", 30), ("ja", 1632), (None, 5)])
+assert dlg.cb_lang.isHidden()
+assert dlg.selected_src_langs() == {"en", "ja", None}
+assert "1667" in dlg._lbl_src_sum.text(), dlg._lbl_src_sum.text()
+dlg._src_checks["ja"].setChecked(False)
+assert dlg.selected_src_langs() == {"en", None}
+assert "1667" not in dlg._lbl_src_sum.text()
+assert "35" in dlg._lbl_src_sum.text()
+dlg.reject()
+# Ren'Py: дропдаун виден
+dlg2 = _TranslateDialog(["french", "german"], None, w, [("en", 10)])
+assert not dlg2.cb_lang.isHidden()
+assert dlg2.lang() is None
+assert dlg2.selected_src_langs() == {"en"}
+dlg2.reject()
+print("   OK")
+
 print()
 print("GUI OFFSCREEN: ВСЕ ПРОВЕРКИ ПРОШЛИ")
 sys.stdout.flush()

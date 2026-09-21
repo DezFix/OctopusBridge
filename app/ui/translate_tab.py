@@ -202,34 +202,60 @@ class _TranslateDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(TR("tr_translate"))
         self.setModal(True)
-        self.setMinimumWidth(440)
+        self.setMinimumWidth(460)
         lay = QVBoxLayout(self)
         lay.setSpacing(10)
 
-        lbl_lang = QLabel(TR("tr_translate_lang"))
-        lay.addWidget(lbl_lang)
+        # Старый дропдаун «Язык игры» — только для Ren'Py (официальные
+        # tl-языки). У остальных движков там один пункт «Весь текст» —
+        # прячем, чтобы не занимал место.
+        real_langs = [lang for lang in (langs or [])
+                      if lang and lang != "None"]
         self.cb_lang = AnimatedComboBox()
-        self.cb_lang.addItem(TR("tr_lang_all"), None)
-        for lang in langs:
-            if lang and lang != "None":
+        if real_langs:
+            lay.addWidget(QLabel(TR("tr_translate_lang")))
+            self.cb_lang.addItem(TR("tr_lang_all"), None)
+            for lang in real_langs:
                 self.cb_lang.addItem(lang, lang)
-        idx = self.cb_lang.findData(current)
-        if idx < 0:
-            idx = 0
-        self.cb_lang.setCurrentIndex(idx)
-        lay.addWidget(self.cb_lang)
+            idx = self.cb_lang.findData(current)
+            if idx < 0:
+                idx = 0
+            self.cb_lang.setCurrentIndex(idx)
+            lay.addWidget(self.cb_lang)
+        else:
+            self.cb_lang.addItem(TR("tr_lang_all"), None)
+            self.cb_lang.setVisible(False)
 
         # ── языки оригинала: какие строки гнать в движок ──
         # (остальные остаются как есть — не тратим запросы Google/AI).
         self._src_checks: dict[str | None, QCheckBox] = {}
+        self._src_counts: dict[str | None, int] = {}
+        self._lbl_src_sum: QLabel | None = None
         if src_groups:
             lay.addWidget(QLabel(TR("tr_src_filter")))
             for lang, count in src_groups:
                 name = TR("lang_" + lang) if lang else TR("tr_lang_unknown")
                 cb = QCheckBox(f"{name} — {count}")
                 cb.setChecked(True)
+                cb.toggled.connect(self._refresh_src_sum)
                 lay.addWidget(cb)
                 self._src_checks[lang] = cb
+                self._src_counts[lang] = count
+            quick = QHBoxLayout()
+            quick.setSpacing(8)
+            b_all = QPushButton(TR("tr_src_all"))
+            b_none = QPushButton(TR("tr_src_none"))
+            b_all.setObjectName("tool_btn")
+            b_none.setObjectName("tool_btn")
+            b_all.clicked.connect(lambda: self._set_all_src(True))
+            b_none.clicked.connect(lambda: self._set_all_src(False))
+            quick.addWidget(b_all)
+            quick.addWidget(b_none)
+            quick.addStretch(1)
+            self._lbl_src_sum = QLabel("")
+            quick.addWidget(self._lbl_src_sum)
+            lay.addLayout(quick)
+            self._refresh_src_sum()
 
         lbl_mode = QLabel(TR("tr_mode"))
         lay.addWidget(lbl_mode)
@@ -250,6 +276,19 @@ class _TranslateDialog(QDialog):
         btn_row.addWidget(b_ok)
         btn_row.addWidget(b_cancel)
         lay.addLayout(btn_row)
+
+    def _set_all_src(self, on: bool) -> None:
+        for cb in self._src_checks.values():
+            cb.setChecked(on)
+        self._refresh_src_sum()
+
+    def _refresh_src_sum(self) -> None:
+        if self._lbl_src_sum is None:
+            return
+        total = sum(self._src_counts.get(lang, 0)
+                    for lang, cb in self._src_checks.items()
+                    if cb.isChecked())
+        self._lbl_src_sum.setText(TR("tr_src_selected", n=total))
 
     def _select_mode(self, opt: _ModeOption):
         self._opt_new.set_selected(opt is self._opt_new)
