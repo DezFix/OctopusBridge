@@ -411,7 +411,7 @@ with tempfile.TemporaryDirectory() as td:
     assert isinstance(entries, list)
     for key in ("candidates", "checked", "loaded", "load_failed",
                 "objects", "text_objects", "parse_fail", "parse_err",
-                "entries"):
+                "typetree", "entries"):
         assert key in stats, stats
     assert stats["entries"] == len(entries), stats
     assert stats["candidates"] >= 0 and stats["loaded"] >= 0

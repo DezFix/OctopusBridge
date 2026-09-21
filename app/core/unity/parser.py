@@ -537,7 +537,7 @@ def _candidate_files(game_dir: str) -> list[str]:
     return sorted(rels)
 
 
-def _setup_typetree(env, game_dir: str) -> bool:
+def _setup_typetree(env, game_dir: str, note: dict | None = None) -> bool:
     """Typetree-генератор из Managed/*.dll (Mono). False — недоступен.
 
     Требует пакет TypeTreeGeneratorAPI (опциональный, в requirements);
@@ -545,13 +545,21 @@ def _setup_typetree(env, game_dir: str) -> bool:
     только TextAsset/TextMesh/GUIText + базу MonoBehaviour (без текста).
     Генератор кэшируется на (game_dir, version): холодная загрузка
     Managed — десятки секунд один раз, дальше мгновенно.
+    Причина отказа (ASCII) — в note['typetree'] для диагностики exe.
     """
+    def _reason(text: str) -> bool:
+        if note is not None:
+            raw = text[:120]
+            note["typetree"] = "".join(
+                ch for ch in raw if ord(ch) < 128)
+        return False
+
     try:
         from UnityPy.helpers.TypeTreeGenerator import (  # type: ignore
             TypeTreeGenerator,
         )
-    except Exception:
-        return False
+    except Exception as e:
+        return _reason(f"no-pkg {type(e).__name__}")
     try:
         version: str | None = None
         for fobj in getattr(env, "files", {}).values():
@@ -565,11 +573,14 @@ def _setup_typetree(env, game_dir: str) -> bool:
                 version = cand
                 break
         if not version:
-            return False
+            return _reason("no-version")
         key = (os.path.abspath(game_dir), version)
         gen = _TTGEN_CACHE.get(key)
         if gen is None:
-            gen = TypeTreeGenerator(version)
+            try:
+                gen = TypeTreeGenerator(version)
+            except Exception as e:
+                return _reason(f"no-gen {type(e).__name__}")
             loaded = False
             for ddir in _data_dirs(game_dir):
                 managed = os.path.join(ddir, "Managed")
@@ -580,12 +591,14 @@ def _setup_typetree(env, game_dir: str) -> bool:
                     except Exception:
                         continue
             if not loaded:
-                return False
+                return _reason("no-dll")
             _TTGEN_CACHE[key] = gen
         env.typetree_generator = gen
+        if note is not None:
+            note["typetree"] = "ok"
         return True
-    except Exception:
-        return False
+    except Exception as e:
+        return _reason(f"fail {type(e).__name__}")
 
 
 def _parse_json_path(json_path: str) -> tuple[str, int, str] | None:
@@ -630,7 +643,8 @@ def extract(game_dir: str, stats: dict | None = None) -> list:
     seen: set[tuple[str, str]] = set()
     next_id = 1
     stat = {"candidates": 0, "checked": 0, "loaded": 0, "load_failed": 0,
-            "objects": 0, "text_objects": 0, "parse_fail": 0, "parse_err": ""}
+            "objects": 0, "text_objects": 0, "parse_fail": 0, "parse_err": "",
+            "typetree": "off"}
     cands = _candidate_files(game_dir)
     stat["candidates"] = len(cands)
     for rel in cands:
@@ -652,7 +666,7 @@ def extract(game_dir: str, stats: dict | None = None) -> list:
             continue
         stat["loaded"] += 1
         try:
-            _setup_typetree(env, game_dir)
+            _setup_typetree(env, game_dir, stat)
         except Exception:
             pass
         basename = rel.rsplit("/", 1)[-1]

@@ -50,7 +50,8 @@ class UnityModule(EngineModule):
                 f"открыто: {stats.get('loaded', '?')}, "
                 f"ошибок: {stats.get('load_failed', '?')}, "
                 f"объектов: {stats.get('objects', '?')}, "
-                f"текстовых: {stats.get('text_objects', '?')}).{tail} "
+                f"текстовых: {stats.get('text_objects', '?')}, "
+                f"typetree: {stats.get('typetree', '?')}).{tail} "
                 "Пришлите эти цифры разработчику.")
         return entries
 
