@@ -432,5 +432,59 @@ assert harvest_textasset(
 assert harvest_textasset("p", "Zorblax the brave wandered on") != []
 print("   OK")
 
+print("13) UnityPy.load — только байтами (иначе ручка висит, replace падает)...")
+with tempfile.TemporaryDirectory() as td:
+    rel = "MyGame_Data/sharedassets9.assets"
+    _write_big_asset(td, rel)
+    seen: list = []
+    tree = {"m_Script": "Zorblax lockfree chant of Bramblestone",
+            "m_Name": "LockStone"}
+    asset = _FakeAsset([_FakeObj(777, "TextAsset", tree)])
+
+    class _RecUnityPy:
+        @staticmethod
+        def load(arg):
+            seen.append(type(arg).__name__)
+            return _FakeEnv(asset)
+
+    orig_import = parser._try_import_unitypy
+    orig_setup = parser._setup_typetree
+    parser._try_import_unitypy = lambda: _RecUnityPy  # type: ignore[method-assign]
+    parser._setup_typetree = lambda _e, _g, _n=None: False  # type: ignore[method-assign]
+    try:
+        entries = parser.extract(td)
+        assert entries, "extract пуст"
+        assert all(t == "bytes" for t in seen), seen
+        for e in entries:
+            e.translation = "Zorblax TESTOVO"
+            e.status = "translated"
+        stats = parser.apply(td, entries, backup_root=os.path.join(td, "bak"))
+        assert seen and all(t == "bytes" for t in seen), seen
+        assert stats.get("files") == 1, stats
+        # файл заменяем после extract/apply — ручек не висит
+        os.replace(os.path.join(td, *rel.split("/")),
+                   os.path.join(td, *rel.split("/")))
+    finally:
+        parser._try_import_unitypy = orig_import  # type: ignore[method-assign]
+        parser._setup_typetree = orig_setup  # type: ignore[method-assign]
+print("   OK")
+
+print("14) Лаунчер Unity: find_launcher + tentacle + restore_original...")
+from app.core.tentacles import create_tentacle
+from app.engines.unity.tentacle import UnityTentacle, find_launcher
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "MyGame_Data"))
+    open(os.path.join(td, "UnityCrashHandler64.exe"), "w").close()
+    open(os.path.join(td, "MyGame.exe"), "w").close()
+    assert find_launcher(td) == os.path.join(td, "MyGame.exe")
+    assert find_launcher(os.path.join(td, "MyGame_Data")) is None
+    t = create_tentacle("unity")
+    assert isinstance(t, UnityTentacle)
+    assert t.is_attached() is False and t.game_pid() is None
+    assert t.launch(os.path.join(td, "nope")) is False
+    from app.engines.unity import UnityModule
+    assert UnityModule(td).restore_original(td) == {"restored": 0}
+print("   OK")
+
 print()
 print("ВСЕ ТЕСТЫ UNITY ПРОШЛИ")

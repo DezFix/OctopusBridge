@@ -659,8 +659,16 @@ def extract(game_dir: str, stats: dict | None = None) -> list:
         except OSError:
             continue
         stat["checked"] += 1
+        # Грузим из байтов, НЕ путём: UnityPy.load(path) держит ручку
+        # файла открытой (Windows: мешает replace/удалению, пока жив env).
         try:
-            env = UnityPy.load(abs_path)
+            with open(abs_path, "rb") as f:
+                raw = f.read()
+        except OSError:
+            stat["load_failed"] += 1
+            continue
+        try:
+            env = UnityPy.load(raw)
         except Exception:
             stat["load_failed"] += 1
             continue
@@ -812,8 +820,17 @@ def apply(
         except OSError:
             stats["skipped"] += len(items)
             continue
+        # Грузим из байтов, НЕ путём: UnityPy.load(path) держит ручку
+        # файла открытой, и atomic_write_bytes (os.replace) падает
+        # на Windows с PermissionError — apply молча скипал всё.
         try:
-            env = UnityPy.load(abs_path)
+            with open(abs_path, "rb") as f:
+                raw = f.read()
+        except OSError:
+            stats["skipped"] += len(items)
+            continue
+        try:
+            env = UnityPy.load(raw)
         except Exception:
             stats["skipped"] += len(items)
             continue
@@ -978,7 +995,9 @@ def apply(
                 stats["skipped"] += file_written
                 continue
             try:
-                check_env = UnityPy.load(abs_path)
+                # verify из байтов, НЕ путём: path-загрузка держит ручку
+                # (мешает следующим replace/удалению на Windows)
+                check_env = UnityPy.load(bytes(data))
                 _ = getattr(check_env, "files", {})
                 stats["verified"] += 1
             except Exception:

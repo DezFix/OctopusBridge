@@ -71,6 +71,13 @@ class UnityModule(EngineModule):
         _ = (game_dir, kwargs)
         return {"patched": False, "reason": "todo"}
 
+    def restore_original(self, game_dir: str) -> dict:
+        """Откат перевода: вернуть бэкапы BackupStore (backup/unity)."""
+        from app.core.io import BackupStore
+        import os
+        store = BackupStore(os.path.join(game_dir, "backup", "unity"))
+        return store.restore_all()
+
     def file_view(self, game_dir: str):
         from app.core.rpgmaker.fileview import DiskFileView
         return DiskFileView(game_dir)

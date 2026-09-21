@@ -33,4 +33,7 @@ def create_tentacle(engine_key: str) -> Tentacle | None:
     if engine_key == "wolf":
         from app.engines.wolf.tentacle import WolfTentacle
         return WolfTentacle()
+    if engine_key == "unity":
+        from app.engines.unity.tentacle import UnityTentacle
+        return UnityTentacle()
     return None
