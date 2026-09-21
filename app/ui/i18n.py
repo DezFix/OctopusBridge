@@ -190,6 +190,9 @@ _STRINGS = {
     "tr_mode_all_desc": {"ru": "Перезапишет все строки, включая уже переведённые",
                          "en": "Rewrite all lines, including already translated"},
     "tr_translate": {"ru": "Перевести", "en": "Translate"},
+    "tr_src_filter": {"ru": "Какие языки гнать в переводчик (остальные не трогаем):",
+                      "en": "Which source languages to send (rest are left alone):"},
+    "tr_lang_unknown": {"ru": "Без букв", "en": "No letters"},
     "tr_cancel": {"ru": "Отмена", "en": "Cancel"},
     "tr_apply": {"ru": "Внедрить в игру", "en": "Apply to game"},
     "tr_correct": {"ru": "ИИ-коррекция", "en": "AI Correction"},
@@ -277,14 +280,6 @@ _STRINGS = {
         "ru": "Принято: {accepted} из {total} предложений",
         "en": "Accepted: {accepted} of {total} suggestions",
     },
-    "tr_pull_memory": {"ru": "Подтянуть из памяти", "en": "Pull from memory"},
-    "tr_pull_working": {"ru": "Ищу совпадения…", "en": "Looking for matches…"},
-    "tr_pull_done": {
-        "ru": "Подтянуто {hits} из {total}, импортировано {n}",
-        "en": "Pulled {hits} of {total}, imported {n}",
-    },
-    "tr_pull_none": {"ru": "Совпадений нет", "en": "No matches found"},
-
     # ── Diff review ──
     "diff_title": {"ru": "Ревизия ИИ-коррекции", "en": "AI Correction Review"},
     "diff_hint": {

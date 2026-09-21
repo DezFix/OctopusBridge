@@ -106,7 +106,14 @@ with tempfile.TemporaryDirectory() as td:
     assert mod is not None and mod.key == "unity", type(mod)
     assert isinstance(mod, UnityModule), type(mod)
     assert mod.features == {"file-translation", "font-patch"}, mod.features
-    assert mod.extract(td) == []
+    # пустая синтетика без текстов: модуль честно падает с объяснением,
+    # а не молча отдаёт [] (диагностика вместо тишины)
+    try:
+        mod.extract(td)
+    except RuntimeError as e:
+        assert "Текстов не найдено" in str(e) and "файлов:" in str(e), e
+    else:
+        raise AssertionError("mod.extract обязан падать на пустой синтетике")
     assert mod.apply(td, []) == {"files": 0}
     view = mod.file_view(td)
     assert view is not None
@@ -388,12 +395,41 @@ with tempfile.TemporaryDirectory() as td:
         assert captured.get("target_lang") == "ru", captured
         orig_extract = parser.extract
         try:
-            parser.extract = lambda _g: ["SENTINEL"]  # type: ignore[method-assign]
+            parser.extract = lambda _g, stats=None: ["SENTINEL"]  # type: ignore[method-assign]
             assert mod.extract(td) == ["SENTINEL"]
         finally:
             parser.extract = orig_extract  # type: ignore[method-assign]
     finally:
         parser.apply = orig_apply  # type: ignore[method-assign]
+print("   OK")
+
+print("11) extract(stats): диагностика причин нуля...")
+with tempfile.TemporaryDirectory() as td:
+    make_full(td)
+    stats: dict = {}
+    entries = parser.extract(td, stats)
+    assert isinstance(entries, list)
+    for key in ("candidates", "checked", "loaded", "load_failed",
+                "objects", "text_objects", "parse_fail", "parse_err",
+                "entries"):
+        assert key in stats, stats
+    assert stats["entries"] == len(entries), stats
+    assert stats["candidates"] >= 0 and stats["loaded"] >= 0
+print("   OK")
+
+print("12) JSON-конфиги режем, диалоги в JSON и текст — нет...")
+assert parser._is_json_config('{"TestSuite":"","Date":0}') is True
+assert parser._is_json_config('{"clothType":1,"sourceRenderers":[]}') is True
+assert parser._is_json_config('{"MeasurementCount":-1}') is True
+assert parser._is_json_config('["a","b",1]') is True
+assert parser._is_json_config(
+    '{"text": "Zorblax the brave wandered into Bramblestone"}') is False
+assert parser._is_json_config("Zorblax the brave wandered on") is False
+assert parser._is_json_config("{broken") is False
+assert harvest_textasset("t", '{"TestSuite":"","Date":0}') == []
+assert harvest_textasset(
+    "d", '{"k": "Zorblax the brave wandered into Bramblestone"}') != []
+assert harvest_textasset("p", "Zorblax the brave wandered on") != []
 print("   OK")
 
 print()

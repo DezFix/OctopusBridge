@@ -216,35 +216,6 @@ class TranslationMemory:
                 self.db.commit()
         return out
 
-    @staticmethod
-    def projects_fingerprint(projects_dir: str) -> tuple[int, float, int]:
-        """Дешёвый отпечаток папки проектов (без чтения файлов).
-
-        (число .ob.json, max mtime, суммарный размер). Повторное
-        нажатие «Подтянуть» с тем же отпечатком пропускает
-        import_projects — только быстрый bulk-поиск по TM.
-        """
-        count = 0
-        max_mtime = 0.0
-        total = 0
-        try:
-            names = os.listdir(projects_dir)
-        except OSError:
-            return (0, 0.0, 0)
-        for name in names:
-            if not name.endswith(".ob.json"):
-                continue
-            p = os.path.join(projects_dir, name)
-            try:
-                st = os.stat(p)
-            except OSError:
-                continue
-            count += 1
-            total += st.st_size
-            if st.st_mtime > max_mtime:
-                max_mtime = st.st_mtime
-        return (count, max_mtime, total)
-
     def get_fuzzy(
         self,
         source: str,

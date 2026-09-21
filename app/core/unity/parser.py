@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 import re
 
@@ -292,8 +293,43 @@ def _set_path_value(tree: dict, field_path: str, new_text: str) -> bool:
         return False
 
 
+def _has_sentence(value: object) -> bool:
+    """Есть ли в JSON-дереве хоть одно «предложение» (текст для игрока)."""
+    stack: list[object] = [value]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, str):
+            s = node.strip()
+            if len(s) >= 10 and _has_letters(s):
+                return True
+        elif isinstance(node, dict):
+            stack.extend(node.values())
+        elif isinstance(node, (list, tuple)):
+            stack.extend(node)
+    return False
+
+
+def _is_json_config(text: str) -> bool:
+    """True — TextAsset это JSON-конфиг движка, а не текст для перевода.
+
+    Примеры: {"TestSuite":"","Date":0,...}, {"clothType":1,...},
+    {"MeasurementCount":-1}. Диалоги в JSON ({"text": "длинная реплика"})
+    содержат предложения — такие НЕ режем.
+    """
+    s = text.strip()
+    if not s or s[0] not in "{[":
+        return False
+    try:
+        obj = json.loads(s)
+    except Exception:
+        return False
+    if not isinstance(obj, (dict, list)):
+        return False
+    return not _has_sentence(obj)
+
+
 def harvest_textasset(name: str, script: str | bytes) -> list[tuple[str, str]]:
-    """Текст TextAsset -> [('m_Script', text)] или [] (пусто/бинарь).
+    """Текст TextAsset -> [('m_Script', text)] или [] (пусто/бинарь/конфиг).
 
     Чистая, без UnityPy. ``name`` — только для сигнатуры (в контекст
     его подставляет extract, здесь не используется).
@@ -304,6 +340,8 @@ def harvest_textasset(name: str, script: str | bytes) -> list[tuple[str, str]]:
         return []
     stripped = text.strip()
     if len(stripped) < 2 or not _has_letters(stripped):
+        return []
+    if _is_json_config(stripped):
         return []
     return [("m_Script", stripped)]
 
@@ -444,6 +482,11 @@ def patch_monobehaviour(
     return new_tree
 
 
+# Кэш typetree-генераторов: {(game_dir, version): gen}. Загрузка Managed
+# в холодную может занять десятки секунд — один раз на игру за сессию,
+# дальше переиспользуем (иначе 58с на КАЖДЫЙ файл extract/apply).
+_TTGEN_CACHE: dict[tuple[str, str], object] = {}
+
 # ── UnityPy-слой (ленивый импорт) ──────────────────────────────────────────
 
 _TEXT_TYPES = frozenset({"TextAsset", "MonoBehaviour", "TextMesh", "GUIText"})
@@ -457,6 +500,21 @@ def _try_import_unitypy():
         return UnityPy
     except Exception:
         return None
+
+
+def _force_pure_python_reader() -> None:
+    """Отключить C-ридер typetree (read_typetree_boost).
+
+    В замороженной сборке (PyInstaller) нативный хелпер падает на
+    КАЖДОМ parse_as_dict — extract молча отдаёт 0 при живых объектах
+    (файлов 26/26, текстовых объектов 13988, записей 0). Pure-python
+    медленнее (~2.5x), но работает везде. Без исключений.
+    """
+    try:
+        from UnityPy.helpers import TypeTreeHelper as _tth  # type: ignore
+        _tth.read_typetree_boost = False
+    except Exception:
+        pass
 
 
 def _candidate_files(game_dir: str) -> list[str]:
@@ -482,9 +540,11 @@ def _candidate_files(game_dir: str) -> list[str]:
 def _setup_typetree(env, game_dir: str) -> bool:
     """Typetree-генератор из Managed/*.dll (Mono). False — недоступен.
 
-    Требует опциональный TypeTreeGeneratorAPI (в requirements его нет);
+    Требует пакет TypeTreeGeneratorAPI (опциональный, в requirements);
     без него MonoBehaviour-скриптовые поля не парсятся — extract берёт
     только TextAsset/TextMesh/GUIText + базу MonoBehaviour (без текста).
+    Генератор кэшируется на (game_dir, version): холодная загрузка
+    Managed — десятки секунд один раз, дальше мгновенно.
     """
     try:
         from UnityPy.helpers.TypeTreeGenerator import (  # type: ignore
@@ -506,18 +566,22 @@ def _setup_typetree(env, game_dir: str) -> bool:
                 break
         if not version:
             return False
-        gen = TypeTreeGenerator(version)
-        loaded = False
-        for ddir in _data_dirs(game_dir):
-            managed = os.path.join(ddir, "Managed")
-            if os.path.isdir(managed):
-                try:
-                    gen.load_local_dll_folder(managed)
-                    loaded = True
-                except Exception:
-                    continue
-        if not loaded:
-            return False
+        key = (os.path.abspath(game_dir), version)
+        gen = _TTGEN_CACHE.get(key)
+        if gen is None:
+            gen = TypeTreeGenerator(version)
+            loaded = False
+            for ddir in _data_dirs(game_dir):
+                managed = os.path.join(ddir, "Managed")
+                if os.path.isdir(managed):
+                    try:
+                        gen.load_local_dll_folder(managed)
+                        loaded = True
+                    except Exception:
+                        continue
+            if not loaded:
+                return False
+            _TTGEN_CACHE[key] = gen
         env.typetree_generator = gen
         return True
     except Exception:
@@ -545,16 +609,19 @@ def _object_name(tree: dict, fallback: str = "") -> str:
     return name if isinstance(name, str) else fallback
 
 
-def extract(game_dir: str) -> list:
+def extract(game_dir: str, stats: dict | None = None) -> list:
     """Строки TextAsset/MonoBehaviour/TextMesh/GUIText -> TranslationEntry.
 
     json_path='asset://<basename>/<path_id>/<field>',
     file=отн. путь ассета, context='<Type>:<name>' (имя без текста),
     дедуп по (file, json_path). Без UnityPy -> [].
+    В stats (если dict передан) — диагностика: candidates/files_checked,
+    loaded, load_failed, objects, text_objects, entries (почему 0).
     """
     UnityPy = _try_import_unitypy()
     if UnityPy is None:
         return []
+    _force_pure_python_reader()
     try:
         from app.core.models import TranslationEntry
     except Exception:
@@ -562,7 +629,11 @@ def extract(game_dir: str) -> list:
     entries: list = []
     seen: set[tuple[str, str]] = set()
     next_id = 1
-    for rel in _candidate_files(game_dir):
+    stat = {"candidates": 0, "checked": 0, "loaded": 0, "load_failed": 0,
+            "objects": 0, "text_objects": 0, "parse_fail": 0, "parse_err": ""}
+    cands = _candidate_files(game_dir)
+    stat["candidates"] = len(cands)
+    for rel in cands:
         abs_path = os.path.join(game_dir, *rel.split("/"))
         if not os.path.isfile(abs_path):
             continue
@@ -573,10 +644,13 @@ def extract(game_dir: str) -> list:
                 continue
         except OSError:
             continue
+        stat["checked"] += 1
         try:
             env = UnityPy.load(abs_path)
         except Exception:
+            stat["load_failed"] += 1
             continue
+        stat["loaded"] += 1
         try:
             _setup_typetree(env, game_dir)
         except Exception:
@@ -596,8 +670,10 @@ def extract(game_dir: str) -> list:
                     type_name = getattr(obj.type, "name", "?")
                 except Exception:
                     continue
+                stat["objects"] += 1
                 if str(type_name) not in _TEXT_TYPES:
                     continue
+                stat["text_objects"] += 1
                 try:
                     path_id = int(getattr(obj, "path_id", -1))
                 except Exception:
@@ -608,12 +684,21 @@ def extract(game_dir: str) -> list:
                     cand = obj.parse_as_dict()
                     if isinstance(cand, dict):
                         tree = cand
-                except Exception:
+                except Exception as e:
+                    # Первая ошибка разбора — в диагностику (только ASCII
+                    # из текста исключения: тип + начало сообщения, без
+                    # байтов игрового контента).
+                    if not stat["parse_err"]:
+                        raw = f"{type(e).__name__}: {e}"[:160]
+                        stat["parse_err"] = "".join(
+                            ch for ch in raw if ord(ch) < 128)
+                    stat["parse_fail"] += 1
                     try:
                         cand = obj.parse_as_dict(check_read=False)
                         if isinstance(cand, dict):
                             tree = cand
                     except Exception:
+                        stat["parse_fail"] += 1
                         continue
                 if tree is None:
                     continue
@@ -650,6 +735,9 @@ def extract(game_dir: str) -> list:
                         id=next_id, file=rel, json_path=json_path,
                         context=context, original=original))
                     next_id += 1
+    if stats is not None:
+        stats.update(stat)
+        stats["entries"] = len(entries)
     return entries
 
 
@@ -674,6 +762,7 @@ def apply(
     UnityPy = _try_import_unitypy()
     if UnityPy is None:
         return {"files": 0, "strings": 0, "skipped": "no-unitypy"}
+    _force_pure_python_reader()
     if not entries:
         return {"files": 0}
     # группировка по файлу (поддержка TranslationEntry и dict)

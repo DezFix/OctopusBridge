@@ -33,7 +33,26 @@ class UnityModule(EngineModule):
 
     def extract(self, game_dir: str) -> list:
         from app.core.unity import parser
-        return parser.extract(game_dir)
+        if parser._try_import_unitypy() is None:
+            raise RuntimeError(
+                "UnityPy отсутствует в сборке — извлечение Unity "
+                "невозможно. Переустановите приложение.")
+        stats: dict = {}
+        entries = parser.extract(game_dir, stats)
+        if not entries:
+            tail = ""
+            if stats.get("parse_err"):
+                tail = (f" Разбор: не удалось {stats.get('parse_fail', '?')}, "
+                        f"{stats['parse_err']}.")
+            raise RuntimeError(
+                "Текстов не найдено "
+                f"(файлов: {stats.get('candidates', '?')}, "
+                f"открыто: {stats.get('loaded', '?')}, "
+                f"ошибок: {stats.get('load_failed', '?')}, "
+                f"объектов: {stats.get('objects', '?')}, "
+                f"текстовых: {stats.get('text_objects', '?')}).{tail} "
+                "Пришлите эти цифры разработчику.")
+        return entries
 
     def apply(self, game_dir: str, entries: list, **kwargs) -> dict:
         from app.core.unity import parser

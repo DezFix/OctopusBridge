@@ -610,7 +610,6 @@ class MainWindow(QMainWindow):
                 (tt.worker_correct,
                  getattr(tt.worker_correct.corrector, "cancel", None)
                  if tt.worker_correct else None),
-                (tt.worker_pull, None),
                 (getattr(self, "_extract_worker", None), None),
                 (getattr(self.cheat_tab, "_names_worker", None)
                  if self.cheat_tab else None, None)):

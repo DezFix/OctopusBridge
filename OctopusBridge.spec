@@ -5,8 +5,13 @@ from PyInstaller.utils.win32.versioninfo import (
     FixedFileInfo, StringFileInfo, StringStruct, StringTable,
     VarFileInfo, VarStruct, VSVersionInfo)
 
-datas = collect_data_files('app') + [('assets/ico.ico', 'assets'), ('CHANGELOG.md', '.')]
-binaries, hiddenimports = [], []
+datas = collect_data_files('app') + collect_data_files('UnityPy') + [('assets/ico.ico', 'assets'), ('CHANGELOG.md', '.')]
+# collect_data_files('UnityPy'): забирает UnityPy/resources/lzma.tpk (база
+# typetree через importlib.resources). Без неё parse_as_dict падает на
+# КАЖДОМ объекте с ModuleNotFoundError: UnityPy.resources — в exe было
+# 26/26 файлов, 13988 текстовых объектов и 0 записей.
+binaries, hiddenimports = [], ["UnityPy", "UnityPy.resources",
+                               "TypeTreeGeneratorAPI"]
 
 version_info = VSVersionInfo(
     ffi=FixedFileInfo(
@@ -44,7 +49,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['PyQt5', 'PyQt6', 'PySide2', 'torch', 'torchvision', 'torchaudio', 'torch_directml', 'transformers', 'tokenizers', 'safetensors', 'accelerate', 'datasets', 'peft', 'einops', 'triton', 'sympy', 'networkx', 'sklearn', 'scipy', 'pandas', 'matplotlib', 'PIL', 'IPython', 'jupyter_client', 'stanza'],
+    excludes=['PyQt5', 'PyQt6', 'PySide2', 'torch', 'torchvision', 'torchaudio', 'torch_directml', 'transformers', 'tokenizers', 'safetensors', 'accelerate', 'datasets', 'peft', 'einops', 'triton', 'sympy', 'networkx', 'sklearn', 'scipy', 'pandas', 'matplotlib', 'IPython', 'jupyter_client', 'stanza'],
     noarchive=False,
     optimize=0,
 )

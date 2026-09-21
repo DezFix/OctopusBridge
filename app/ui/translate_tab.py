@@ -14,7 +14,7 @@ from PySide6.QtGui import (QAction, QColor, QFont, QIcon,
                            QPainterPath, QPen, QPixmap, QShortcut)
 from PySide6.QtWidgets import (QAbstractItemDelegate, QAbstractItemView,
                                QApplication,
-                               QDialog, QDialogButtonBox,
+                               QCheckBox, QDialog, QDialogButtonBox,
                                QFormLayout,
                                QFileDialog, QFrame, QHBoxLayout, QHeaderView,
                                QLabel, QLineEdit, QMessageBox,
@@ -142,12 +142,63 @@ class _ModeOption(QFrame):
         super().mousePressEvent(event)
 
 
+def group_entries_by_src_lang(
+        entries: list) -> list[tuple[str | None, int]]:
+    """Группировка записей по детекту языка оригинала: [(lang, count)].
+
+    Чистая, без Qt — для чекбоксов диалога перевода. Порядок: сначала
+    по убыванию count, None (без букв) в конце.
+    """
+    from collections import Counter
+    counts: Counter = Counter()
+    for e in entries:
+        try:
+            original = getattr(e, "original", "") or ""
+        except Exception:  # noqa: BLE001
+            continue
+        if not original.strip():
+            continue
+        try:
+            counts[detect_lang(original)] += 1
+        except Exception:  # noqa: BLE001
+            counts[None] += 1
+    ranked = sorted(counts.items(),
+                    key=lambda kv: (kv[0] is None, -(kv[1] or 0), str(kv[0])))
+    return ranked
+
+
+def filter_entries_by_src_lang(
+        entries: list, selected: set | None) -> list:
+    """Только записи выбранных языков оригинала (None — все).
+
+    Записи без детекта (цифры/знаки, lang None) всегда пропускаем в работу:
+    движок их не трогает, сервис помечает skip сам.
+    """
+    if not selected:
+        return list(entries)
+    out = []
+    for e in entries:
+        try:
+            original = getattr(e, "original", "") or ""
+        except Exception:  # noqa: BLE001
+            continue
+        try:
+            lang = detect_lang(original) if original.strip() else None
+        except Exception:  # noqa: BLE001
+            lang = None
+        if lang is None or lang in selected:
+            out.append(e)
+    return out
+
+
 class _TranslateDialog(QDialog):
-    """Выбор параметров перевода: язык (весь текст или один официальный)
-    и режим (только непереведённое или всё заново). Открывается по клику
+    """Выбор параметров перевода: язык (весь текст или один официальный),
+    языки оригинала (какие гнать в движок, остальные не трогаем)
+    и режим (только непереведённое / всё заново). Открывается по клику
     на кнопку «Перевести» вместо выпадающего меню."""
 
-    def __init__(self, langs: list[str], current: str | None, parent=None):
+    def __init__(self, langs: list[str], current: str | None, parent=None,
+                 src_groups: list[tuple[str | None, int]] | None = None):
         super().__init__(parent)
         self.setWindowTitle(TR("tr_translate"))
         self.setModal(True)
@@ -167,6 +218,18 @@ class _TranslateDialog(QDialog):
             idx = 0
         self.cb_lang.setCurrentIndex(idx)
         lay.addWidget(self.cb_lang)
+
+        # ── языки оригинала: какие строки гнать в движок ──
+        # (остальные остаются как есть — не тратим запросы Google/AI).
+        self._src_checks: dict[str | None, QCheckBox] = {}
+        if src_groups:
+            lay.addWidget(QLabel(TR("tr_src_filter")))
+            for lang, count in src_groups:
+                name = TR("lang_" + lang) if lang else TR("tr_lang_unknown")
+                cb = QCheckBox(f"{name} — {count}")
+                cb.setChecked(True)
+                lay.addWidget(cb)
+                self._src_checks[lang] = cb
 
         lbl_mode = QLabel(TR("tr_mode"))
         lay.addWidget(lbl_mode)
@@ -194,6 +257,13 @@ class _TranslateDialog(QDialog):
 
     def lang(self) -> str | None:
         return self.cb_lang.currentData()
+
+    def selected_src_langs(self) -> set | None:
+        """Выбранные языки оригинала. None — все (чекбоксов не было)."""
+        if not self._src_checks:
+            return None
+        return {lang for lang, cb in self._src_checks.items()
+                if cb.isChecked()}
 
     def overwrite(self) -> bool:
         return self._opt_all.is_selected()
@@ -259,67 +329,6 @@ class CorrectWorker(QThread):
                 self.corrections_ready.emit(self.corrector.diffs)
         except InterruptedError:
             pass
-        except Exception as e:  # noqa: BLE001
-            self.failed.emit(str(e))
-
-
-class MemoryPullWorker(QThread):
-    """Подтягивание из памяти переводов: import_projects + prefill.
-
-    Весь import_projects (чтение десятков .ob.json) — здесь, в фоне,
-    GUI не блокируется. Воркер работает только со снапшотом
-    [{id, original}] — живые entries проекта в потоке не мутируют
-    (TM thread-safe). Движок не используется. Возвращает
-    {"results": {id: translation}, "total": N, "imported": n}."""
-
-    # Отпечаток папки проектов с прошлого запуска: повторные нажатия
-    # без новых/изменённых .ob.json пропускают import (только bulk-поиск).
-    _last_fprint: dict[str, tuple] = {}
-
-    done = Signal(object)
-    failed = Signal(str)
-
-    def __init__(self, tm, snapshot: list[dict], src: str, tgt: str,
-                 projects_dir: str):
-        super().__init__()
-        self.setObjectName("MemoryPullWorker")
-        self._tm = tm
-        self._snapshot = snapshot
-        self._src = src
-        self._tgt = tgt
-        self._projects_dir = projects_dir
-
-    def run(self):
-        try:
-            # import_projects — только если папка проектов изменилась
-            # с прошлого раза (дешёвый listdir+stat, без чтения).
-            # Повторные нажатия идут сразу в bulk-поиск по TM.
-            try:
-                from app.core.translate.memory import TranslationMemory
-                fprint = TranslationMemory.projects_fingerprint(
-                    self._projects_dir)
-            except Exception:  # noqa: BLE001
-                fprint = None
-            if fprint is None or fprint != MemoryPullWorker._last_fprint.get(
-                    self._projects_dir):
-                imported = self._tm.import_projects(self._projects_dir)
-                MemoryPullWorker._last_fprint[self._projects_dir] = fprint
-            else:
-                imported = 0
-            if self.isInterruptionRequested():
-                return
-            from types import SimpleNamespace
-            fakes = [SimpleNamespace(id=s["id"], original=s["original"],
-                                     translation="", status="new")
-                     for s in self._snapshot]
-            Translator(engine=None, tm=self._tm).prefill_from_memory(
-                fakes, self._src, self._tgt)
-            if self.isInterruptionRequested():
-                return
-            results = {f.id: f.translation for f in fakes if f.translation}
-            self.done.emit({"results": results,
-                            "total": len(self._snapshot),
-                            "imported": imported})
         except Exception as e:  # noqa: BLE001
             self.failed.emit(str(e))
 
@@ -799,7 +808,6 @@ class TranslateTab(QWidget):
         self.main = main_window
         self.worker: TranslateWorker | None = None
         self.worker_correct: CorrectWorker | None = None
-        self.worker_pull: MemoryPullWorker | None = None
         self._loading = False
         self._cancelling = False
         self._cancel_elapsed = 0
@@ -836,13 +844,6 @@ class TranslateTab(QWidget):
         self.btn_translate.setCursor(Qt.PointingHandCursor)
         self.btn_translate.clicked.connect(self._translate_with_options)
         bar.addWidget(self.btn_translate)
-
-        self.btn_pull = QPushButton(TR("tr_pull_memory"))
-        self.btn_pull.setObjectName("tool_btn")
-        self.btn_pull.setIcon(icon("database", 14, C_TEXT_SECONDARY))
-        self.btn_pull.setCursor(Qt.PointingHandCursor)
-        self.btn_pull.clicked.connect(self.pull_from_memory)
-        bar.addWidget(self.btn_pull)
 
         self.btn_apply = QPushButton(TR("tr_apply"))
         self.btn_apply.setProperty("step", True)
@@ -1067,6 +1068,10 @@ class TranslateTab(QWidget):
         self.progress.setVisible(False)
         self.lbl_status = QLabel("")
         self.lbl_status.setWordWrap(True)
+        # Текст ошибки можно выделить мышью и скопировать (Ctrl+C) —
+        # иначе пользователи присылают фото вместо текста.
+        self.lbl_status.setTextInteractionFlags(
+            Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
         self.lbl_status.setStyleSheet(
             f"color: {C_TEXT_SECONDARY}; background: transparent;")
         bottom.addWidget(self.progress, 1)
@@ -1131,15 +1136,12 @@ class TranslateTab(QWidget):
             if p else 0
         busy = bool((self.worker and self.worker.isRunning())
                     or (self.worker_correct
-                        and self.worker_correct.isRunning())
-                    or (self.worker_pull
-                        and self.worker_pull.isRunning()))
+                        and self.worker_correct.isRunning()))
         extract_busy = bool(getattr(self.main, "_extract_worker", None)
                             and self.main._extract_worker.isRunning())
         self.btn_extract.setEnabled(
             bool(p) and bool(self.main.engine_module) and not extract_busy)
         self.btn_translate.setEnabled(n > 0 and not busy)
-        self.btn_pull.setEnabled(n > 0 and not busy)
         self.btn_apply.setEnabled(translated > 0)
 
         if busy:
@@ -1176,6 +1178,9 @@ class TranslateTab(QWidget):
         self.btn_extract.setEnabled(True)
         if error:
             self.lbl_status.setText(error)
+            # Дублируем в диалог: из QMessageBox текст копируется
+            # выделением и Ctrl+C, из статус-строки фото не нужны.
+            QMessageBox.critical(self, TR("err"), error)
             return
         p = self._project()
         self.main.refresh_all()
@@ -1749,11 +1754,13 @@ class TranslateTab(QWidget):
         if not p or not p.entries:
             QMessageBox.information(self, TR("err"), TR("tr_no_data"))
             return
-        dlg = _TranslateDialog(self._lang_options(), p.extract_lang, self)
+        dlg = _TranslateDialog(self._lang_options(), p.extract_lang, self,
+                                 group_entries_by_src_lang(p.entries))
         if not dlg.exec():
             return
         lang = dlg.lang()
         self._pending_overwrite = dlg.overwrite()
+        self._pending_src_langs = dlg.selected_src_langs()
         prev = p.extract_lang
         p.extract_lang = lang
         p.lang_asked = True
@@ -1782,10 +1789,13 @@ class TranslateTab(QWidget):
             return
         translator = Translator(engine, tm=self.main.tm,
                                 glossary=self.main.glossary)
-        # P0: воркеру — копию списка (list), а не живой p.entries:
-        # GUI может переизвлечь проект во время перевода.
+        # Только выбранные в диалоге языки оригинала (остальные строки
+        # остаются как есть — не жжём запросы). P0: воркеру — копию
+        # списка (list), а не живой p.entries.
+        src_langs = getattr(self, "_pending_src_langs", None)
+        targets = filter_entries_by_src_lang(p.entries, src_langs)
         self.worker = TranslateWorker(
-            translator, list(p.entries),
+            translator, list(targets),
             s.value("source_lang", "auto"), s.value("target_lang", "ru"),
             overwrite=self._pending_overwrite)
         self.worker.progressed.connect(self._on_progress)
@@ -1808,7 +1818,7 @@ class TranslateTab(QWidget):
         через таймер (GUI не блокируется, полоса/текст доигрывают плавно)."""
         self._cancelling = True
         self._cancel_elapsed = 0
-        for w in (self.worker, self.worker_correct, self.worker_pull):
+        for w in (self.worker, self.worker_correct):
             if not w:
                 continue
             translator = getattr(w, "translator", None)
@@ -1821,8 +1831,7 @@ class TranslateTab(QWidget):
         self.btn_cancel.setEnabled(False)
         self.main.loading.set_text(TR("tr_cancelling"))
         busy = (self.worker and self.worker.isRunning()) or (
-            self.worker_correct and self.worker_correct.isRunning()) or (
-            self.worker_pull and self.worker_pull.isRunning())
+            self.worker_correct and self.worker_correct.isRunning())
         if not busy:
             self._finish_cancelled()
             return
@@ -1842,8 +1851,7 @@ class TranslateTab(QWidget):
         """
         self._cancel_elapsed += 120
         busy = (self.worker and self.worker.isRunning()) or (
-            self.worker_correct and self.worker_correct.isRunning()) or (
-            self.worker_pull and self.worker_pull.isRunning())
+            self.worker_correct and self.worker_correct.isRunning())
         if busy:
             self._cancel_timer.start(120)
             return
@@ -1905,7 +1913,7 @@ class TranslateTab(QWidget):
         self.btn_correct.setEnabled(True)
         # P0: без wait() в слоте GUI — done/failed уже означают конец run(),
         # поток либо завершён, либо завершится сам; удаляем без блокировки.
-        for _attr in ("worker", "worker_correct", "worker_pull"):
+        for _attr in ("worker", "worker_correct"):
             _w = getattr(self, _attr)
             if _w is None:
                 continue
@@ -1936,87 +1944,6 @@ class TranslateTab(QWidget):
             self._status_timer.start(4000)
         self._cancelling = False
         self._update_steps()
-
-    # ── pull from memory ──
-
-    def pull_from_memory(self):
-        """Подтянуть переводы из памяти (TM + другие проекты) без движка.
-
-        Весь import_projects выполняется в MemoryPullWorker — GUI
-        не блокируется. Воркеру передаётся только снапшот
-        [{id, original}] непереведённых строк."""
-        p = self._project()
-        if not p or not p.entries:
-            return
-        if self.worker_pull and self.worker_pull.isRunning():
-            return
-        if ((self.worker and self.worker.isRunning())
-                or (self.worker_correct
-                    and self.worker_correct.isRunning())):
-            return
-        s = self.main.settings
-        src = s.value("source_lang", "auto")
-        tgt = s.value("target_lang", "ru")
-        snapshot = [
-            {"id": e.id, "original": e.original} for e in p.entries
-            if not (e.translation or "").strip() and e.status != "skip"
-            and (e.original or "").strip()
-        ]
-        if not snapshot:
-            self.lbl_status.setText(TR("tr_pull_none"))
-            return
-        import app as app_paths
-        self.worker_pull = MemoryPullWorker(
-            self.main.tm, snapshot, src, tgt, app_paths.projects_dir())
-        self.worker_pull.done.connect(self._on_pull_done)
-        self.worker_pull.failed.connect(self._on_pull_failed)
-        self._cancelling = False
-        self._last_progress = (0, len(snapshot))
-        self.btn_cancel.setVisible(True)
-        self.btn_cancel.setEnabled(True)
-        self.btn_pull.setEnabled(False)
-        self.btn_translate.setEnabled(False)
-        self.btn_correct.setEnabled(False)
-        self.main.loading.show_loading(TR("tr_pull_working"), TR("tr_cancel"),
-                                       self.cancel_translate)
-        self.worker_pull.start()
-
-    def _on_pull_done(self, payload):
-        if self._cancelling:
-            return
-        results = payload.get("results", {}) or {}
-        total = payload.get("total", 0)
-        imported = payload.get("imported", 0)
-        p = self._project()
-        hits = 0
-        if p and results:
-            for e in p.entries:
-                tr = results.get(e.id)
-                # живые entries могли отредактировать пока шёл фон:
-                # пишем только в пустые
-                if tr and not (e.translation or "").strip():
-                    e.translation = tr
-                    if e.status not in ("manual", "corrected", "skip"):
-                        e.status = "translated"
-                    hits += 1
-        self._finish_translate()
-        self.main.save_project()
-        self._rebuild_file_list()
-        self.fill_table()
-        self.main.refresh_project_stats()
-        msg = TR("tr_pull_done", hits=hits, total=total,
-                 n=imported) if hits else TR("tr_pull_none")
-        self.lbl_status.setText(msg)
-        self._flash_saved(msg)
-
-    def _on_pull_failed(self, msg):
-        if self._cancelling:
-            return
-        self._finish_translate()
-        self.main.save_project()
-        self._rebuild_file_list()
-        self.fill_table()
-        QMessageBox.critical(self, TR("err"), msg)
 
     # ── correct ──
 

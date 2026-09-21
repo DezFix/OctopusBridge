@@ -298,6 +298,26 @@ s.setValue("setup_done", True)
 print("   OK")
 
 w.close()
+
+print("10) Выбор языков оригинала для перевода...")
+from app.core.models import TranslationEntry as _TE
+from app.ui.translate_tab import (filter_entries_by_src_lang,
+                                  group_entries_by_src_lang)
+_mini = [
+    _TE(id=1, file="f", json_path="k1", context="c",
+        original="こんにちは勇者"),
+    _TE(id=2, file="f", json_path="k2", context="c",
+        original="Hello brave Zorblax"),
+    _TE(id=3, file="f", json_path="k3", context="c",
+        original="12345"),
+]
+_groups = dict(group_entries_by_src_lang(_mini))
+assert _groups.get("ja") == 1 and _groups.get("en") == 1, _groups
+assert filter_entries_by_src_lang(_mini, None) == _mini
+assert [e.id for e in filter_entries_by_src_lang(_mini, {"en"})] == [2, 3]
+assert [e.id for e in filter_entries_by_src_lang(_mini, set())] == [1, 2, 3]
+print("   OK")
+
 print()
 print("GUI OFFSCREEN: ВСЕ ПРОВЕРКИ ПРОШЛИ")
 sys.stdout.flush()

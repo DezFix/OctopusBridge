@@ -9,6 +9,7 @@ psutil==7.2.2
 frida==17.16.4
 pywebview==6.2.1
 UnityPy==1.25.3
+TypeTreeGeneratorAPI==0.0.10
 
 # Build (для сборки exe через build_app.py)
 pyinstaller==6.21.0
