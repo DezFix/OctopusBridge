@@ -56,7 +56,7 @@ EXCLUDES_MIN = [
 
 SPEC_TEMPLATE = r'''# -*- mode: python ; coding: utf-8 -*-
 # Сгенерировано build_app.py — не редактируйте вручную.
-from PyInstaller.utils.hooks import collect_all, collect_binaries, collect_data_files
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_dynamic_libs
 from PyInstaller.utils.win32.versioninfo import (
     FixedFileInfo, StringFileInfo, StringStruct, StringTable,
     VarFileInfo, VarStruct, VSVersionInfo)
@@ -66,11 +66,11 @@ datas = collect_data_files('app') + collect_data_files('UnityPy') + [('assets/ic
 # typetree через importlib.resources). Без неё parse_as_dict падает на
 # КАЖДОМ объекте с ModuleNotFoundError: UnityPy.resources — в exe было
 # 26/26 файлов, 13988 текстовых объектов и 0 записей.
-# collect_binaries('TypeTreeGeneratorAPI'): capstone.dll +
+# collect_dynamic_libs('TypeTreeGeneratorAPI'): capstone.dll +
 # TypeTreeGeneratorAPI.dll грузятся через ctypes в рантайме — анализ
 # импортов их не видит. Без них _setup_typetree молча False и exe
 # извлекает только TextAsset (101 вместо 6400).
-binaries = collect_binaries('TypeTreeGeneratorAPI')
+binaries = collect_dynamic_libs('TypeTreeGeneratorAPI')
 binaries, hiddenimports = binaries, ["UnityPy", "UnityPy.resources",
                                      "TypeTreeGeneratorAPI"]
 
