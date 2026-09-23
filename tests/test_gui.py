@@ -339,6 +339,12 @@ assert dlg2.selected_src_langs() == {"en"}
 dlg2.reject()
 print("   OK")
 
+print("12) channel_diag: видно расхождение статуса и канала...")
+d = w.channel_diag()
+assert "tentacle=" in d and "attached=" in d and "pid=" in d, d
+assert w.channel() is None, "без запуска канала нет"
+print("   OK:", d)
+
 print()
 print("GUI OFFSCREEN: ВСЕ ПРОВЕРКИ ПРОШЛИ")
 sys.stdout.flush()

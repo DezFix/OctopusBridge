@@ -566,8 +566,9 @@ class CheatTab(QWidget):
     def _cheat(self, cmd: str, **kwargs):
         ch = self.main.channel()
         if not ch:
-            QMessageBox.information(self, TR("cheat_no_bridge"),
-                                    TR("cheat_no_bridge"))
+            QMessageBox.information(
+                self, TR("cheat_no_bridge"),
+                TR("cheat_no_bridge") + "\n" + self.main.channel_diag())
             return
         ch.send_cheat(cmd, **kwargs)
 

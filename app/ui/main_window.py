@@ -522,6 +522,33 @@ class MainWindow(QMainWindow):
         t = self.session.tentacle
         return t if (t and t.is_attached()) else None
 
+    def channel_diag(self) -> str:
+        """Одна строка диагностики «почему нет канала» для диалогов.
+
+        Статус-бар мог остаться «Connected», а канал уже мёртв
+        (тихий разрыв) — тут видно расхождение сразу.
+        """
+        try:
+            t = self.session.tentacle
+            has = t is not None
+            att = bool(t and t.is_attached())
+            pid = None
+            try:
+                pid = t.game_pid() if t else None
+            except Exception:  # noqa: BLE001
+                pid = None
+            alive = None
+            if pid:
+                try:
+                    from app.core import process as _proc
+                    alive = bool(_proc.pid_exists(pid))
+                except Exception:  # noqa: BLE001
+                    alive = None
+            return (f"tentacle={type(t).__name__ if has else None} "
+                    f"attached={att} pid={pid} alive={alive}")
+        except Exception as e:  # noqa: BLE001
+            return f"diag-error: {e}"
+
     def _live_translate(self, texts: list, lang_from: str,
                         lang_to: str) -> list:
         """Live-перевод текстов игры (простой бесплатный плагин).

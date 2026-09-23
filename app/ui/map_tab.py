@@ -384,6 +384,8 @@ class MapTab(QWidget):
         self.zoom_combo.currentIndexChanged.connect(self._refresh_canvas)
         bar.addWidget(self.zoom_combo)
         self.lbl_map_info = QLabel("")
+        self.lbl_map_info.setTextInteractionFlags(
+            Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
         bar.addWidget(self.lbl_map_info, 1)
         bar.addStretch(1)
         self.btn_save = QPushButton(TR("map_save"))
@@ -751,8 +753,9 @@ class MapTab(QWidget):
     def _send_teleport(self, map_id: int, x: int, y: int):
         ch = self.main.channel()
         if not ch:
-            QMessageBox.information(self, TR("cheat_no_bridge"),
-                                    TR("cheat_no_bridge"))
+            QMessageBox.information(
+                self, TR("cheat_no_bridge"),
+                TR("cheat_no_bridge") + "\n" + self.main.channel_diag())
             return
         self._pending_tp = (map_id, x, y)
         ch.send_cheat("teleport", mapId=map_id, x=x, y=y)

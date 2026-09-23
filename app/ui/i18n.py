@@ -508,8 +508,8 @@ _STRINGS = {
     "cheat_map_search": {"ru": "Поиск карты:", "en": "Search map:"},
     "cheat_item_search": {"ru": "Поиск:", "en": "Search:"},
     "cheat_no_bridge": {
-        "ru": "Запустите LiveBridge на вкладке «Реалтайм»",
-        "en": "Launch LiveBridge on the Live tab",
+        "ru": "Нет подключения к игре. Запустите игру через приложение",
+        "en": "No game connection. Launch the game via the app",
     },
     "cheat_connected": {
         "ru": "Игра подключена — читы активны",
