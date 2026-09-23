@@ -487,7 +487,41 @@ def patch_monobehaviour(
 # дальше переиспользуем (иначе 58с на КАЖДЫЙ файл extract/apply).
 _TTGEN_CACHE: dict[tuple[str, str], object] = {}
 
+
+def _close_env(env) -> None:
+    """Закрыть файловые ручки env (fsspec LocalFileOpener).
+
+    UnityPy.load(path) держит исходник открытым; на Windows открытая
+    ручка роняет os.replace с WinError 5. Закрываем детерминированно
+    перед atomic_write_bytes (загрузка из байтов — НЕ вариант: через
+    неё ломается разбор скриптовых полей MonoBehaviour).
+    Без исключений.
+    """
+    try:
+        files = getattr(env, "files", None) or {}
+    except Exception:
+        return
+    try:
+        items = list(files.values())
+    except Exception:
+        return
+    for asset in items:
+        try:
+            reader = getattr(asset, "reader", None)
+            stream = getattr(reader, "stream", None)
+        except Exception:
+            continue
+        try:
+            if stream is not None and not getattr(stream, "closed", True):
+                stream.close()
+        except Exception:
+            pass
+
 # ── UnityPy-слой (ленивый импорт) ──────────────────────────────────────────
+
+# Диагностика последнего extract для UI (копия stat): диалог извлечения
+# показывает typetree-статус, иначе молчаливый 101 вместо 6400.
+LAST_STATS: dict = {}
 
 _TEXT_TYPES = frozenset({"TextAsset", "MonoBehaviour", "TextMesh", "GUIText"})
 
@@ -659,16 +693,11 @@ def extract(game_dir: str, stats: dict | None = None) -> list:
         except OSError:
             continue
         stat["checked"] += 1
-        # Грузим из байтов, НЕ путём: UnityPy.load(path) держит ручку
-        # файла открытой (Windows: мешает replace/удалению, пока жив env).
+        # Путь, НЕ байты: load(bytes) ломает разбор скриптовых полей
+        # MonoBehaviour. Ручки закрываем _close_env перед следующей
+        # итерацией (иначе WinError 5 на replace/удалении).
         try:
-            with open(abs_path, "rb") as f:
-                raw = f.read()
-        except OSError:
-            stat["load_failed"] += 1
-            continue
-        try:
-            env = UnityPy.load(raw)
+            env = UnityPy.load(abs_path)
         except Exception:
             stat["load_failed"] += 1
             continue
@@ -757,9 +786,13 @@ def extract(game_dir: str, stats: dict | None = None) -> list:
                         id=next_id, file=rel, json_path=json_path,
                         context=context, original=original))
                     next_id += 1
+        _close_env(env)
     if stats is not None:
         stats.update(stat)
         stats["entries"] = len(entries)
+    LAST_STATS.clear()
+    LAST_STATS.update(stat)
+    LAST_STATS["entries"] = len(entries)
     return entries
 
 
@@ -820,17 +853,10 @@ def apply(
         except OSError:
             stats["skipped"] += len(items)
             continue
-        # Грузим из байтов, НЕ путём: UnityPy.load(path) держит ручку
-        # файла открытой, и atomic_write_bytes (os.replace) падает
-        # на Windows с PermissionError — apply молча скипал всё.
+        # Путь, НЕ байты: load(bytes) ломает разбор скриптовых полей
+        # MonoBehaviour. Ручки закрываем _close_env перед записью.
         try:
-            with open(abs_path, "rb") as f:
-                raw = f.read()
-        except OSError:
-            stats["skipped"] += len(items)
-            continue
-        try:
-            env = UnityPy.load(raw)
+            env = UnityPy.load(abs_path)
         except Exception:
             stats["skipped"] += len(items)
             continue
@@ -973,11 +999,14 @@ def apply(
                     stats["backups"].append(saved)
             except Exception:
                 pass
-        # запись + verify переоткрытием
+        # запись + verify переоткрытием.
+        # Порядок строгий: save() ПЕРВЫМ (читает из потока!), затем
+        # _close_env (открытый исходник роняет os.replace с WinError 5),
+        # затем atomic_write_bytes.
+        data: bytes | None = None
         try:
             from app.core.io import atomic_write_bytes
 
-            wrote = False
             for _ak, asset in list(
                     getattr(env, "files", {}).items()):
                 save = getattr(asset, "save", None)
@@ -986,14 +1015,15 @@ def apply(
                 # однозадачный случай: один файл на диске
                 if len(getattr(env, "files", {})) != 1:
                     continue
-                data = save()
-                if not isinstance(data, (bytes, bytearray)):
+                raw = save()
+                if not isinstance(raw, (bytes, bytearray)):
                     continue
-                atomic_write_bytes(abs_path, bytes(data))
-                wrote = True
-            if not wrote:
+                data = bytes(raw)
+            if data is None:
                 stats["skipped"] += file_written
                 continue
+            _close_env(env)
+            atomic_write_bytes(abs_path, data)
             try:
                 # verify из байтов, НЕ путём: path-загрузка держит ручку
                 # (мешает следующим replace/удалению на Windows)

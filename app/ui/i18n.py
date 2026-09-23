@@ -195,6 +195,8 @@ _STRINGS = {
     "tr_src_all": {"ru": "Все", "en": "All"},
     "tr_src_none": {"ru": "Ничего", "en": "None"},
     "tr_src_selected": {"ru": "Выбрано: {n}", "en": "Selected: {n}"},
+    "tr_unity_typetree": {"ru": "typetree: {status} (MonoBehaviour пропущены)",
+                          "en": "typetree: {status} (MonoBehaviour skipped)"},
     "tr_lang_unknown": {"ru": "Без букв", "en": "No letters"},
     "tr_cancel": {"ru": "Отмена", "en": "Cancel"},
     "tr_apply": {"ru": "Внедрить в игру", "en": "Apply to game"},

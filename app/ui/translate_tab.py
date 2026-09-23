@@ -1223,9 +1223,21 @@ class TranslateTab(QWidget):
             return
         p = self._project()
         self.main.refresh_all()
+        extra = ""
+        try:
+            mod = getattr(self.main, "engine_module", None)
+            if getattr(mod, "key", "") == "unity":
+                from app.core.unity import parser as _uparser
+                st = getattr(_uparser, "LAST_STATS", None) or {}
+                if st.get("typetree", "ok") != "ok":
+                    extra = "\n" + TR("tr_unity_typetree",
+                                      status=st.get("typetree", "?"))
+        except Exception:  # noqa: BLE001 — диагностика не роняет диалог
+            extra = ""
         QMessageBox.information(
             self, TR("done"),
-            TR("tr_extract_done", count=len(p.entries), restored=restored))
+            TR("tr_extract_done", count=len(p.entries), restored=restored)
+            + extra)
 
     # ── file list (left panel) ──
 

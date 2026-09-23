@@ -432,16 +432,18 @@ assert harvest_textasset(
 assert harvest_textasset("p", "Zorblax the brave wandered on") != []
 print("   OK")
 
-print("13) UnityPy.load — только байтами (иначе ручка висит, replace падает)...")
+print("13) UnityPy.load — путём + _close_env (ручки не висят)...")
 with tempfile.TemporaryDirectory() as td:
     rel = "MyGame_Data/sharedassets9.assets"
-    _write_big_asset(td, rel)
+    abs_p = _write_big_asset(td, rel)
     seen: list = []
     tree = {"m_Script": "Zorblax lockfree chant of Bramblestone",
             "m_Name": "LockStone"}
     asset = _FakeAsset([_FakeObj(777, "TextAsset", tree)])
 
     class _RecUnityPy:
+        files = {}
+
         @staticmethod
         def load(arg):
             seen.append(type(arg).__name__)
@@ -454,16 +456,15 @@ with tempfile.TemporaryDirectory() as td:
     try:
         entries = parser.extract(td)
         assert entries, "extract пуст"
-        assert all(t == "bytes" for t in seen), seen
+        # путь, НЕ байты: load(bytes) ломает разбор MonoBehaviour
+        assert all(t == "str" for t in seen), seen
         for e in entries:
             e.translation = "Zorblax TESTOVO"
             e.status = "translated"
         stats = parser.apply(td, entries, backup_root=os.path.join(td, "bak"))
-        assert seen and all(t == "bytes" for t in seen), seen
         assert stats.get("files") == 1, stats
         # файл заменяем после extract/apply — ручек не висит
-        os.replace(os.path.join(td, *rel.split("/")),
-                   os.path.join(td, *rel.split("/")))
+        os.replace(abs_p, abs_p)
     finally:
         parser._try_import_unitypy = orig_import  # type: ignore[method-assign]
         parser._setup_typetree = orig_setup  # type: ignore[method-assign]
@@ -484,6 +485,37 @@ with tempfile.TemporaryDirectory() as td:
     assert t.launch(os.path.join(td, "nope")) is False
     from app.engines.unity import UnityModule
     assert UnityModule(td).restore_original(td) == {"restored": 0}
+print("   OK")
+
+print("15) _close_env закрывает ручки (WinError 5 больше нет)...")
+closed: list = []
+
+
+class _FakeStream:
+    closed = False
+
+    def close(self):
+        self.closed = True
+        closed.append(1)
+
+
+class _FakeReader:
+    stream = _FakeStream()
+
+
+class _FakeFile:
+    reader = _FakeReader()
+
+
+class _CloseEnv:
+    files = {"a": _FakeFile()}
+
+
+parser._close_env(_CloseEnv())
+assert closed == [1]
+assert _FakeFile.reader.stream.closed is True
+parser._close_env(None)
+parser._close_env(object())
 print("   OK")
 
 print()
