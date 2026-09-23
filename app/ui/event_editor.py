@@ -1147,6 +1147,18 @@ class EventEditorDialog(QDialog):
             self.live_cond_box.addWidget(QLabel(TR("ev_live_var", id=vid)))
             self.live_cond_box.addWidget(spin)
             self.live_cond_box.addWidget(b)
+        if cond.get("self_switch_valid"):
+            # Рычаги/двери почти всегда на self — в глобальных свитчах
+            # их нет, поэтому кнопки прямо здесь.
+            sch = str(cond.get("self_switch_ch", "A") or "A").upper()[:1]
+            if sch not in "ABCD":
+                sch = "A"
+            for val, suffix in ((True, "on"), (False, "off")):
+                b = QPushButton(TR(f"ev_live_self_{suffix}", ch=sch))
+                b.clicked.connect(
+                    lambda _=False, c=sch, v=val:
+                    self._live_set_self(c, v))
+                self.live_cond_box.addWidget(b)
         if self.live_cond_box.count() == 0:
             self.lbl_live.setText(TR("ev_live_no_cond"))
 
@@ -1175,6 +1187,19 @@ class EventEditorDialog(QDialog):
             return
         self._live_cmd = "var_set"
         ch.send_cheat("var_set", index=vid, value=spin.value())
+
+    def _live_set_self(self, ch_letter: str, val: bool):
+        ch = self._live_channel()
+        if not ch:
+            return
+        try:
+            eid = int((self._ev or {}).get("id", 0))
+            mid = int(self._map_id or 0)
+        except (TypeError, ValueError):
+            return
+        self._live_cmd = "self_switch_set"
+        ch.send_cheat("self_switch_set", mapId=mid, eventId=eid,
+                      ch=ch_letter, value=val)
 
     def _on_live_ack(self, cmd: str, ok: bool, error: str, value: str):
         if cmd != getattr(self, "_live_cmd", None):

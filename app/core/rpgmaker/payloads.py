@@ -115,8 +115,30 @@ window.__octopus_collectState = function () {
     party: [],
     items: [],
     variables: _has("$gameVariables") ? $gameVariables._data.slice(1) : [],
-    switches: _has("$gameSwitches") ? $gameSwitches._data.slice(1) : []
+    switches: _has("$gameSwitches") ? $gameSwitches._data.slice(1) : [],
+    selfSwitches: []
   };
+  // self-переключатели текущей карты (рычаги/двери почти всегда на них):
+  // шлём только включённые [{ev, ch}], чтобы не раздувать state.
+  try {
+    if (_has("$gameMap") && _has("$gameSelfSwitches")) {
+      var _mid = $gameMap.mapId();
+      var _evs = $gameMap.events();
+      for (var _ei = 0; _ei < _evs.length; _ei++) {
+        var _e = _evs[_ei];
+        if (!_e) { continue; }
+        var _eid = _e.eventId();
+        var _chs = ["A", "B", "C", "D"];
+        for (var _ci = 0; _ci < _chs.length; _ci++) {
+          try {
+            if ($gameSelfSwitches.value([_mid, _eid, _chs[_ci]])) {
+              state.selfSwitches.push({ map: _mid, ev: _eid, ch: _chs[_ci] });
+            }
+          } catch (e8) {}
+        }
+      }
+    }
+  } catch (e9) {}
   if (_has("$gameActors") && _has("$gameParty")) {
     try {
       $gameActors._data.forEach(function (a) {

@@ -1194,6 +1194,14 @@ _STRINGS = {
         "ru": "Задать VAR{id}",
         "en": "Set VAR{id}",
     },
+    "ev_live_self_on": {
+        "ru": "Self {ch} вкл",
+        "en": "Self {ch} on",
+    },
+    "ev_live_self_off": {
+        "ru": "Self {ch} выкл",
+        "en": "Self {ch} off",
+    },
     "ev_live_ok": {
         "ru": "Выполнено: {cmd}",
         "en": "Done: {cmd}",

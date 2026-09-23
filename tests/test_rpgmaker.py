@@ -2007,6 +2007,8 @@ _cmds63 = [
     ("give_item", {"kind": "weapon", "id": 3, "count": 1}),
     ("var_set", {"index": 2, "value": "x"}),
     ("switch_set", {"index": 7, "value": True}),
+    ("self_switch_set", {"mapId": 7, "eventId": 66, "ch": "A",
+                         "value": True}),
     ("actor_set", {"actorId": 1, "field": "level", "value": 5}),
     ("teleport", {"mapId": 3, "x": 1, "y": 2}),
     ("event_start", {"eventId": 66}),
@@ -2018,6 +2020,13 @@ for _c63, _k63 in _cmds63:
 _ev63 = RpgMakerTentacle._cheat_expr("event_start", eventId=66)
 assert "var eid=66" in _ev63 and "$gameMap.event(eid)" in _ev63 \
     and ".start()" in _ev63, _ev63
+_ss63 = RpgMakerTentacle._cheat_expr("self_switch_set", mapId=7, eventId=66,
+                                     ch="b", value=True)
+assert "$gameSelfSwitches.setValue([7, 66" in _ss63 \
+    and '"B"' in _ss63 and "true" in _ss63, _ss63
+assert "=>" not in _ss63
+import app.core.rpgmaker.payloads as _pay63
+assert "selfSwitches" in _pay63.PAYLOAD, "state должен нести self-свитчи"
 assert RpgMakerTentacle._cheat_expr("no_such_cheat") is None
 assert RpgMakerTentacle._cheat_expr("var_set", index=2, value="x") == \
     '$gameVariables.setValue(2, "x")'
@@ -2162,6 +2171,27 @@ assert not _dlg67_off.btn_live_run.isEnabled()
 assert _dlg67_off.lbl_live.text() != ""
 _dlg67.reject()
 _dlg67_off.reject()
+# self-switch условие: кнопки Self вкл/выкл шлют self_switch_set
+_ev67s = {"id": 67, "name": "Lever", "x": 1, "y": 1,
+          "pages": [{"trigger": 0,
+                     "conditions": {"selfSwitchValid": True,
+                                    "selfSwitchCh": "B"},
+                     "image": {}, "list": [], "moveType": 0}]}
+_dlg67s = _EV67(_mt65, None, None, _ev67s, map_id=7)
+assert _dlg67s.btn_live_run.isEnabled()
+_n67 = len(_m65.cheats)
+import PySide6.QtWidgets as _QW67s
+_btns67 = _dlg67s.findChildren(_QW67s.QPushButton)
+_labels67 = [_b.text() for _b in _btns67]
+assert any("B" in t for t in _labels67), _labels67
+for _b in _btns67:
+    if "выкл" in _b.text() or "off" in _b.text().lower():
+        _b.click()
+        break
+assert ("self_switch_set",
+        {"mapId": 7, "eventId": 67, "ch": "B",
+         "value": False}) in _m65.cheats, _m65.cheats
+_dlg67s.reject()
 print("   OK")
 
 print()

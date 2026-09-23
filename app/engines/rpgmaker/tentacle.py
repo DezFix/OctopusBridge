@@ -515,6 +515,17 @@ class RpgMakerTentacle(CDPTentacle):
         if cmd == "switch_set":
             v = "true" if kwargs["value"] else "false"
             return f"$gameSwitches.setValue({int(kwargs['index'])}, {v})"
+        if cmd == "self_switch_set":
+            # Self-переключатель события: ключ [mapId, eventId, "A".."D"].
+            # setValue сам дёргает refresh карты — страница пересчитается.
+            ch = str(kwargs.get("ch", "A")).upper()[:1]
+            if ch not in "ABCD":
+                ch = "A"
+            v = "true" if kwargs["value"] else "false"
+            return ("$gameSelfSwitches.setValue(["
+                    + str(int(kwargs["mapId"])) + ", "
+                    + str(int(kwargs["eventId"])) + ', "' + ch + '"], '
+                    + v + ")")
         if cmd == "heal":
             return ("(function(){var m=$gameParty.members();"
                     "for(var i=0;i<m.length;i++){"
