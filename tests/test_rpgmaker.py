@@ -2148,50 +2148,63 @@ assert ("switch_set", {"index": 2, "value": False}) in _m65.cheats, _m65.cheats
 print("   OK")
 
 print()
-print("67) Редактор событий: live-панель (запуск + условия)...")
+print("67) Редактор событий: простое меню + 'Сделать видимым'...")
 from app.ui.event_editor import EventEditorDialog as _EV67
 _ev67 = {"id": 66, "name": "EV", "x": 19, "y": 4,
          "pages": [{"trigger": 1,
                     "conditions": {"switch1Valid": True, "switch1Id": 38,
                                    "variableValid": True, "variableId": 5,
-                                   "variableValue": 3},
+                                   "variableValue": 3,
+                                   "selfSwitchValid": True,
+                                   "selfSwitchCh": "B"},
                     "image": {}, "list": [], "moveType": 0}]}
 _dlg67 = _EV67(_mt65, None, None, _ev67, map_id=7)
-assert _dlg67.btn_live_run.isEnabled(), "канал есть — кнопка активна"
-assert _dlg67.live_cond_box.count() >= 3, "кнопки SW38 + VAR5"
-_dlg67._live_run_event()
-assert ("event_start", {"eventId": 66}) in _m65.cheats, _m65.cheats
-_dlg67._on_live_ack("event_start", True, "", "")
-assert _dlg67.lbl_live.text() != "", "ack виден"
-# без канала — disabled с подсказкой
+# простое по умолчанию: вкладки скрыты, кнопка видимости есть
+assert _dlg67.btn_mode_simple.isChecked()
+assert not _dlg67.tabs.isVisibleTo(_dlg67)
+assert _dlg67.simple_box.isVisibleTo(_dlg67)
+assert _dlg67.btn_visible.isEnabled(), "канал есть — кнопка активна"
+_dlg67.btn_visible.click()
+_kinds67 = [c for c, _k in _m65.cheats]
+assert "switch_set" in _kinds67 and "var_set" in _kinds67 \
+    and "self_switch_set" in _kinds67, _m65.cheats
+assert ("self_switch_set",
+        {"mapId": 7, "eventId": 66, "ch": "B",
+         "value": True}) in _m65.cheats, _m65.cheats
+_dlg67._on_live_ack("self_switch_set", True, "", "")
+assert _dlg67.lbl_visible.text() != "", "ack виден"
+# расширенное показывает вкладки
+_dlg67.btn_mode_expanded.click()
+assert not _dlg67.simple_box.isVisibleTo(_dlg67)
+assert _dlg67.tabs.isVisibleTo(_dlg67)
+# без канала — кнопка disabled с подсказкой
 _dlg67_off = _EV67(None, None, None, {"id": 1, "name": "E",
                                       "x": 0, "y": 0, "pages": [{}]},
                    map_id=7)
-assert not _dlg67_off.btn_live_run.isEnabled()
-assert _dlg67_off.lbl_live.text() != ""
+assert not _dlg67_off.btn_visible.isEnabled()
+assert _dlg67_off.lbl_visible.text() != ""
 _dlg67.reject()
 _dlg67_off.reject()
-# self-switch условие: кнопки Self вкл/выкл шлют self_switch_set
-_ev67s = {"id": 67, "name": "Lever", "x": 1, "y": 1,
-          "pages": [{"trigger": 0,
-                     "conditions": {"selfSwitchValid": True,
-                                    "selfSwitchCh": "B"},
-                     "image": {}, "list": [], "moveType": 0}]}
-_dlg67s = _EV67(_mt65, None, None, _ev67s, map_id=7)
-assert _dlg67s.btn_live_run.isEnabled()
-_n67 = len(_m65.cheats)
-import PySide6.QtWidgets as _QW67s
-_btns67 = _dlg67s.findChildren(_QW67s.QPushButton)
-_labels67 = [_b.text() for _b in _btns67]
-assert any("B" in t for t in _labels67), _labels67
-for _b in _btns67:
-    if "выкл" in _b.text() or "off" in _b.text().lower():
-        _b.click()
-        break
-assert ("self_switch_set",
-        {"mapId": 7, "eventId": 67, "ch": "B",
-         "value": False}) in _m65.cheats, _m65.cheats
-_dlg67s.reject()
+print("   OK")
+
+print()
+print("68) Редактор: сохранение не стирает спрайт вне списка...")
+_ev68 = {"id": 68, "name": "RTP", "x": 0, "y": 0,
+         "pages": [{"trigger": 0, "conditions": {},
+                    "image": {"characterName": "RTP_Missing_Sprite",
+                              "characterIndex": 3, "direction": 4,
+                              "pattern": 2, "tileId": 0},
+                    "list": [{"code": 101, "indent": 0,
+                              "parameters": ["", 0, 0, 2]}],
+                    "moveType": 0}]}
+_dlg68 = _EV67(_mt65, None, None, _ev68, map_id=7)
+_dlg68.accept()  # == Save без касания дропдауна
+_pg68 = _ev68["pages"][0]
+assert (_pg68.get("image") or {}).get("characterName") == \
+    "RTP_Missing_Sprite", _pg68.get("image")
+assert (_pg68.get("image") or {}).get("characterIndex") == 3
+assert len(_pg68.get("list") or []) == 1
+_dlg68.deleteLater()
 print("   OK")
 
 print()

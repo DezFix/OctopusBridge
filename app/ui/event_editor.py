@@ -720,6 +720,7 @@ class _PageEditor(QWidget):
         self._game_dir = game_dir
         self._view = view
         self._fmt = fmt
+        self._img_initial: str | None = None
         lay = QVBoxLayout(self)
         split = QHBoxLayout()
         lay.addLayout(split, 1)
@@ -842,19 +843,28 @@ class _PageEditor(QWidget):
         split.addWidget(self.cmd_editor, 1)
 
     def _characters(self) -> list[str]:
-        if not self._game_dir:
-            return []
+        # Сканируем шире, чем раньше (только img/characters/*.png):
+        # www-деплой, шифрованные варианты, asar через view. Но ГЛАВНОЕ —
+        # apply_to ниже пишет image ТОЛЬКО если пользователь тронул
+        # дропдаун: несопоставленное имя иначе стирало спрайт
+        # (пустая комната после Save).
+        found: list[str] = []
         try:
-            base = os.path.join(self._game_dir, "img", "characters")
-            names = []
-            for root, dirs, files in os.walk(base):
-                for f in sorted(files):
-                    if f.endswith((".png", ".png_")):
-                        rel = os.path.relpath(os.path.join(root, f), base)
-                        names.append(os.path.splitext(rel)[0].replace("\\", "/"))
-            return names
+            roots = [os.path.join(self._game_dir, "img", "characters"),
+                     os.path.join(self._game_dir, "www", "img", "characters")] \
+                if self._game_dir else []
+            for base in roots:
+                for root, dirs, files in os.walk(base):
+                    for f in sorted(files):
+                        if f.endswith((".png", ".png_", ".rpgmvp")):
+                            rel = os.path.relpath(
+                                os.path.join(root, f), base)
+                            name = os.path.splitext(rel)[0].replace("\\", "/")
+                            if name not in found:
+                                found.append(name)
         except OSError:
-            return []
+            pass
+        return found
 
     def _preview(self):
         name = self.cb_image.currentText()
@@ -892,6 +902,10 @@ class _PageEditor(QWidget):
             self.cb_image.setCurrentIndex(idx if idx >= 0 else 0)
         else:
             self.cb_image.setCurrentIndex(0)
+        # Запоминаем исходный выбор: apply_to перезапишет image ТОЛЬКО
+        # если пользователь тронул дропдаун. Иначе чужой/RTP-спрайт,
+        # которого нет в списке, стёрся бы в {} (невидимое событие).
+        self._img_initial = self.cb_image.currentText()
         self.sp_char_index.setValue(img.get("characterIndex", 0))
         dir_idx = DIR_ORDER.index(img.get("direction", 2)) \
             if img.get("direction") in DIR_ORDER else 0
@@ -922,25 +936,29 @@ class _PageEditor(QWidget):
         self._preview()
 
     def apply_to(self, page: dict):
-        name = self.cb_image.currentText()
-        img = page.setdefault("image", {})
-        if name and name != TR("ev_none"):
-            img["characterName"] = name
-            img["characterIndex"] = self.sp_char_index.value()
-            img["direction"] = DIR_ORDER[
-                self.sp_direction.currentIndex()]
-            img["pattern"] = self.sp_pattern.value()
-            if img.get("tileId"):
-                img["tileId"] = 0
-        else:
-            for k in ("characterName", "characterIndex", "direction",
-                      "pattern"):
-                img.pop(k, None)
-            tile = self.sp_tile.value()
-            if tile:
-                img["tileId"] = tile
+        # Image пишем ТОЛЬКО если дропдаун трогали: иначе спрайт,
+        # которого нет в списке (RTP/www/шифр), стёрся бы в {}.
+        if self._img_initial is None or \
+                self.cb_image.currentText() != self._img_initial:
+            name = self.cb_image.currentText()
+            img = page.setdefault("image", {})
+            if name and name != TR("ev_none"):
+                img["characterName"] = name
+                img["characterIndex"] = self.sp_char_index.value()
+                img["direction"] = DIR_ORDER[
+                    self.sp_direction.currentIndex()]
+                img["pattern"] = self.sp_pattern.value()
+                if img.get("tileId"):
+                    img["tileId"] = 0
             else:
-                img.pop("tileId", None)
+                for k in ("characterName", "characterIndex", "direction",
+                          "pattern"):
+                    img.pop(k, None)
+                tile = self.sp_tile.value()
+                if tile:
+                    img["tileId"] = tile
+                else:
+                    img.pop("tileId", None)
         page["trigger"] = self.cb_trigger.currentIndex()
         page["priorityType"] = self.cb_priority.currentIndex()
         page["moveType"] = self.cb_move.currentIndex()
@@ -1025,23 +1043,33 @@ class EventEditorDialog(QDialog):
         self.tabs = AnimatedTabWidget()
         lay.addWidget(self.tabs, 1)
 
-        # ── live: дёрнуть триггер / щёлкнуть условия прямо в игре ──
-        # Без запущенной игры панель висит disabled с подсказкой.
-        from PySide6.QtWidgets import QGroupBox
-        live_box = QGroupBox(TR("ev_live_box"))
-        live_lay = QVBoxLayout(live_box)
-        live_row = QHBoxLayout()
-        self.btn_live_run = QPushButton(TR("ev_live_run"))
-        self.btn_live_run.setObjectName("accent")
-        self.btn_live_run.clicked.connect(self._live_run_event)
-        live_row.addWidget(self.btn_live_run)
-        self.live_cond_box = QHBoxLayout()
-        live_row.addLayout(self.live_cond_box, 1)
-        live_lay.addLayout(live_row)
-        self.lbl_live = QLabel("")
-        self.lbl_live.setWordWrap(True)
-        live_lay.addWidget(self.lbl_live)
-        lay.addWidget(live_box)
+        # ── режим: простое (по умолчанию) / расширенное ──
+        # Простое: одна кнопка «Сделать видимым в игре» (включает все
+        # условия текущей страницы). Остальное добавим позже.
+        mode_row = QHBoxLayout()
+        self.btn_mode_simple = QPushButton(TR("ev_mode_simple"))
+        self.btn_mode_simple.setCheckable(True)
+        self.btn_mode_expanded = QPushButton(TR("ev_mode_expanded"))
+        self.btn_mode_expanded.setCheckable(True)
+        self.btn_mode_simple.clicked.connect(lambda: self._set_mode(True))
+        self.btn_mode_expanded.clicked.connect(lambda: self._set_mode(False))
+        mode_row.addWidget(self.btn_mode_simple)
+        mode_row.addWidget(self.btn_mode_expanded)
+        mode_row.addStretch(1)
+        lay.addLayout(mode_row)
+
+        self.simple_box = QWidget()
+        simple_lay = QVBoxLayout(self.simple_box)
+        simple_lay.setContentsMargins(0, 0, 0, 0)
+        self.btn_visible = QPushButton(TR("ev_make_visible"))
+        self.btn_visible.setObjectName("accent")
+        self.btn_visible.setMinimumHeight(44)
+        self.btn_visible.clicked.connect(self._make_visible)
+        simple_lay.addWidget(self.btn_visible)
+        self.lbl_visible = QLabel("")
+        self.lbl_visible.setWordWrap(True)
+        simple_lay.addWidget(self.lbl_visible)
+        lay.addWidget(self.simple_box)
 
         btns = QDialogButtonBox(QDialogButtonBox.Save
                                 | QDialogButtonBox.Cancel)
@@ -1056,7 +1084,16 @@ class EventEditorDialog(QDialog):
                 main.bridge_cheat_ack.connect(self._on_live_ack)
         except Exception:  # noqa: BLE001, RuntimeError
             pass
-        self._refresh_live()
+        self._set_mode(True)
+
+    def _set_mode(self, simple: bool) -> None:
+        """Простое (кнопка видимости) / расширенное (все вкладки)."""
+        self.btn_mode_simple.setChecked(simple)
+        self.btn_mode_expanded.setChecked(not simple)
+        self.tabs.setVisible(not simple)
+        self.simple_box.setVisible(simple)
+        if simple:
+            self._refresh_visible()
 
     def _page_index(self) -> int:
         return self.cb_pages.currentIndex()
@@ -1094,7 +1131,8 @@ class EventEditorDialog(QDialog):
     def _page_changed(self, idx: int):
         if 0 <= idx < self.tabs.count():
             self.tabs.setCurrentIndex(idx)
-        self._refresh_live()
+        if self.btn_mode_simple.isChecked():
+            self._refresh_visible()
 
     # ── live-действия ──
     def _live_channel(self):
@@ -1106,108 +1144,75 @@ class EventEditorDialog(QDialog):
         except Exception:  # noqa: BLE001
             return None
 
-    def _refresh_live(self):
-        """Кнопки live-панели под текущую страницу: запуск + условия."""
+    def _refresh_visible(self):
+        """Состояние кнопки «Сделать видимым» под текущую страницу."""
         ch = self._live_channel()
         ok = ch is not None
-        self.btn_live_run.setEnabled(ok)
-        self.btn_live_run.setToolTip("" if ok else TR("ev_live_no_channel"))
-        # чистим старые кнопки условий
-        while self.live_cond_box.count():
-            item = self.live_cond_box.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.deleteLater()
+        self.btn_visible.setEnabled(ok)
+        self.btn_visible.setToolTip("" if ok else TR("ev_live_no_channel"))
+        if not ok:
+            self.lbl_visible.setText(TR("ev_live_no_channel"))
+            return
         pages = self._ev.get("pages") or []
         idx = self._page_index()
         page = pages[idx] if 0 <= idx < len(pages) else {}
         cond = maprender.page_conditions(page)
-        if not ok:
-            self.lbl_live.setText(TR("ev_live_no_channel"))
-            return
-        self.lbl_live.setText("")
-        for key in ("switch1", "switch2"):
-            if cond.get(f"{key}_valid"):
-                sid = cond.get(f"{key}_id", 1)
-                for val, suffix in ((True, "on"), (False, "off")):
-                    b = QPushButton(TR(f"ev_live_sw_{suffix}", id=sid))
-                    b.clicked.connect(
-                        lambda _=False, i=sid, v=val:
-                        self._live_toggle_sw(i, v))
-                    self.live_cond_box.addWidget(b)
-        if cond.get("variable_valid"):
-            vid = cond.get("variable_id", 1)
-            vval = cond.get("variable_value", 0)
-            spin = QSpinBox()
-            spin.setRange(-9999999, 9999999)
-            spin.setValue(int(vval or 0))
-            b = QPushButton(TR("ev_live_var_set", id=vid))
-            b.clicked.connect(
-                lambda _=False, i=vid, s=spin: self._live_set_var(i, s))
-            self.live_cond_box.addWidget(QLabel(TR("ev_live_var", id=vid)))
-            self.live_cond_box.addWidget(spin)
-            self.live_cond_box.addWidget(b)
-        if cond.get("self_switch_valid"):
-            # Рычаги/двери почти всегда на self — в глобальных свитчах
-            # их нет, поэтому кнопки прямо здесь.
-            sch = str(cond.get("self_switch_ch", "A") or "A").upper()[:1]
-            if sch not in "ABCD":
-                sch = "A"
-            for val, suffix in ((True, "on"), (False, "off")):
-                b = QPushButton(TR(f"ev_live_self_{suffix}", ch=sch))
-                b.clicked.connect(
-                    lambda _=False, c=sch, v=val:
-                    self._live_set_self(c, v))
-                self.live_cond_box.addWidget(b)
-        if self.live_cond_box.count() == 0:
-            self.lbl_live.setText(TR("ev_live_no_cond"))
+        if not (cond.get("switch1_valid") or cond.get("switch2_valid")
+                or cond.get("variable_valid")
+                or cond.get("self_switch_valid")):
+            self.lbl_visible.setText(TR("ev_live_no_cond"))
+        else:
+            self.lbl_visible.setText("")
 
-    def _live_run_event(self):
+    def _make_visible(self):
+        """Одна кнопка простого меню: включить все условия текущей
+        страницы (свитчи ON, переменную в нужное значение, self ON) —
+        предмет становится виден в игре. Остальное добавим позже."""
         ch = self._live_channel()
         if not ch:
-            self.lbl_live.setText(TR("ev_live_no_channel"))
+            self.lbl_visible.setText(TR("ev_live_no_channel"))
             return
-        try:
-            eid = int((self._ev or {}).get("id", 0))
-        except (TypeError, ValueError):
-            eid = 0
-        self._live_cmd = "event_start"
-        ch.send_cheat("event_start", eventId=eid)
-
-    def _live_toggle_sw(self, sid: int, val: bool):
-        ch = self._live_channel()
-        if not ch:
-            return
-        self._live_cmd = "switch_set"
-        ch.send_cheat("switch_set", index=sid, value=val)
-
-    def _live_set_var(self, vid: int, spin: QSpinBox):
-        ch = self._live_channel()
-        if not ch:
-            return
-        self._live_cmd = "var_set"
-        ch.send_cheat("var_set", index=vid, value=spin.value())
-
-    def _live_set_self(self, ch_letter: str, val: bool):
-        ch = self._live_channel()
-        if not ch:
-            return
+        pages = self._ev.get("pages") or []
+        idx = self._page_index()
+        page = pages[idx] if 0 <= idx < len(pages) else {}
+        cond = maprender.page_conditions(page)
         try:
             eid = int((self._ev or {}).get("id", 0))
             mid = int(self._map_id or 0)
         except (TypeError, ValueError):
             return
-        self._live_cmd = "self_switch_set"
-        ch.send_cheat("self_switch_set", mapId=mid, eventId=eid,
-                      ch=ch_letter, value=val)
+        sent = None
+        for key in ("switch1", "switch2"):
+            if cond.get(f"{key}_valid"):
+                ch.send_cheat("switch_set",
+                              index=int(cond.get(f"{key}_id", 1) or 1),
+                              value=True)
+                sent = "switch_set"
+        if cond.get("variable_valid"):
+            ch.send_cheat("var_set",
+                          index=int(cond.get("variable_id", 1) or 1),
+                          value=int(cond.get("variable_value", 0) or 0))
+            sent = "var_set"
+        if cond.get("self_switch_valid"):
+            sch = str(cond.get("self_switch_ch", "A") or "A").upper()[:1]
+            if sch not in "ABCD":
+                sch = "A"
+            ch.send_cheat("self_switch_set", mapId=mid, eventId=eid,
+                          ch=sch, value=True)
+            sent = "self_switch_set"
+        if not sent:
+            self.lbl_visible.setText(TR("ev_live_no_cond"))
+            return
+        self._live_cmd = sent
+        self.lbl_visible.setText(TR("ev_visible_sent"))
 
     def _on_live_ack(self, cmd: str, ok: bool, error: str, value: str):
         if cmd != getattr(self, "_live_cmd", None):
             return
         if ok:
-            self.lbl_live.setText(TR("ev_live_ok", cmd=cmd))
+            self.lbl_visible.setText(TR("ev_live_ok", cmd=cmd))
         else:
-            self.lbl_live.setText(TR("ev_live_err", error=error or "?"))
+            self.lbl_visible.setText(TR("ev_live_err", error=error or "?"))
 
     def _new_page(self) -> dict:
         return {

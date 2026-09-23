@@ -1162,13 +1162,21 @@ _STRINGS = {
         "ru": "Телепорт не удался: {error}",
         "en": "Teleport failed: {error}",
     },
-    "ev_live_box": {
-        "ru": "Живое управление (игра запущена)",
-        "en": "Live control (game running)",
+    "ev_mode_simple": {
+        "ru": "Простое",
+        "en": "Simple",
     },
-    "ev_live_run": {
-        "ru": "▶ Запустить событие",
-        "en": "▶ Start event",
+    "ev_mode_expanded": {
+        "ru": "Расширенное",
+        "en": "Advanced",
+    },
+    "ev_make_visible": {
+        "ru": "Сделать видимым в игре",
+        "en": "Make visible in game",
+    },
+    "ev_visible_sent": {
+        "ru": "Команды отправлены — смотрите игру",
+        "en": "Commands sent — check the game",
     },
     "ev_live_no_channel": {
         "ru": "Запустите игру через приложение — тогда здесь появятся кнопки",
@@ -1177,30 +1185,6 @@ _STRINGS = {
     "ev_live_no_cond": {
         "ru": "У страницы нет условий — видна всегда",
         "en": "Page has no conditions — always visible",
-    },
-    "ev_live_sw_on": {
-        "ru": "SW{id} вкл",
-        "en": "SW{id} on",
-    },
-    "ev_live_sw_off": {
-        "ru": "SW{id} выкл",
-        "en": "SW{id} off",
-    },
-    "ev_live_var": {
-        "ru": "VAR{id}:",
-        "en": "VAR{id}:",
-    },
-    "ev_live_var_set": {
-        "ru": "Задать VAR{id}",
-        "en": "Set VAR{id}",
-    },
-    "ev_live_self_on": {
-        "ru": "Self {ch} вкл",
-        "en": "Self {ch} on",
-    },
-    "ev_live_self_off": {
-        "ru": "Self {ch} выкл",
-        "en": "Self {ch} off",
     },
     "ev_live_ok": {
         "ru": "Выполнено: {cmd}",
