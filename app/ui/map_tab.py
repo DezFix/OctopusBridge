@@ -291,15 +291,28 @@ class MapCanvas(QLabel):
         super().mousePressEvent(event)
 
     def _tile_at(self, event_or_pos) -> tuple[int, int]:
-        zoom = self._tab.zoom_factor()
+        # Координаты клика -> тайл. Картинка в канвасе ужата дважды:
+        # базовый слой (_layer_scale) и _compose (зум + кап MAX_VIEW),
+        # поэтому делить на TILE*zoom НЕЛЬЗЯ — считаем пропорцией
+        # от размера показанного pixmap к размеру карты в тайлах.
+        # Метод живёт на канвасе (сюда прилетают клики), данные — на табе.
+        map_data = self._tab._map_data
+        if not map_data:
+            return -1, -1
+        pm = self.pixmap()
+        if pm is None or pm.isNull():
+            return -1, -1
+        w, h, *_ = maprender.map_layers(map_data)
+        if w <= 0 or h <= 0 or pm.width() <= 0 or pm.height() <= 0:
+            return -1, -1
         if hasattr(event_or_pos, "position"):
             px = event_or_pos.position().x()
             py = event_or_pos.position().y()
         else:
             px = event_or_pos.x()
             py = event_or_pos.y()
-        x = int(px / (maprender.TILE * zoom))
-        y = int(py / (maprender.TILE * zoom))
+        x = int(px / pm.width() * w)
+        y = int(py / pm.height() * h)
         return x, y
 
     def _show_menu(self, pos):
@@ -326,6 +339,8 @@ class MapTab(QWidget):
         # wrapper в Python, иначе C++-объект удалится во время run() и Qt
         # упадёт («QThread: Destroyed while thread is still running»)
         self._render_threads: set = set()
+        self._pending_tp: tuple | None = None
+        self._live_switches: list | None = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -388,6 +403,7 @@ class MapTab(QWidget):
         split.setSizes([240, 960])
 
         self.main.bridge_state.connect(self._on_state)
+        self.main.bridge_cheat_ack.connect(self._on_cheat_ack)
 
     # ── helpers ──
     def zoom_factor(self) -> float:
@@ -664,7 +680,8 @@ class MapTab(QWidget):
     # ── диалог редактирования события ──
     def _edit_event_dialog(self, ev: dict):
         from app.ui.event_editor import EventEditorDialog
-        dlg = EventEditorDialog(self, self._game_dir(), self._view(), ev)
+        dlg = EventEditorDialog(self, self._game_dir(), self._view(), ev,
+                                map_id=self._map_id)
         if dlg.exec() == QDialog.Accepted:
             # правки события применены — сразу пишем карту на диск и,
             # если игра запущена, перезагружаем её в живой игре
@@ -737,12 +754,36 @@ class MapTab(QWidget):
             QMessageBox.information(self, TR("cheat_no_bridge"),
                                     TR("cheat_no_bridge"))
             return
+        self._pending_tp = (map_id, x, y)
         ch.send_cheat("teleport", mapId=map_id, x=x, y=y)
+
+    def _on_cheat_ack(self, cmd: str, ok: bool, error: str, value: str):
+        # Видимый ответ телепорта: раньше команда уходила молча и
+        # «не работает» было не отличить от «сработало не туда».
+        if cmd != "teleport" or not hasattr(self, "_pending_tp"):
+            return
+        map_id, x, y = self._pending_tp
+        if ok:
+            self.lbl_map_info.setText(
+                TR("map_tp_done", map_id=map_id, x=x, y=y))
+        else:
+            self.lbl_map_info.setText(
+                TR("map_tp_fail", error=error or "?"))
+        self._pending_tp = None
 
     def _toggle_switch_live(self, switch_id: int):
         ch = self.main.channel()
-        if ch:
-            ch.send_cheat("switch_set", index=switch_id, value=True)
+        if not ch:
+            return
+        # Флип по живому состоянию (а не всегда ON): повторный клик
+        # гасит рычаг обратно. Состояние кэшируем из bridge_state.
+        cur = False
+        try:
+            sw = (self._live_switches or [])
+            cur = bool(sw[switch_id - 1]) if 0 < switch_id <= len(sw) else False
+        except Exception:  # noqa: BLE001
+            cur = False
+        ch.send_cheat("switch_set", index=switch_id, value=not cur)
 
     # ── сохранение ──
     def _save_and_reload_map(self) -> bool:
@@ -786,6 +827,11 @@ class MapTab(QWidget):
                 return
         if not isinstance(state, dict):
             return
+        try:
+            sw = state.get("switches")
+            self._live_switches = list(sw) if isinstance(sw, list) else None
+        except Exception:  # noqa: BLE001
+            pass
         current = state.get("mapId")
         if current is None:
             return

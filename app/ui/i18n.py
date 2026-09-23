@@ -1154,6 +1154,54 @@ _STRINGS = {
         "ru": "Телепорт сюда",
         "en": "Teleport here",
     },
+    "map_tp_done": {
+        "ru": "Телепорт: карта #{map_id} ({x}, {y}) — выполнено",
+        "en": "Teleport: map #{map_id} ({x}, {y}) — done",
+    },
+    "map_tp_fail": {
+        "ru": "Телепорт не удался: {error}",
+        "en": "Teleport failed: {error}",
+    },
+    "ev_live_box": {
+        "ru": "Живое управление (игра запущена)",
+        "en": "Live control (game running)",
+    },
+    "ev_live_run": {
+        "ru": "▶ Запустить событие",
+        "en": "▶ Start event",
+    },
+    "ev_live_no_channel": {
+        "ru": "Запустите игру через приложение — тогда здесь появятся кнопки",
+        "en": "Launch the game via the app to enable these buttons",
+    },
+    "ev_live_no_cond": {
+        "ru": "У страницы нет условий — видна всегда",
+        "en": "Page has no conditions — always visible",
+    },
+    "ev_live_sw_on": {
+        "ru": "SW{id} вкл",
+        "en": "SW{id} on",
+    },
+    "ev_live_sw_off": {
+        "ru": "SW{id} выкл",
+        "en": "SW{id} off",
+    },
+    "ev_live_var": {
+        "ru": "VAR{id}:",
+        "en": "VAR{id}:",
+    },
+    "ev_live_var_set": {
+        "ru": "Задать VAR{id}",
+        "en": "Set VAR{id}",
+    },
+    "ev_live_ok": {
+        "ru": "Выполнено: {cmd}",
+        "en": "Done: {cmd}",
+    },
+    "ev_live_err": {
+        "ru": "Ошибка: {error}",
+        "en": "Error: {error}",
+    },
     "map_ctx_edit": {
         "ru": "Редактировать событие",
         "en": "Edit event",

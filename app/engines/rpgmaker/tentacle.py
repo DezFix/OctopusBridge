@@ -556,6 +556,15 @@ class RpgMakerTentacle(CDPTentacle):
                     "$gamePlayer.reserveTransfer("
                     + str(int(kwargs['mapId'])) + ", " + str(int(kwargs['x'])) + ", "
                     + str(int(kwargs['y'])) + ", 0, 0);return 'teleported';})()")
+        if cmd == "event_start":
+            # Принудительный запуск события: «дёрнуть триггер» из редактора
+            # или карты, не трогая условия видимости/триггер страницы.
+            return ("(function(){var eid=" + str(int(kwargs["eventId"])) + ";"
+                    "if(typeof $gameMap==='undefined'){"
+                    "throw new Error('игра ещё не загружена');}"
+                    "var ev=$gameMap.event(eid);"
+                    "if(!ev){throw new Error('события нет на этой карте');}"
+                    "ev.start();return 'event_started';})()")
         if cmd == "reload_map":
             # Без Decrypter/XHR-хитростей: перечитываем файл карты через
             # штатный XHR (plain JSON) с www/data-фолбэком, для шифрованных

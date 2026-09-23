@@ -974,9 +974,10 @@ class _PageEditor(QWidget):
 class EventEditorDialog(QDialog):
     """Полный редактор события: страницы, изображение, условия, команды."""
 
-    def __init__(self, parent, game_dir, view, ev: dict):
+    def __init__(self, parent, game_dir, view, ev: dict, map_id: int = 0):
         super().__init__(parent)
         self._ev = ev
+        self._map_id = map_id
         self._game_dir = game_dir
         self._view = view
         self._fmt = None
@@ -1024,6 +1025,24 @@ class EventEditorDialog(QDialog):
         self.tabs = AnimatedTabWidget()
         lay.addWidget(self.tabs, 1)
 
+        # ── live: дёрнуть триггер / щёлкнуть условия прямо в игре ──
+        # Без запущенной игры панель висит disabled с подсказкой.
+        from PySide6.QtWidgets import QGroupBox
+        live_box = QGroupBox(TR("ev_live_box"))
+        live_lay = QVBoxLayout(live_box)
+        live_row = QHBoxLayout()
+        self.btn_live_run = QPushButton(TR("ev_live_run"))
+        self.btn_live_run.setObjectName("accent")
+        self.btn_live_run.clicked.connect(self._live_run_event)
+        live_row.addWidget(self.btn_live_run)
+        self.live_cond_box = QHBoxLayout()
+        live_row.addLayout(self.live_cond_box, 1)
+        live_lay.addLayout(live_row)
+        self.lbl_live = QLabel("")
+        self.lbl_live.setWordWrap(True)
+        live_lay.addWidget(self.lbl_live)
+        lay.addWidget(live_box)
+
         btns = QDialogButtonBox(QDialogButtonBox.Save
                                 | QDialogButtonBox.Cancel)
         btns.accepted.connect(self.accept)
@@ -1031,6 +1050,13 @@ class EventEditorDialog(QDialog):
         lay.addWidget(btns)
 
         self._rebuild_pages()
+        try:
+            main = getattr(self.parent(), "main", None)
+            if main is not None:
+                main.bridge_cheat_ack.connect(self._on_live_ack)
+        except Exception:  # noqa: BLE001, RuntimeError
+            pass
+        self._refresh_live()
 
     def _page_index(self) -> int:
         return self.cb_pages.currentIndex()
@@ -1068,6 +1094,95 @@ class EventEditorDialog(QDialog):
     def _page_changed(self, idx: int):
         if 0 <= idx < self.tabs.count():
             self.tabs.setCurrentIndex(idx)
+        self._refresh_live()
+
+    # ── live-действия ──
+    def _live_channel(self):
+        """Канал в запущенную игру или None (панель тогда disabled)."""
+        try:
+            main = getattr(self.parent(), "main", None)
+            channel = getattr(main, "channel", None)
+            return channel() if callable(channel) else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _refresh_live(self):
+        """Кнопки live-панели под текущую страницу: запуск + условия."""
+        ch = self._live_channel()
+        ok = ch is not None
+        self.btn_live_run.setEnabled(ok)
+        self.btn_live_run.setToolTip("" if ok else TR("ev_live_no_channel"))
+        # чистим старые кнопки условий
+        while self.live_cond_box.count():
+            item = self.live_cond_box.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        pages = self._ev.get("pages") or []
+        idx = self._page_index()
+        page = pages[idx] if 0 <= idx < len(pages) else {}
+        cond = maprender.page_conditions(page)
+        if not ok:
+            self.lbl_live.setText(TR("ev_live_no_channel"))
+            return
+        self.lbl_live.setText("")
+        for key in ("switch1", "switch2"):
+            if cond.get(f"{key}_valid"):
+                sid = cond.get(f"{key}_id", 1)
+                for val, suffix in ((True, "on"), (False, "off")):
+                    b = QPushButton(TR(f"ev_live_sw_{suffix}", id=sid))
+                    b.clicked.connect(
+                        lambda _=False, i=sid, v=val:
+                        self._live_toggle_sw(i, v))
+                    self.live_cond_box.addWidget(b)
+        if cond.get("variable_valid"):
+            vid = cond.get("variable_id", 1)
+            vval = cond.get("variable_value", 0)
+            spin = QSpinBox()
+            spin.setRange(-9999999, 9999999)
+            spin.setValue(int(vval or 0))
+            b = QPushButton(TR("ev_live_var_set", id=vid))
+            b.clicked.connect(
+                lambda _=False, i=vid, s=spin: self._live_set_var(i, s))
+            self.live_cond_box.addWidget(QLabel(TR("ev_live_var", id=vid)))
+            self.live_cond_box.addWidget(spin)
+            self.live_cond_box.addWidget(b)
+        if self.live_cond_box.count() == 0:
+            self.lbl_live.setText(TR("ev_live_no_cond"))
+
+    def _live_run_event(self):
+        ch = self._live_channel()
+        if not ch:
+            self.lbl_live.setText(TR("ev_live_no_channel"))
+            return
+        try:
+            eid = int((self._ev or {}).get("id", 0))
+        except (TypeError, ValueError):
+            eid = 0
+        self._live_cmd = "event_start"
+        ch.send_cheat("event_start", eventId=eid)
+
+    def _live_toggle_sw(self, sid: int, val: bool):
+        ch = self._live_channel()
+        if not ch:
+            return
+        self._live_cmd = "switch_set"
+        ch.send_cheat("switch_set", index=sid, value=val)
+
+    def _live_set_var(self, vid: int, spin: QSpinBox):
+        ch = self._live_channel()
+        if not ch:
+            return
+        self._live_cmd = "var_set"
+        ch.send_cheat("var_set", index=vid, value=spin.value())
+
+    def _on_live_ack(self, cmd: str, ok: bool, error: str, value: str):
+        if cmd != getattr(self, "_live_cmd", None):
+            return
+        if ok:
+            self.lbl_live.setText(TR("ev_live_ok", cmd=cmd))
+        else:
+            self.lbl_live.setText(TR("ev_live_err", error=error or "?"))
 
     def _new_page(self) -> dict:
         return {

@@ -2009,11 +2009,15 @@ _cmds63 = [
     ("switch_set", {"index": 7, "value": True}),
     ("actor_set", {"actorId": 1, "field": "level", "value": 5}),
     ("teleport", {"mapId": 3, "x": 1, "y": 2}),
+    ("event_start", {"eventId": 66}),
 ]
 for _c63, _k63 in _cmds63:
     _e63 = RpgMakerTentacle._cheat_expr(_c63, **_k63)
     assert _e63, f"{_c63} {_k63} не маппится (unknown cmd)"
     assert "=>" not in _e63, _c63
+_ev63 = RpgMakerTentacle._cheat_expr("event_start", eventId=66)
+assert "var eid=66" in _ev63 and "$gameMap.event(eid)" in _ev63 \
+    and ".start()" in _ev63, _ev63
 assert RpgMakerTentacle._cheat_expr("no_such_cheat") is None
 assert RpgMakerTentacle._cheat_expr("var_set", index=2, value="x") == \
     '$gameVariables.setValue(2, "x")'
@@ -2103,6 +2107,62 @@ assert "7" in _mt65.lbl_player_map.text() \
     _mt65.lbl_player_map.text()
 assert _mt65._map_id == 7, _mt65._map_id
 print("   OK:", _mt65.lbl_player_map.text())
+
+print()
+print("66) Карта: клик считается пропорцией, телепорт с ack, флип свитча...")
+from PySide6.QtGui import QPixmap as _PM66, QImage as _QImage66
+from PySide6.QtCore import QPoint as _QPoint66
+# pixmap 200x150 при карте 20x15: клик (100,75) -> тайл (10,7)
+_mt65._map_id = 7
+_mt65._map_data = {"width": 20, "height": 15,
+                   "data": [0] * 20 * 15 * 6, "events": []}
+_mt65.canvas.setPixmap(_PM66.fromImage(_QImage66(200, 150, _QImage66.Format_ARGB32)))
+_mt65.canvas.resize(200, 150)
+_tile66 = _mt65.canvas._tile_at
+assert _tile66(_QPoint66(100, 75)) == (10, 7), _tile66(_QPoint66(100, 75))
+assert _tile66(_QPoint66(0, 0)) == (0, 0)
+assert _tile66(_QPoint66(199, 149)) == (19, 14)
+# ack телепорта виден в инфо-строке
+_mt65._send_teleport(7, 10, 7)
+_mt65._on_cheat_ack("teleport", True, "", "")
+assert "7" in _mt65.lbl_map_info.text() and "10" in _mt65.lbl_map_info.text(), \
+    _mt65.lbl_map_info.text()
+_mt65._send_teleport(7, 1, 1)
+_mt65._on_cheat_ack("teleport", False, "boom-err", "")
+assert "boom-err" in _mt65.lbl_map_info.text(), _mt65.lbl_map_info.text()
+# флип свитча по живому состоянию
+_mt65._live_switches = [False, True, False]
+_mt65._toggle_switch_live(1)
+assert ("switch_set", {"index": 1, "value": True}) in _m65.cheats, _m65.cheats
+_mt65._toggle_switch_live(2)
+assert ("switch_set", {"index": 2, "value": False}) in _m65.cheats, _m65.cheats
+print("   OK")
+
+print()
+print("67) Редактор событий: live-панель (запуск + условия)...")
+from app.ui.event_editor import EventEditorDialog as _EV67
+_ev67 = {"id": 66, "name": "EV", "x": 19, "y": 4,
+         "pages": [{"trigger": 1,
+                    "conditions": {"switch1Valid": True, "switch1Id": 38,
+                                   "variableValid": True, "variableId": 5,
+                                   "variableValue": 3},
+                    "image": {}, "list": [], "moveType": 0}]}
+_dlg67 = _EV67(_mt65, None, None, _ev67, map_id=7)
+assert _dlg67.btn_live_run.isEnabled(), "канал есть — кнопка активна"
+assert _dlg67.live_cond_box.count() >= 3, "кнопки SW38 + VAR5"
+_dlg67._live_run_event()
+assert ("event_start", {"eventId": 66}) in _m65.cheats, _m65.cheats
+_dlg67._on_live_ack("event_start", True, "", "")
+assert _dlg67.lbl_live.text() != "", "ack виден"
+# без канала — disabled с подсказкой
+_dlg67_off = _EV67(None, None, None, {"id": 1, "name": "E",
+                                      "x": 0, "y": 0, "pages": [{}]},
+                   map_id=7)
+assert not _dlg67_off.btn_live_run.isEnabled()
+assert _dlg67_off.lbl_live.text() != ""
+_dlg67.reject()
+_dlg67_off.reject()
+print("   OK")
 
 print()
 print("ВСЕ ТЕСТЫ RPG MAKER ПРОШЛИ")
