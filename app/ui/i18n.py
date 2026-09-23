@@ -1162,6 +1162,15 @@ _STRINGS = {
         "ru": "Телепорт не удался: {error}",
         "en": "Teleport failed: {error}",
     },
+    "map_saved_live": {
+        "ru": "Игра перезагрузила карту — изменения уже в игре",
+        "en": "Game reloaded the map — changes are live",
+    },
+    "map_saved_file": {
+        "ru": "Игра не подключена — перезайдите на карту в игре "
+              "(выйти/зайти или телепорт)",
+        "en": "Game not connected — re-enter the map in game",
+    },
     "ev_mode_simple": {
         "ru": "Простое",
         "en": "Simple",

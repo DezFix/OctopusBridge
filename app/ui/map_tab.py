@@ -685,9 +685,17 @@ class MapTab(QWidget):
         dlg = EventEditorDialog(self, self._game_dir(), self._view(), ev,
                                 map_id=self._map_id)
         if dlg.exec() == QDialog.Accepted:
-            # правки события применены — сразу пишем карту на диск и,
+            # правки события применены — пишем карту на диск и,
             # если игра запущена, перезагружаем её в живой игре
-            self._save_and_reload_map()
+            ok, live = self._save_and_reload_map()
+            if ok:
+                rel = maprender.map_path(self._game_dir(), self._map_id,
+                                         self._view())
+                base = TR("map_saved",
+                          path=os.path.basename(rel or ""))
+                QMessageBox.information(
+                    self, TR("done"), base + "\n" + TR(
+                        "map_saved_live" if live else "map_saved_file"))
         # изменились только события — перерисовываем лёгкий слой
         self._redraw_events()
         self._compose()
@@ -789,36 +797,44 @@ class MapTab(QWidget):
         ch.send_cheat("switch_set", index=switch_id, value=not cur)
 
     # ── сохранение ──
-    def _save_and_reload_map(self) -> bool:
+    def _save_and_reload_map(self) -> tuple[bool, bool]:
         """Пишет карту на диск и применяет её в запущенной игре.
 
-        Возвращает True, если карта записана. Если игра запущена через
-        приложение — отправляет ей reload_map: игра перечитывает
-        MapXXX.json с диска и пересоздаёт события на текущей карте.
+        Возвращает (записано, применено_live). Если игра не подключена —
+        только файл: игре нужен перезаход на карту (телепорт/переход).
+        Молчание здесь и рождало «изменения не применяются».
         """
         game_dir = self._game_dir()
         if not game_dir or not self._map_data:
-            return False
+            return False, False
         try:
-            rel = maprender.save_map(game_dir, self._map_id,
-                                     self._map_data, view=self._view())
+            maprender.save_map(game_dir, self._map_id,
+                               self._map_data, view=self._view())
         except OSError as e:
             QMessageBox.critical(self, TR("err"), str(e))
-            return False
+            return False, False
         ch = self.main.channel()
         if ch:
             ch.send_cheat("reload_map")
-        return True
+            return True, True
+        return True, False
 
     def _save_map(self):
-        if not self._save_and_reload_map():
+        ok, live = self._save_and_reload_map()
+        if not ok:
             return
         self._render_canvas()
         rel = maprender.map_path(self._game_dir(), self._map_id,
                                  self._view())
-        QMessageBox.information(self, TR("done"),
-                                TR("map_saved",
-                                   path=os.path.basename(rel or "")))
+        base = TR("map_saved", path=os.path.basename(rel or ""))
+        if live:
+            QMessageBox.information(
+                self, TR("done"),
+                base + "\n" + TR("map_saved_live"))
+        else:
+            QMessageBox.information(
+                self, TR("done"),
+                base + "\n" + TR("map_saved_file"))
 
     # ── текущая карта игрока ──
     def _on_state(self, state):

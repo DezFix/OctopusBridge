@@ -2230,4 +2230,43 @@ _dlg68.deleteLater()
 print("   OK")
 
 print()
+print("69) Сохранение карты: кэш-бастер + честный статус live/file...")
+_expr69 = RpgMakerTentacle._cheat_expr("reload_map")
+assert "Date.now()" in _expr69 and "?t=" in _expr69, _expr69
+_mt65._map_id = 7
+_mt65._map_data = {"width": 20, "height": 15,
+                   "data": [0] * 20 * 15 * 6, "events": []}
+import tempfile as _tf69, json as _js69, os as _os69
+_td69 = _tf69.mkdtemp(prefix="mapsave_")
+_os69.makedirs(_os69.path.join(_td69, "data"))
+_js69.dump({"width": 20, "height": 15, "data": [0] * 20 * 15 * 6,
+            "events": [None], "tilesetId": 1},
+           open(_os69.path.join(_td69, "data", "Map007.json"), "w",
+                encoding="utf-8"))
+_m65.project = type("P", (), {"game_dir": _td69})()
+from app.ui import map_tab as _mtmod69
+_orig_view69 = _mt65._view
+_mt65._view = lambda: None
+_orig_gd69 = _mt65._game_dir
+_mt65._game_dir = lambda: _td69
+try:
+    ok69, live69 = _mt65._save_and_reload_map()
+    assert ok69 is True and live69 is True, (ok69, live69)
+    # без канала — только файл, честно
+    _ch_hold69 = _FakeMain65.channel
+    _FakeMain65.channel = lambda self: None
+    try:
+        ok69b, live69b = _mt65._save_and_reload_map()
+        assert ok69b is True and live69b is False, (ok69b, live69b)
+    finally:
+        _FakeMain65.channel = _ch_hold69
+finally:
+    _mt65._view = _orig_view69
+    _mt65._game_dir = _orig_gd69
+    _m65.project = None
+import shutil as _sh69
+_sh69.rmtree(_td69, ignore_errors=True)
+print("   OK")
+
+print()
 print("ВСЕ ТЕСТЫ RPG MAKER ПРОШЛИ")
