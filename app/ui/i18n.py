@@ -1178,6 +1178,20 @@ _STRINGS = {
         "ru": "Команды отправлены — смотрите игру",
         "en": "Commands sent — check the game",
     },
+    "ev_undo": {
+        "ru": "Вернуть как было",
+        "en": "Undo",
+    },
+    "ev_undone": {
+        "ru": "Вернули: свитчи погашены",
+        "en": "Reverted: switches off",
+    },
+    "ev_autorun_warn": {
+        "ru": "Страница с автозапуском: включение условий сразу стартует "
+              "событие (затемнение, перенос, зависание). Продолжить?",
+        "en": "Auto-start page: enabling conditions runs the event at once "
+              "(fade, transfer, freeze). Continue?",
+    },
     "ev_live_no_channel": {
         "ru": "Запустите игру через приложение — тогда здесь появятся кнопки",
         "en": "Launch the game via the app to enable these buttons",

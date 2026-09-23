@@ -1066,6 +1066,10 @@ class EventEditorDialog(QDialog):
         self.btn_visible.setMinimumHeight(44)
         self.btn_visible.clicked.connect(self._make_visible)
         simple_lay.addWidget(self.btn_visible)
+        self.btn_undo = QPushButton(TR("ev_undo"))
+        self.btn_undo.setEnabled(False)
+        self.btn_undo.clicked.connect(self._undo_visible)
+        simple_lay.addWidget(self.btn_undo)
         self.lbl_visible = QLabel("")
         self.lbl_visible.setWordWrap(True)
         simple_lay.addWidget(self.lbl_visible)
@@ -1078,6 +1082,7 @@ class EventEditorDialog(QDialog):
         lay.addWidget(btns)
 
         self._rebuild_pages()
+        self._undo_stack: list[tuple] = []
         try:
             main = getattr(self.parent(), "main", None)
             if main is not None:
@@ -1175,36 +1180,66 @@ class EventEditorDialog(QDialog):
         pages = self._ev.get("pages") or []
         idx = self._page_index()
         page = pages[idx] if 0 <= idx < len(pages) else {}
+        # Автозапуск/параллель: включение условий СРАЗУ стартует событие
+        # (затемнение/переброс/зависание игры) — предупреждаем заранее.
+        try:
+            trig = int((page or {}).get("trigger", 0))
+        except (TypeError, ValueError):
+            trig = 0
+        if trig in (3, 4):
+            if QMessageBox.question(
+                    self, TR("ev_make_visible"),
+                    TR("ev_autorun_warn")) != QMessageBox.Yes:
+                return
         cond = maprender.page_conditions(page)
         try:
             eid = int((self._ev or {}).get("id", 0))
             mid = int(self._map_id or 0)
         except (TypeError, ValueError):
             return
-        sent = None
+        undone: list[tuple] = []
         for key in ("switch1", "switch2"):
             if cond.get(f"{key}_valid"):
-                ch.send_cheat("switch_set",
-                              index=int(cond.get(f"{key}_id", 1) or 1),
-                              value=True)
-                sent = "switch_set"
+                sid = int(cond.get(f"{key}_id", 1) or 1)
+                ch.send_cheat("switch_set", index=sid, value=True)
+                undone.append(("switch_set", {"index": sid,
+                                              "value": False}))
         if cond.get("variable_valid"):
-            ch.send_cheat("var_set",
-                          index=int(cond.get("variable_id", 1) or 1),
+            vid = int(cond.get("variable_id", 1) or 1)
+            ch.send_cheat("var_set", index=vid,
                           value=int(cond.get("variable_value", 0) or 0))
-            sent = "var_set"
         if cond.get("self_switch_valid"):
             sch = str(cond.get("self_switch_ch", "A") or "A").upper()[:1]
             if sch not in "ABCD":
                 sch = "A"
             ch.send_cheat("self_switch_set", mapId=mid, eventId=eid,
                           ch=sch, value=True)
-            sent = "self_switch_set"
-        if not sent:
+            undone.append(("self_switch_set", {"mapId": mid, "eventId": eid,
+                                               "ch": sch, "value": False}))
+        if not undone and not cond.get("variable_valid"):
             self.lbl_visible.setText(TR("ev_live_no_cond"))
             return
-        self._live_cmd = sent
+        self._undo_stack = undone
+        self.btn_undo.setEnabled(bool(undone))
+        self._live_cmd = (undone[-1][0] if undone else "var_set")
         self.lbl_visible.setText(TR("ev_visible_sent"))
+
+    def _undo_visible(self):
+        """Вернуть как было: гасим то, что включали (переменная —
+        неизвестно что было, её не трогаем)."""
+        ch = self._live_channel()
+        if not ch:
+            self.lbl_visible.setText(TR("ev_live_no_channel"))
+            return
+        for cmd, kw in getattr(self, "_undo_stack", None) or []:
+            try:
+                ch.send_cheat(cmd, **kw)
+            except Exception:  # noqa: BLE001
+                continue
+        self._undo_stack = []
+        self.btn_undo.setEnabled(False)
+        self._live_cmd = "switch_set"
+        self.lbl_visible.setText(TR("ev_undone"))
 
     def _on_live_ack(self, cmd: str, ok: bool, error: str, value: str):
         if cmd != getattr(self, "_live_cmd", None):

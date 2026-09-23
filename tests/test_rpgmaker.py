@@ -2173,6 +2173,28 @@ assert ("self_switch_set",
          "value": True}) in _m65.cheats, _m65.cheats
 _dlg67._on_live_ack("self_switch_set", True, "", "")
 assert _dlg67.lbl_visible.text() != "", "ack виден"
+# автозапуск: сначала спрашиваем, отказ — тихо
+_ev67a = {"id": 69, "name": "Auto", "x": 0, "y": 0,
+          "pages": [{"trigger": 3, "conditions": {"switch1Valid": True,
+                                                  "switch1Id": 9},
+                     "image": {}, "list": [], "moveType": 0}]}
+import PySide6.QtWidgets as _QW67q
+_qq67 = _QW67q.QMessageBox.question
+_QW67q.QMessageBox.question = staticmethod(lambda *a, **k: _QW67q.QMessageBox.No)
+_dlg67a = _EV67(_mt65, None, None, _ev67a, map_id=7)
+_n67a = len(_m65.cheats)
+_dlg67a.btn_visible.click()
+assert len(_m65.cheats) == _n67a, "отказ — ничего не отправляем"
+_QW67q.QMessageBox.question = staticmethod(lambda *a, **k: _QW67q.QMessageBox.Yes)
+_dlg67a.btn_visible.click()
+assert ("switch_set", {"index": 9, "value": True}) in _m65.cheats
+# undo гасит обратно
+assert _dlg67a.btn_undo.isEnabled()
+_dlg67a.btn_undo.click()
+assert ("switch_set", {"index": 9, "value": False}) in _m65.cheats, \
+    _m65.cheats
+_QW67q.QMessageBox.question = _qq67
+_dlg67a.reject()
 # расширенное показывает вкладки
 _dlg67.btn_mode_expanded.click()
 assert not _dlg67.simple_box.isVisibleTo(_dlg67)
