@@ -77,8 +77,13 @@ class CDPClient(QObject):
         return True
 
     def close(self):
+        # was_connected — только такой close роняет живое соединение:
+        # именно он обязан крикнуть closed, иначе сессия навсегда
+        # остаётся «Connected», а читы мертвы (таймаут call() гасил
+        # _ws без сигнала — классика MZ-жалоб).
         ws, self._ws = self._ws, None
         reader, self._reader = self._reader, None
+        was_connected = ws is not None
         if ws:
             try:
                 ws.close()
@@ -97,6 +102,11 @@ class CDPClient(QObject):
                 if threading.current_thread() is not reader:
                     reader.join(timeout=2.0)
             except Exception:  # noqa: BLE001
+                pass
+        if was_connected:
+            try:
+                self.closed.emit()
+            except RuntimeError:
                 pass
 
     def is_connected(self) -> bool:
@@ -178,10 +188,14 @@ class CDPClient(QObject):
             for p in pend:
                 p["error"] = CDPError("connection lost")
                 p["done"].set()
-            if self._ws is ws:
+            # closed — ровно один раз: только если обрыв обнаружил
+            # reader (close() уже крикнул — не дублируем).
+            lost = self._ws is ws
+            if lost:
                 self._ws = None
             try:
-                self.closed.emit()
+                if lost:
+                    self.closed.emit()
             except RuntimeError:
                 pass
 

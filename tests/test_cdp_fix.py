@@ -289,3 +289,65 @@ assert "0.5" in _src, "в scan_ports должен быть timeout 0.5 на prob
 
 print()
 print("ВСЕ ТЕСТЫ CDP FIX ПРОШЛИ")
+
+print()
+print("14) close на живом соединении кричит closed ровно 1 раз...")
+
+
+class _LiveWS:
+    def send(self, msg):
+        pass
+
+    def close(self):
+        pass
+
+
+c = CDPClient()
+c._ws = _LiveWS()
+got_closed = []
+c.closed.connect(lambda: got_closed.append(1))
+c.close()
+assert got_closed == [1], got_closed
+assert not c.is_connected()
+c.close()
+c.close()
+assert got_closed == [1], f"double close не должен дублировать: {got_closed}"
+print("   OK: closed x1, double close молчит")
+
+print("15) timeout call() тоже кричит closed (статус не врёт)...")
+c = CDPClient()
+c._ws = _HangWS()
+got_closed2 = []
+c.closed.connect(lambda: got_closed2.append(1))
+try:
+    c.call("Runtime.enable", timeout=0.3)
+    raise AssertionError("ожидался CDPError timeout")
+except CDPError:
+    pass
+assert got_closed2 == [1], got_closed2
+print("   OK: timeout -> closed x1")
+
+print("16) конец _read_loop кричит closed, close после — молчит...")
+
+
+class _DeadWS:
+    def __iter__(self):
+        raise OSError("boom-read")
+
+    def close(self):
+        pass
+
+
+c = CDPClient()
+c._ws = _DeadWS()
+got_closed3 = []
+c.closed.connect(lambda: got_closed3.append(1))
+c._read_loop()
+assert got_closed3 == [1], got_closed3
+assert not c.is_connected()
+c.close()
+assert got_closed3 == [1], f"повторного быть не должно: {got_closed3}"
+print("   OK: read_loop x1, close после молчит")
+
+print()
+print("ВСЕ ТЕСТЫ SILENT-DISCONNECT ПРОШЛИ")
