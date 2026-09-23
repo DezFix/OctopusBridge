@@ -505,6 +505,18 @@ _STRINGS = {
         "ru": "Галочка применяется сразу. Имя редактируется и сохраняется.",
         "en": "Toggle applies immediately. Names are editable.",
     },
+    "cheat_freeze": {
+        "ru": "Заморозить #{idx} (держать значение)",
+        "en": "Freeze #{idx} (hold value)",
+    },
+    "cheat_unfreeze": {
+        "ru": "Снять заморозку #{idx}",
+        "en": "Unfreeze #{idx}",
+    },
+    "cheat_frozen": {
+        "ru": "Заморожено: значение удерживается каждый тик",
+        "en": "Frozen: value is re-applied every tick",
+    },
     "cheat_map_search": {"ru": "Поиск карты:", "en": "Search map:"},
     "cheat_item_search": {"ru": "Поиск:", "en": "Search:"},
     "cheat_no_bridge": {

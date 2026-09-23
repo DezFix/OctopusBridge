@@ -345,6 +345,19 @@ assert "tentacle=" in d and "attached=" in d and "pid=" in d, d
 assert w.channel() is None, "без запуска канала нет"
 print("   OK:", d)
 
+print("13) Заморозка переменных: дожимает только разошедшееся...")
+from app.ui.cheat_tab import frozen_corrections
+assert frozen_corrections([5, 0], [True], {1: 5}, {}) == []
+assert frozen_corrections([0], [True], {1: 5}, {}) == [
+    ("var_set", {"index": 1, "value": 5})]
+assert frozen_corrections([], [False], {}, {1: True}) == [
+    ("switch_set", {"index": 1, "value": True})]
+assert frozen_corrections([5], [True], {1: 5, 99: "x"}, {1: True}) == [
+    ("var_set", {"index": 99, "value": "x"})]
+assert frozen_corrections(None, None, {1: 1}, None) == [
+    ("var_set", {"index": 1, "value": 1})]
+print("   OK")
+
 print()
 print("GUI OFFSCREEN: ВСЕ ПРОВЕРКИ ПРОШЛИ")
 sys.stdout.flush()

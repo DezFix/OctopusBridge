@@ -12,13 +12,13 @@ import json
 import os
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox,
-                                QGridLayout, QGroupBox, QHBoxLayout,
-                                QHeaderView, QLabel, QLineEdit, QMessageBox,
-                                QPushButton, QSpinBox, QTableWidget,
-                                QTableWidgetItem, QTabWidget, QVBoxLayout,
-                                QWidget)
+                               QGridLayout, QGroupBox, QHBoxLayout,
+                               QHeaderView, QLabel, QLineEdit, QMenu,
+                               QMessageBox, QPushButton, QSpinBox,
+                               QTableWidget, QTableWidgetItem, QTabWidget,
+                               QVBoxLayout, QWidget)
 
 from app.core.rpgmaker.varnames import (extract_names,
                                         extract_item_names,
@@ -120,6 +120,41 @@ PARAM_NAMES = ["MHP", "MMP", "ATK", "DEF", "MAT", "MDF", "AGI", "LUK"]
 KIND_NAMES = {"item": "Item", "weapon": "Weapon", "armor": "Armor"}
 
 
+def frozen_corrections(state_vars: list, state_switches: list,
+                       frozen_vars: dict, frozen_switches: dict) -> list:
+    """Какие читы отправить, чтобы удержать замороженное.
+
+    Игра (параллельные события) перезаписывает переменные каждый кадр —
+    правка живёт секунду. Возвращает [(cmd, kwargs)] только для
+    разошедшихся значений. Чистая, без Qt.
+    """
+    out = []
+    try:
+        for idx, val in (frozen_vars or {}).items():
+            try:
+                i = int(idx)
+            except (TypeError, ValueError):
+                continue
+            cur = state_vars[i - 1] if isinstance(state_vars, list) \
+                and 0 < i <= len(state_vars) else None
+            if cur is None or cur != val:
+                out.append(("var_set", {"index": i, "value": val}))
+        for idx, val in (frozen_switches or {}).items():
+            try:
+                i = int(idx)
+            except (TypeError, ValueError):
+                continue
+            cur = state_switches[i - 1] if isinstance(state_switches, list) \
+                and 0 < i <= len(state_switches) else None
+            cur = bool(cur) if cur is not None else None
+            want = bool(val)
+            if cur is None or cur != want:
+                out.append(("switch_set", {"index": i, "value": want}))
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
 class CheatTab(QWidget):
     def __init__(self, main_window):
         super().__init__()
@@ -141,6 +176,10 @@ class CheatTab(QWidget):
         self._zombie_workers: list[NamesWorker] = []
         self._loading = False
         self._actor_edits: dict[tuple[int, str], int] = {}
+        # Заморозка: {idx: value} — игра перезаписывает переменные
+        # каждый кадр, без повтора правка живёт секунду.
+        self._frozen_vars: dict[int, object] = {}
+        self._frozen_switches: dict[int, bool] = {}
 
         lay = QVBoxLayout(self)
         self.lbl_status = QLabel(TR("cheat_hint"))
@@ -496,6 +535,9 @@ class CheatTab(QWidget):
         self.vars_table.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.Stretch)
         self.vars_table.itemChanged.connect(self._on_var_edit)
+        self.vars_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.vars_table.customContextMenuRequested.connect(
+            lambda pos: self._freeze_menu(self.vars_table, pos, "var"))
         lay.addWidget(self.vars_table, 1)
         hint = QLabel(TR("cheat_var_hint"))
         lay.addWidget(hint)
@@ -516,6 +558,9 @@ class CheatTab(QWidget):
         self.sw_table.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.Stretch)
         self.sw_table.itemChanged.connect(self._on_switch_toggle)
+        self.sw_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.sw_table.customContextMenuRequested.connect(
+            lambda pos: self._freeze_menu(self.sw_table, pos, "switch"))
         lay.addWidget(self.sw_table, 1)
         hint = QLabel(TR("cheat_sw_hint"))
         lay.addWidget(hint)
@@ -664,6 +709,80 @@ class CheatTab(QWidget):
         self._fill_items()
         self._names_worker = None
 
+    # ── заморозка значений ──
+    def _freeze_menu(self, table: QTableWidget, pos, kind: str):
+        """Контекстное меню строки: заморозить / снять заморозку."""
+        item = table.itemAt(pos)
+        if item is None:
+            return
+        idx = item.data(Qt.UserRole)
+        try:
+            idx = int(idx)
+        except (TypeError, ValueError):
+            return
+        frozen = self._frozen_vars if kind == "var" else self._frozen_switches
+        menu = QMenu(self)
+        if idx in frozen:
+            act = menu.addAction(TR("cheat_unfreeze", idx=idx))
+            act.triggered.connect(lambda: self._set_frozen(kind, idx, None))
+        else:
+            act = menu.addAction(TR("cheat_freeze", idx=idx))
+            act.triggered.connect(
+                lambda: self._freeze_current(kind, idx))
+        menu.exec(table.mapToGlobal(pos))
+
+    def _freeze_current(self, kind: str, idx: int):
+        """Заморозить текущее значение из state."""
+        try:
+            if kind == "var":
+                vals = (self.state or {}).get("variables", [])
+                cur = vals[idx - 1] if 0 < idx <= len(vals) else 0
+                self._set_frozen(kind, idx, cur)
+            else:
+                vals = (self.state or {}).get("switches", [])
+                cur = bool(vals[idx - 1]) if 0 < idx <= len(vals) else False
+                self._set_frozen(kind, idx, cur)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _set_frozen(self, kind: str, idx: int, value):
+        if kind == "var":
+            if value is None:
+                self._frozen_vars.pop(idx, None)
+            else:
+                self._frozen_vars[idx] = value
+        else:
+            if value is None:
+                self._frozen_switches.pop(idx, None)
+            else:
+                self._frozen_switches[idx] = bool(value)
+        self._fill_vars()
+        self._fill_switches()
+        self._enforce_frozen()
+
+    def _enforce_frozen(self):
+        """Дожать замороженное в игру (только разошедшееся)."""
+        if not self._frozen_vars and not self._frozen_switches:
+            return
+        try:
+            ch = self.main.channel()
+        except Exception:  # noqa: BLE001
+            return
+        if not ch:
+            return
+        try:
+            cmds = frozen_corrections(
+                (self.state or {}).get("variables", []),
+                (self.state or {}).get("switches", []),
+                self._frozen_vars, self._frozen_switches)
+        except Exception:  # noqa: BLE001
+            return
+        for cmd, kw in cmds:
+            try:
+                ch.send_cheat(cmd, **kw)
+            except Exception:  # noqa: BLE001
+                continue
+
     # ── обработка нового состояния ──
     def _on_state(self, state):
         # bridge_state — str (json), но принимаем и готовый dict:
@@ -678,6 +797,9 @@ class CheatTab(QWidget):
         # сохраняем предыдущее для diff-подсветки
         self._prev_state = self.state
         self.state = state
+        # заморозка дожимается сразу, а не следующим тиком (500мс): иначе
+        # игра перезаписывает правку между тиками и «не применяется».
+        self._enforce_frozen()
 
         # золото: не трогаем, пока редактируется
         if not self.gold_value.hasFocus():
@@ -806,6 +928,11 @@ class CheatTab(QWidget):
                 it_i.setFlags(it_i.flags() & ~Qt.ItemIsEditable)
                 it_n = QTableWidgetItem(name)
                 it_n.setFlags(it_n.flags() & ~Qt.ItemIsEditable)
+                if i in self._frozen_vars:
+                    f = it_n.font()
+                    f.setBold(True)
+                    it_n.setFont(f)
+                    it_n.setToolTip(TR("cheat_frozen"))
                 it_v = QTableWidgetItem(str(v))
                 for it in (it_i, it_n, it_v):
                     it.setData(Qt.UserRole, i)
@@ -838,6 +965,11 @@ class CheatTab(QWidget):
                 it_i.setFlags(it_i.flags() & ~Qt.ItemIsEditable)
                 it_n = QTableWidgetItem(name)
                 it_n.setFlags(it_n.flags() & ~Qt.ItemIsEditable)
+                if i in self._frozen_switches:
+                    f = it_n.font()
+                    f.setBold(True)
+                    it_n.setFont(f)
+                    it_n.setToolTip(TR("cheat_frozen"))
                 it_v = QTableWidgetItem()
                 it_v.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
                 it_v.setCheckState(Qt.Checked if on else Qt.Unchecked)
@@ -899,8 +1031,15 @@ class CheatTab(QWidget):
             return
         idx = item.data(Qt.UserRole)
         if item.column() == 2:
-            self._cheat("var_set", index=idx,
-                        value=self._coerce_var(item.text()))
+            value = self._coerce_var(item.text())
+            self._cheat("var_set", index=idx, value=value)
+            # замороженную правим вместе с ячейкой, иначе дожималка
+            # вернёт старое значение и «не применяется»
+            try:
+                if int(idx) in self._frozen_vars:
+                    self._frozen_vars[int(idx)] = value
+            except (TypeError, ValueError):
+                pass
         elif item.column() == 1 and self.main.project:
             self.main.project.var_names[str(idx)] = item.text().strip()
             self.main.save_project()
@@ -910,8 +1049,13 @@ class CheatTab(QWidget):
             return
         idx = item.data(Qt.UserRole)
         if item.column() == 2:
-            self._cheat("switch_set", index=idx,
-                        value=item.checkState() == Qt.Checked)
+            value = item.checkState() == Qt.Checked
+            self._cheat("switch_set", index=idx, value=value)
+            try:
+                if int(idx) in self._frozen_switches:
+                    self._frozen_switches[int(idx)] = value
+            except (TypeError, ValueError):
+                pass
         elif item.column() == 1 and self.main.project:
             self.main.project.switch_names[str(idx)] = item.text().strip()
             self.main.save_project()
