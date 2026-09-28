@@ -241,7 +241,15 @@ def patch_font(game_dir: str, font_path: str | None = None) -> dict:
             if not low.endswith(FONT_EXTS):
                 continue
             rel = name.replace("\\", "/")
-            dst = os.path.join(game_sub, *rel.split("/"))
+            # Санитарка traversal: архив с ../../evil.ttf не должен
+            # писать за пределы game/.
+            parts = [p for p in rel.split("/") if p not in ("", ".", "..")]
+            if not parts or len(parts) != len(rel.split("/")):
+                continue
+            dst = os.path.join(game_sub, *parts)
+            if not os.path.abspath(dst).startswith(
+                    os.path.abspath(game_sub) + os.sep):
+                continue
             if os.path.isfile(dst):
                 continue  # локальный файл уже в приоритете над архивом
             try:
@@ -274,10 +282,27 @@ def restore_font(game_dir: str) -> bool:
     manifest = _load_manifest(manifest_path)
     if not manifest:
         return False
+    def _safe_dst(rel: str) -> str | None:
+        # Манифест правится руками: traversal здесь означал бы запись/
+        # удаление за пределами game/.
+        parts = [p for p in rel.replace("\\", "/").split("/")
+                 if p not in ("", ".", "..")]
+        if not parts:
+            return None
+        dst = os.path.join(game_sub, *parts)
+        if not os.path.abspath(dst).startswith(
+                os.path.abspath(game_sub) + os.sep):
+            return None
+        return dst
+
     patched = manifest.get("patched", {})
     for rel, back in patched.items():
-        src = os.path.join(orig_dir, back)
-        dst = os.path.join(game_sub, *rel.split("/"))
+        if not isinstance(back, str) or ".." in back.replace("\\", "/").split("/"):
+            continue
+        src = os.path.join(orig_dir, os.path.basename(back))
+        dst = _safe_dst(rel if isinstance(rel, str) else "")
+        if dst is None:
+            continue
         if os.path.isfile(src):
             try:
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -285,7 +310,9 @@ def restore_font(game_dir: str) -> bool:
             except OSError as e:
                 raise RuntimeError(f"Не удалось восстановить {rel}: {e}")
     for rel in manifest.get("overrides", {}):
-        dst = os.path.join(game_sub, *rel.split("/"))
+        dst = _safe_dst(rel if isinstance(rel, str) else "")
+        if dst is None:
+            continue
         try:
             os.remove(dst)
         except OSError:

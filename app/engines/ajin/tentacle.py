@@ -18,7 +18,7 @@ import time
 
 from app.core import process as proc
 from app.core.ajin import layout as layout_mod
-from app.core.tentacles.cdp_base import (
+from app.live.cdp_base import (
     CDPTentacle, DEFAULT_SCAN_PORTS, bruteforce_port,
     probe_game_port as _base_probe,
 )

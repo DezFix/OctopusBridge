@@ -19,6 +19,8 @@ CODES_RE = re.compile(r'\\[A-Za-z]?\[[^\]]*\]|\\[{}<>|.!^_]?|\\[A-Za-z]+|%[0-9]+
 
 def detect_lang(text: str) -> str | None:
     """Возвращает 'ja' | 'zh' | 'ko' | 'ru' | 'en' | None (нечего переводить)."""
+    if not isinstance(text, str) or not text:
+        return None
     text = CODES_RE.sub('', text)
     if KANA_RE.search(text):
         return "ja"

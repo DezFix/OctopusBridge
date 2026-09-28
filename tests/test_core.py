@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """Ядро перевода: детект языка, маска кодов, глоссарий, память переводов,
-сервис Translator, фиксеры, ИИ-корректор. Без сети — фейковый движок."""
+сервис Translator, фиксеры. Без сети — фейковый движок."""
 import io
 import os
 import sys
@@ -10,7 +10,6 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core.models import TranslationEntry
-from app.core.translate.corrector import Corrector
 from app.core.translate.detect import detect_lang
 from app.core.translate import fixers
 from app.core.translate.glossary import Glossary
@@ -109,21 +108,7 @@ assert fixers.fix_leading_case("V[config.version]", "v[config.version]") == "v[c
 assert fixers.fix_number("Собрано 1 2 предметов", "Собрано ① ② предметов") == "Собрано ① ② предметов"
 print("   OK")
 
-print("6) ИИ-корректор (новый API correct_all/diffs)...")
-corrector = Corrector(FakeEngine())
-entries = [mk(1, "こんにちは", "Здравствуйте", "translated"),
-           mk(2, "ありがとう", "Спасибо", "translated"),
-           mk(3, "さようなら", "", "new")]
-n = corrector.correct_all(entries, "ru")
-assert n == 2, n
-assert len(corrector.diffs) == 2
-assert corrector.diffs[0].new_text == "Здравствуйте [fixed]"
-assert entries[0].translation == "Здравствуйте"  # не применено до подтверждения
-assert entries[2].status == "new"
-corrector.cancel()
-print("   OK")
-
-print("7) Кеш проектов (размер/очистка/автоочистка)...")
+print("6) Кеш проектов (размер/очистка/автоочистка)...")
 import app.core.cache as app_cache
 with tempfile.TemporaryDirectory() as td:
     app_cache.projects_dir = lambda: td
@@ -161,7 +146,7 @@ with tempfile.TemporaryDirectory() as td:
     assert app_cache.format_size(1024 ** 3, "en") == "1.00 GB"
 print("   OK")
 
-print("8) Миграция структуры APPDATA (temp/glossary)...")
+print("7) Миграция структуры APPDATA (temp/glossary)...")
 import app as app_paths
 with tempfile.TemporaryDirectory() as td:
     old = os.environ.get("APPDATA")
@@ -191,7 +176,7 @@ with tempfile.TemporaryDirectory() as td:
             os.environ["APPDATA"] = old
 print("   OK")
 
-print("9) atomic_write: цел при обрыве + read_json_safe...")
+print("8) atomic_write: цел при обрыве + read_json_safe...")
 import json as _json2
 from app.core.io import (atomic_write_bytes, atomic_write_json,
                          atomic_write_text, read_json_safe)
@@ -245,7 +230,7 @@ with tempfile.TemporaryDirectory() as td:
     assert open(p_js, "rb").read() == orig_bytes
 print("   OK")
 
-print("10) BackupStore: версионирование + restore_all...")
+print("9) BackupStore: версионирование + restore_all...")
 from app.core.io import BackupStore
 with tempfile.TemporaryDirectory() as td:
     src = os.path.join(td, "game.ob.json")
@@ -272,7 +257,7 @@ with tempfile.TemporaryDirectory() as td:
     assert st2.backup(src) == b1
 print("   OK")
 
-print("11) Битый .ob.json -> карантин + fallback на .bak...")
+print("10) Битый .ob.json -> карантин + fallback на .bak...")
 from app.core.models import Project
 with tempfile.TemporaryDirectory() as td:
     pf = os.path.join(td, "game_abc.ob.json")
@@ -333,7 +318,7 @@ with tempfile.TemporaryDirectory() as td:
     assert empty.entries == []
 print("   OK")
 
-print("12) migrate_appdata не затирает + glossary atomic...")
+print("11) migrate_appdata не затирает + glossary atomic...")
 with tempfile.TemporaryDirectory() as td:
     old = os.environ.get("APPDATA")
     os.environ["APPDATA"] = td

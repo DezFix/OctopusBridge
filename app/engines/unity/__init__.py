@@ -10,13 +10,13 @@ translate); шрифт — будущий font-patch (заглушка font_patc
 from __future__ import annotations
 
 from app.engines.base import EngineModule
-from app.ui.i18n import TR
 
 
 class UnityModule(EngineModule):
     key = "unity"
     title = "Unity"
     variant = ""
+    maturity = "frozen"  # фокус — RPG-семья; только критические фиксы
     features = {"file-translation", "font-patch"}
 
     @classmethod
@@ -81,9 +81,3 @@ class UnityModule(EngineModule):
     def file_view(self, game_dir: str):
         from app.core.rpgmaker.fileview import DiskFileView
         return DiskFileView(game_dir)
-
-    def ui_tabs(self, main_window) -> list[tuple]:
-        translate = main_window.translate_tab
-        return [
-            (translate, TR("tab_translate"), "translate"),
-        ]

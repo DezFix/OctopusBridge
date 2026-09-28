@@ -42,7 +42,18 @@ class TranslationEntry:
 
     @staticmethod
     def from_dict(d: dict) -> "TranslationEntry":
-        return TranslationEntry(**d)
+        # Битый .ob.json / ручная правка: null вместо строк. Принудительно
+        # приводим к str, иначе первый же .strip() роняет задачу/gui.
+        e = TranslationEntry(**d)
+        for attr in ("file", "json_path", "context", "original",
+                     "translation", "status"):
+            if getattr(e, attr, None) is None:
+                setattr(e, attr, "")
+        try:
+            e.id = int(e.id)
+        except (TypeError, ValueError):
+            e.id = 0
+        return e
 
 
 @dataclass
@@ -57,6 +68,12 @@ class Project:
     switch_names: dict[str, str] = field(default_factory=dict)
     extract_lang: str | None = None  # Ren'Py: какой tl/<lang> извлекать (None = все)
     lang_asked: bool = False  # пользователь уже выбрал язык перевода для проекта
+    # сколько строк в прошлый раз не удалось довести (провайдеры в отдыхе
+    # или сети не было). Ненулевое значение — признак реально
+    # прерванного перевода: по нему авто-возобновление понимает, что
+    # есть что дотягивать. Не «есть непереведённые строки» (они
+    # бывают всегда), а именно «прошлый прогон не дошёл до конца».
+    tr_pending: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -69,6 +86,7 @@ class Project:
             "switch_names": self.switch_names,
             "extract_lang": self.extract_lang,
             "lang_asked": self.lang_asked,
+            "tr_pending": self.tr_pending,
         }
 
     @staticmethod
@@ -84,4 +102,8 @@ class Project:
         p.switch_names = d.get("switch_names", {})
         p.extract_lang = d.get("extract_lang")
         p.lang_asked = bool(d.get("lang_asked", False))
+        try:
+            p.tr_pending = int(d.get("tr_pending", 0) or 0)
+        except (TypeError, ValueError):
+            p.tr_pending = 0
         return p

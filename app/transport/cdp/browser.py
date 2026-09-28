@@ -23,10 +23,13 @@ def debugger_ready(port: int, timeout: float = 0.8) -> bool:
         return False
 
 
-def wait_for_debugger(port: int, timeout: float = 20.0) -> bool:
+def wait_for_debugger(port: int, timeout: float = 20.0,
+                        cancelled=None) -> bool:
     """Ждёт, пока процесс поднимет отладочный порт."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if cancelled is not None and cancelled():
+            return False
         if debugger_ready(port):
             return True
         time.sleep(0.25)

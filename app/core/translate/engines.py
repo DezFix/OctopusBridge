@@ -1,9 +1,17 @@
-﻿# -*- coding: utf-8 -*-
-"""Движки машинного перевода: AI (LLM), Google Free, Bing, Rotate."""
+# -*- coding: utf-8 -*-
+"""Движки машинного перевода: Google Free, Bing, MyMemory,
+Rotate (бесплатные, без нейросетей).
+
+Контракт translate(): возвращает список той же длины, что и texts.
+На месте непереведённой строки стоит None — «этот провайдер не смог»,
+а не EngineError. Ошибка движка не должна убивать перевод задачи:
+непереведённые строки собираются в очередь и повторяются позже.
+"""
 from __future__ import annotations
 
 import html
 import json
+import os
 import re
 import threading
 import time
@@ -11,12 +19,113 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
+from app import user_data_dir
+
 # сколько секунд Google «отдыхает» после 429/капчи (страница /sorry/)
 _RATE_LIMIT_COOLDOWN = 60.0
+# потолок кулдауна провайдера: дальше ждать бессмысленно, он отвалился
+_COOLDOWN_MAX = 900.0
 
-# адрес публичного сервера LibreTranslate по умолчанию (можно заменить
-# на свой в настройках; ключ необязателен)
-LIBRETRANSLATE_DEFAULT_URL = "https://libretranslate.com"
+# (удалено: публичных серверов LibreTranslate без ключа не осталось —
+# проверены fedilab/cutie/argos/terra/.de, все мертвы. Свои ключи тоже
+# убраны: один движок, ноль настроек серверов.)
+
+
+# ---------- состояние провайдеров, переживает перезапуск ----------
+# Раньше кулдаун жил только в памяти процесса: закрыли приложение,
+# открыли — и мы снова лезем в закрытую дверь и ловим 429. Теперь
+# «отдохнувший» провайдер не трогается до конца своего кулдауна.
+_HEALTH_FILE = os.path.join(user_data_dir(), "engine_health.json")
+# RLock, а не Lock: penalize_engine() держит лок и внутри вызывает
+# _load_health(), которая тоже берёт лок — обычный Lock здесь вешает
+# перевод намертво (проверено: тест вставал намертво в clear_engine_cooldown).
+_HEALTH_LOCK = threading.RLock()
+_health: dict | None = None
+
+
+def _load_health() -> dict:
+    global _health
+    with _HEALTH_LOCK:
+        if _health is None:
+            data: dict = {}
+            try:
+                with open(_HEALTH_FILE, encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    data = loaded
+            except (OSError, ValueError):
+                data = {}
+            _health = data
+        return _health
+
+
+def _store_health(data: dict) -> None:
+    try:
+        tmp = f"{_HEALTH_FILE}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        os.replace(tmp, _HEALTH_FILE)
+    except OSError:
+        pass
+
+
+def engine_state(name: str) -> tuple[float, bool]:
+    """(секунд до конца кулдауна, помечен ли провайдер как «упавший»).
+
+    «Упавший» = нет сети/DNS/таймаут. Ждать его бессмысленно, в отличие
+    от 429 по лимиту — там провайдер сам оживёт.
+    """
+    rec = _load_health().get(name)
+    if not isinstance(rec, dict):
+        return 0.0, False
+    try:
+        left = max(0.0, float(rec.get("cooldown_until", 0.0)) - time.time())
+    except (TypeError, ValueError):
+        left = 0.0
+    return left, bool(rec.get("down"))
+
+
+def engine_cooldown(name: str) -> float:
+    return engine_state(name)[0]
+
+
+def penalize_engine(name: str, seconds: float = 30.0,
+                    down: bool = False) -> None:
+    """Провайдер отказал: уводим его в кулдаун и сохраняем на диск.
+
+    Кулдаун нарастает при повторных отказах (30с, 60с, 120с... до
+    15 минут) и обнуляется при первом успешном ответе. down=True — сети
+    нет вовсе, ждать бессмысленно.
+    """
+    with _HEALTH_LOCK:
+        data = _load_health()
+        rec = data.get(name) if isinstance(data.get(name), dict) else {}
+        left = max(0.0, float(rec.get("cooldown_until", 0.0) or 0.0)
+                   - time.time())
+        delay = min(max(seconds, left * 2 if left else 0.0), _COOLDOWN_MAX)
+        data[name] = {"fails": int(rec.get("fails", 0) or 0) + 1,
+                      "cooldown_until": time.time() + delay,
+                      "down": bool(down) or bool(rec.get("down"))}
+        _store_health(data)
+
+
+def clear_engine_cooldown(name: str) -> None:
+    with _HEALTH_LOCK:
+        data = _load_health()
+        if data.get(name):
+            data[name] = {"fails": 0, "cooldown_until": 0.0, "down": False}
+            _store_health(data)
+
+
+def is_network_dead(exc: BaseException) -> bool:
+    """Сети нет (DNS/соединение/таймаут) — провайдер не «отдыхает»,
+    а упал. Ждать такого бессмысленно, надо честно остановиться."""
+    if isinstance(exc, (requests.ConnectionError, requests.Timeout)):
+        return True
+    cause = exc.__cause__ or exc.__context__
+    if cause is not None and cause is not exc:
+        return is_network_dead(cause)
+    return False
 
 LANG_NAMES = {
     "ja": "Japanese", "zh": "Chinese", "en": "English",
@@ -77,160 +186,61 @@ class BaseEngine:
                   context_after: list[str] | None = None) -> list[str]:
         raise NotImplementedError
 
+    def _align(self, texts: list[str], out) -> list:
+        """Приводит ответ к длине texts: None на месте непереведённых строк.
+
+        Раньше RotateEngine возвращал отфильтрованный список (короче
+        texts), и zip() в сервисе молча сдвигал переводы на чужие
+        записи — строка получала чужой перевод. Теперь длина гарантирована.
+        """
+        if out is None:
+            return [None] * len(texts)
+        res = list(out)
+        if len(res) > len(texts):
+            del res[len(texts):]
+        elif len(res) < len(texts):
+            res.extend([None] * (len(texts) - len(res)))
+        return res
+
+    def cooldown_left(self) -> float:
+        """Секунд до конца кулдауна (0 — провайдер доступен)."""
+        return engine_state(self.name)[0]
+
+    def is_down(self) -> bool:
+        """Провайдер упал (нет сети) — ждать его бессмысленно."""
+        return engine_state(self.name)[1]
+
+    def report_failure(self, exc: BaseException,
+                       seconds: float = 30.0) -> None:
+        """Отказ провайдера: 429/капча — отдых, нет сети — падение."""
+        penalize_engine(self.name, seconds, down=is_network_dead(exc))
+
+    def all_down(self) -> bool:
+        """Провайдер сам упал (сети нет) — ждать нечего."""
+        return self.is_down()
+
     def _guard_tokens(self, texts: list[str],
-                      out: list[str]) -> list[str]:
-        """Страховка для любых движков (AI, Google, Bing): если перевод
+                      out: list) -> list:
+        """Страховка для любых движков: если перевод
         потерял/переставил токены <xN/> (макросы, ссылки, коды), строка
         возвращается непереведённой — иначе игра упадёт («cannot find a
-        closing tag for macro», битые ссылки и т.п.)."""
-        return [src_s if _tokens(src_s) != _tokens(tr_s) else tr_s
-                for src_s, tr_s in zip(texts, out)]
+        closing tag for macro», битые ссылки и т.п.). None (строку не
+        перевели) пропускаем как есть."""
+        # Выравниваем длины до zip: укороченный ответ движка иначе
+        # сдвигает переводы на чужие строки (хвост получал чужое).
+        aligned = self._align(texts, out)
+        res: list = []
+        for src_s, tr_s in zip(texts, aligned):
+            if tr_s is None or _tokens(src_s) != _tokens(tr_s):
+                res.append(src_s if tr_s is not None else None)
+            else:
+                res.append(tr_s)
+        return res
 
     def ping(self) -> bool:
         return False
 
 
-class AIEngine(BaseEngine):
-    """OpenAI-совместимый API / локальный LLM (Ollama, OpenRouter, OpenAI, LM Studio)."""
-
-    name = "ai"
-
-    def __init__(self, base_url: str = "https://openrouter.ai/api/v1",
-                 api_key: str = "", model: str = "", batch_size: int = 8):
-        super().__init__()
-        self.base_url = (base_url or "https://openrouter.ai/api/v1").rstrip("/")
-        self.api_key = api_key or ""
-        self.model = model or ""
-        self.batch_size = batch_size
-
-    def ping(self) -> bool:
-        if not self.api_key and "localhost" not in self.base_url and "11434" not in self.base_url:
-            return False
-        try:
-            requests.get(f"{self.base_url}/models",
-                         headers=self._headers(), timeout=5)
-            return True
-        except requests.RequestException:
-            return False
-
-    def _headers(self) -> dict:
-        h = {"Content-Type": "application/json"}
-        if self.api_key:
-            h["Authorization"] = f"Bearer {self.api_key}"
-        return h
-
-    def complete(self, prompt: str) -> str:
-        """Сырой запрос к LLM (для перевода и ИИ-коррекции)."""
-        try:
-            r = requests.post(
-                f"{self.base_url}/chat/completions",
-                headers=self._headers(),
-                json={"model": self.model, "temperature": 0.2,
-                      "messages": [{"role": "user", "content": prompt}]},
-                timeout=30,
-            )
-            r.raise_for_status()
-        except requests.RequestException as e:
-            raise EngineError(f"AI unavailable: {e}") from e
-        try:
-            return r.json()["choices"][0]["message"]["content"]
-        except (ValueError, KeyError, IndexError) as e:
-            raise EngineError(f"Invalid AI response: {e}") from e
-
-    def _parse_translate_response(self, content: str, n: int) -> list[str] | None:
-        """Разбирает ответ LLM: JSON-массив, JSONL ({"i": N, "t": "..."})
-        или строки по одной на строку. При ошибке — None."""
-        if not content:
-            return None
-        # 1. JSON-массив
-        try:
-            start = content.index("[")
-            end = content.rindex("]") + 1
-            out = json.loads(content[start:end])
-            if isinstance(out, list) and len(out) == n:
-                return [str(x) for x in out]
-        except (ValueError, json.JSONDecodeError):
-            pass
-        # 2. JSONL: одна строка — один объект {"i": N, "t": "..."}
-        by_index: dict[int, str] = {}
-        for line in content.splitlines():
-            line = line.strip().strip(",")
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if (isinstance(obj, dict) and isinstance(obj.get("i"), int)
-                    and isinstance(obj.get("t"), str)):
-                by_index[obj["i"]] = obj["t"]
-        if len(by_index) == n and all(i in by_index for i in range(n)):
-            return [by_index[i] for i in range(n)]
-        # 3. каждая строка — строка JSON (модель забыла про JSONL)
-        lines = [l.strip() for l in content.splitlines() if l.strip()]
-        if len(lines) == n:
-            out = []
-            for line in lines:
-                try:
-                    out.append(json.loads(line))
-                except json.JSONDecodeError:
-                    break
-            if len(out) == n:
-                return [str(x) for x in out]
-        return None
-
-    def _translate_batch(self, batch: list[str], source: str, target: str,
-                         context_before: list[str] | None = None,
-                         context_after: list[str] | None = None) -> list[str]:
-        src = LANG_NAMES.get(source, source)
-        tgt = LANG_NAMES.get(target, target)
-        payload = json.dumps(batch, ensure_ascii=False)
-        ctx = ""
-        if context_before:
-            prev = json.dumps(context_before[-3:], ensure_ascii=False)
-            ctx += f"\nPrevious lines for context: {prev}"
-        if context_after:
-            nxt = json.dumps(context_after[:3], ensure_ascii=False)
-            ctx += f"\nNext lines for context: {nxt}"
-        # TextPreserve sample: список кодов в батче, чтобы модель их не трогала
-        codes = sorted(set(re.findall(r"</?x\d+\s*/?>", "".join(batch))))
-        codes_hint = ""
-        if codes:
-            codes_hint = ("Codes in this batch, keep each of them exactly "
-                          "as-is, do not translate, drop or reorder them: "
-                          + " ".join(codes))
-        prompt = (
-            f"Translate the following JSON array of JRPG dialogue strings "
-            f"from {src} to {tgt}. Rules: keep every placeholder like <x0/> "
-            f"exactly as-is and in the same order; do not add, remove or "
-            f"reorder any symbols — brackets, parentheses, quotes, "
-            f"apostrophes, dashes, digits, percent signs, backslashes, "
-            f"tags, variables and macros must stay unchanged, translate "
-            f"only words; keep the tone of an RPG; do not add comments. "
-            f"Answer with JSON lines — one object per "
-            f"line: {{\"i\": index, \"t\": \"translation\"}}.{codes_hint}"
-            f"{ctx}\n{payload}"
-        )
-        content = self.complete(prompt)
-        out = self._parse_translate_response(content, len(batch))
-        if out is None:
-            raise EngineError("AI returned response of wrong length")
-        # Страховка: строки, где модель потеряла/переставила токены
-        # <xN/>, остаются непереведёнными — иначе игра упадёт
-        return self._guard_tokens(batch, out)
-
-    def translate(self, texts: list[str], source: str, target: str,
-                  context_before: list[str] | None = None,
-                  context_after: list[str] | None = None) -> list[str]:
-        result: list[str] = []
-        for i in range(0, len(texts), self.batch_size):
-            if self.cancelled:
-                raise InterruptedError("cancelled")
-            chunk = texts[i:i + self.batch_size]
-            cb = context_before[i:] if context_before else None
-            ca = context_after[i + len(chunk):] if context_after else None
-            result.extend(self._translate_batch(chunk, source, target, cb, ca))
-        return result
 
 
 class GoogleFreeEngine(BaseEngine):
@@ -487,14 +497,22 @@ class GoogleFreeEngine(BaseEngine):
             futures = {ex.submit(self._translate_chunk, c, src, target): i
                        for i, c in enumerate(chunks)}
             for f in as_completed(futures):
-                results[futures[f]] = f.result()
+                try:
+                    results[futures[f]] = f.result()
+                except InterruptedError:
+                    raise
+                except Exception:  # noqa: BLE001 — битый чанк: None-дырки
+                    results[futures[f]] = None
         out: list[str | None] = [None] * len(texts)
         for i, res in enumerate(results):
             if res is None:
                 continue
             for j, t in enumerate(res):
-                out[i * self.BATCH_LINES + j] = t
-        out = [o for o in out if o is not None]
+                pos = i * self.BATCH_LINES + j
+                if pos < len(out):
+                    out[pos] = t
+        # None-дырки НЕ схлопываем: иначе хвост чанка сдвигается на чужие
+        # строки. _guard_tokens оставит None как «не переведено».
         return self._guard_tokens(texts, out)
 
 
@@ -546,7 +564,10 @@ class BingEngine(BaseEngine):
         with self._lock:
             if self._ig and self._token:
                 return
-        r = self._sget(self.HOST_URL, timeout=15)
+        # Короткий таймаут: получение токенов обязано быть быстрым; 15 с
+        # на каждую Bing-сессию превращали ping/старт перевода в долгое
+        # молчание без прогресса.
+        r = self._sget(self.HOST_URL, timeout=8)
         r.raise_for_status()
         html = r.text
         with self._lock:
@@ -636,22 +657,31 @@ class BingEngine(BaseEngine):
 
 
 class MyMemoryEngine(BaseEngine):
-    """MyMemory — официальный бесплатный API перевода (без ключа).
+    """MyMemory — официальный бесплатный API (api.mymemory.translated.net).
 
-    Лимит: 50 000 символов/день на IP, честный и публичный сервис
-    (api.mymemory.translated.net) — в отличие от неофициальных
-    эндпоинтов Google не ловит капчу/429, но качество RU ниже.
-    API принимает по одному тексту за запрос — строки переводятся
-    параллельно, результат склеивается в порядке исходного списка.
+    Лимиты (официальные, mymemory.translated.net/doc/usagelimits.php):
+      * анонимно      — 5 000 символов/день на IP;
+      * с почтой ('de') — 50 000 символов/день.
+    Раньше и в коде, и в UI стояло 50K — это лимит С ПОЧТОЙ. Без неё
+    движок упирается в 5K и почти сразу получает отказ, поэтому в пул
+    он идёт только с заданным email, а по умолчанию считается мелким.
+
+    Параметр q ограничен 500 байтами — длинные строки режутся на куски.
     """
 
     name = "mymemory"
     API = "https://api.mymemory.translated.net/get"
     _WORKERS = 6
+    _CHUNK_BYTES = 480
 
-    def __init__(self, api_key: str = ""):
+    def __init__(self, api_key: str = "", email: str = ""):
         super().__init__()
         self.api_key = api_key or ""
+        self.email = (email or "").strip()
+
+    def usable(self) -> bool:
+        """Без почты лимит 5K/день — движок в пул не берём."""
+        return bool(self.email)
 
     def ping(self) -> bool:
         try:
@@ -671,105 +701,107 @@ class MyMemoryEngine(BaseEngine):
         try:
             pair = ("Autodetect" if source == "auto" else source) + "|" + target
             with ThreadPoolExecutor(max_workers=self._WORKERS) as ex:
-                futs = [ex.submit(self._translate_one, t, pair)
-                        for t in texts]
-                out = [f.result() for f in futs]
+                futs = {ex.submit(self._translate_one, t, pair): i
+                        for i, t in enumerate(texts)}
+                # По готовности, а не по порядку: зависший запрос не
+                # стопарит готовые (head-of-line блокировка).
+                out: list = [None] * len(futs)
+                for f in as_completed(futs):
+                    out[futs[f]] = f.result()
         except InterruptedError:
             raise
         except Exception as e:  # noqa: BLE001
             raise EngineError(f"MyMemory unavailable: {e}") from e
-        return self._guard_tokens(texts, out)
+        return self._align(texts, self._guard_tokens(texts, out))
 
-    def _translate_one(self, text: str, pair: str) -> str:
+    def _split(self, text: str) -> list[str]:
+        """Режет строку на куски по 480 байт (лимит API на q)."""
+        if len(text.encode("utf-8")) <= self._CHUNK_BYTES:
+            return [text]
+        parts: list[str] = []
+        buf = ""
+        for ch in text:
+            if len((buf + ch).encode("utf-8")) > self._CHUNK_BYTES:
+                parts.append(buf)
+                buf = ch
+            else:
+                buf += ch
+        if buf:
+            parts.append(buf)
+        return parts
+
+    def _translate_one(self, text: str, pair: str) -> str | None:
         self._check_cancel()
-        r = requests.post(self.API, data={"q": text, "langpair": pair},
-                          timeout=20)
-        data = r.json()
-        self._check_cancel()
-        if not isinstance(data, dict) or data.get("responseStatus") != 200:
-            raise EngineError("MyMemory: bad response")
-        rd = data.get("responseData") or {}
-        out = rd.get("translatedText")
-        if out is None:
-            raise EngineError("MyMemory: no translatedText")
-        return out
-
-    def _check_cancel(self):
-        if self.cancelled:
-            raise InterruptedError
-
-
-class LibreTranslateEngine(BaseEngine):
-    """LibreTranslate — открытый бесплатный переводчик (публичный сервер
-    или свой в Docker). Весь пакет уходит одним запросом (q: массив),
-    ключ не обязателен; source 'auto' — автоопределение сервера."""
-
-    name = "libretranslate"
-    DEFAULT_URL = "https://libretranslate.com"
-
-    def __init__(self, base_url: str = "", api_key: str = ""):
-        super().__init__()
-        self.base_url = (base_url or self.DEFAULT_URL).rstrip("/")
-        self.api_key = api_key or ""
-
-    def ping(self) -> bool:
-        try:
-            self._check_cancel()
-            r = requests.get(f"{self.base_url}/languages", timeout=8)
-            return r.status_code == 200
-        except requests.RequestException:
-            return False
-
-    def translate(self, texts, source, target, context_before=None,
-                  context_after=None) -> list[str]:
-        if not texts:
-            return []
-        payload = {"q": list(texts), "source": source, "target": target,
-                   "format": "text"}
-        headers = {"Content-Type": "application/json"}
+        data = {"q": text, "langpair": pair}
+        if self.email:
+            # с почтой лимит выше: 50 000 символов/день вместо 5 000
+            data["de"] = self.email
         if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-        try:
+            data["key"] = self.api_key
+        chunks = self._split(text)
+        got: list[str] = []
+        for chunk in chunks:
             self._check_cancel()
-            r = requests.post(f"{self.base_url}/translate", json=payload,
-                              headers=headers, timeout=30)
+            r = requests.post(self.API, data={**data, "q": chunk},
+                              timeout=20)
+            resp = r.json()
             self._check_cancel()
-            data = r.json()
-        except InterruptedError:
-            raise
-        except (requests.RequestException, ValueError) as e:
-            raise EngineError(f"LibreTranslate unavailable: {e}") from e
-        if isinstance(data, dict) and data.get("error"):
-            raise EngineError(f"LibreTranslate: {data['error']}")
-        if not isinstance(data, list) or len(data) != len(texts):
-            raise EngineError("LibreTranslate: wrong response length")
-        return self._guard_tokens(texts, [str(t) for t in data])
+            if not isinstance(resp, dict) or resp.get("responseStatus") != 200:
+                # не 200 = дневной лимит исчерпан либо сервис отказал
+                raise EngineError("MyMemory: bad response")
+            rd = resp.get("responseData") or {}
+            out = rd.get("translatedText")
+            if out is None:
+                raise EngineError("MyMemory: no translatedText")
+            got.append(str(out))
+        return "".join(got) or None
 
     def _check_cancel(self):
         if self.cancelled:
             raise InterruptedError
+
+
 
 
 class RotateEngine(BaseEngine):
-    """Google пакетно + Bing в фолбэке.
+    """ЕДИНСТВЕННЫЙ движок приложения: пул бесплатных провайдеров,
+    крутится по лимитам, пока всё не переведёт. Выбора нет и не надо.
 
-    Основной путь — Google: весь список строк уходит пакетами
-    (до BATCH_LINES строк на запрос, десятки раз быстрее построчных
-    запросов). Если Google недоступен — построчный обход с чередованием
-    Google ↔ Bing (round-robin): при ошибке одного провайдера строка
-    уходит другому.
+    Порядок пула: Google пакетами (до 100 строк за запрос, в разы
+    быстрее построчных) → две сессии Bing (у каждой свой токен
+    и своя квота) → MyMemory (только с почтой: анонимный лимит
+    5K/день кончается мгновенно).
+    Строка уходит тому, кто сейчас не в кулдауне; отказ — отдых
+    и следующий по кругу. Круг повторяется, пока есть прогресс.
 
-    У Bing несколько независимых сессий — у каждой свой токен и квота.
+    Кулдауны и счётчики отказов лежат в engine_health.json и переживают
+    перезапуск: закрыли приложение, открыли — «отдохнувший» провайдер
+    не трогается до конца своего кулдауна.
+
+    Гарантия: translate() не бросает EngineError. Строку, которую не смог
+    перевести ни один провайдер, возвращает как None — сервис оставит её
+    не переведённой и повторит позже, а не запишет оригинал с пометкой
+    «переведено». Если весь пул в кулдауне — движок спит до конца
+    ближайшего и продолжает работу.
     """
 
     name = "rotate"
     WORKERS = 6
     BING_SESSIONS = 2
+    # пауза между кругами, когда все живые ответили пустым
+    IDLE_SLEEP = 5.0
 
-    def __init__(self):
+    def __init__(self, mymemory_email: str = ""):
         super().__init__()
-        self._engines = [GoogleFreeEngine()] + [
+        # Google — основной (пакетами), дальше резерв: две сессии Bing
+        # (у каждой свой токен и своя квота), дальше MyMemory с почтой.
+        # Мёртвый источник (эндпоинт недоступен из этой сети) помечается
+        # «упал» и больше не трогается — см. BaseEngine.report_failure.
+        self._engines: list[BaseEngine] = [GoogleFreeEngine()] + [
             BingEngine() for _ in range(self.BING_SESSIONS)]
+        if (mymemory_email or "").strip():
+            self._engines.append(
+                MyMemoryEngine(email=mymemory_email.strip()))
         self._cursor = 0
         self._lock = threading.Lock()
 
@@ -781,100 +813,125 @@ class RotateEngine(BaseEngine):
     def ping(self) -> bool:
         return any(e.ping() for e in self._engines)
 
+    def wait_hint(self) -> float:
+        """Сколько секунд сервис должен подождать перед следующим кругом.
+
+        0 — можно пробовать сейчас (или сети нет вовсе и ждать нечего,
+        тогда сервис закончит строки и повторит их при следующем запуске).
+        """
+        usable = [e for e in self._engines if not e.is_down()]
+        if not usable:
+            return 0.0
+        waits = [e.cooldown_left() for e in usable]
+        return min(waits) if waits else 0.0
+
+    def _live(self) -> list[BaseEngine]:
+        return [e for e in self._engines
+                if e.cooldown_left() <= 0 and not e.is_down()]
+
+    def all_down(self) -> bool:
+        """Все провайдеры помечены упавшими — сети нет, ждать нечего."""
+        return bool(self._engines) and all(e.is_down() for e in self._engines)
+
     def translate(self, texts: list[str], source: str, target: str,
                   context_before: list[str] | None = None,
-                  context_after: list[str] | None = None) -> list[str]:
+                  context_after: list[str] | None = None) -> list:
         if not texts:
             return []
         if self.cancelled:
             raise InterruptedError("cancelled")
         if len(texts) == 1:
             return [self._translate_one(texts[0], source, target)]
-        try:
-            return self._engines[0].translate(texts, source, target)
-        except InterruptedError:
-            raise
-        except EngineError:
-            pass
-        # фолбэк: по одной строке с чередованием провайдеров
-        out: list[str | None] = [None] * len(texts)
+        # быстрый путь: Google пакетами
+        primary = self._engines[0]
+        if primary.cooldown_left() <= 0 and not primary.is_down():
+            out = None
+            try:
+                out = primary.translate(texts, source, target)
+            except InterruptedError:
+                raise
+            except Exception as e:  # noqa: BLE001 — отказ не важен
+                primary.report_failure(e, _RATE_LIMIT_COOLDOWN)
+            if out is not None:
+                aligned = self._align(texts, out)
+                if all(o and o.strip() for o in aligned):
+                    return self._guard_tokens(texts, aligned)
+        # фолбэк: по одной строке с чередованием провайдеров.
+        # Результаты забираем по готовности (as_completed): зависший
+        # провайдер на одной строке не стопарит готовые остальные.
+        out = [None] * len(texts)
         with ThreadPoolExecutor(max_workers=self.WORKERS) as ex:
-            futures = [ex.submit(self._translate_one, t, source, target)
-                       for t in texts]
-            for i, f in enumerate(futures):
-                out[i] = f.result()
-        out = [o for o in out if o is not None]
-        return self._guard_tokens(texts, out)
+            futures = {ex.submit(self._translate_one, t, source, target): i
+                       for i, t in enumerate(texts)}
+            for f in as_completed(futures):
+                try:
+                    out[futures[f]] = f.result()
+                except InterruptedError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    out[futures[f]] = None
+        return self._align(texts, out)
 
-    def _translate_one(self, text: str, source: str, target: str) -> str:
-        # если Google в кулдауне (429/капча) — не трогаем его вообще,
-        # работаем только на Bing-сессиях
-        engines = self._engines
-        if self._engines[0]._rate_limited():
-            engines = self._engines[1:] + [self._engines[0]]
-        last_err = None
-        for _ in range(len(engines)):
+    def _translate_one(self, text: str, source: str, target: str) -> str | None:
+        """Один проход по пулу. None — не осилил ни один живой провайдер.
+
+        Здесь нет ожидания: ждать умеет сервис (между кругами, один раз
+        на всю группу строк). Ожидание на каждую строку при мёртвой сети
+        превращало 70 строк в 70×120 секунд.
+        """
+        for eng in self._live():
             if self.cancelled:
                 raise InterruptedError("cancelled")
             with self._lock:
-                eng = engines[self._cursor % len(engines)]
                 self._cursor += 1
             try:
-                return eng.translate([text], source, target)[0]
+                out = eng.translate([text], source, target)
             except InterruptedError:
                 raise
             except Exception as e:  # noqa: BLE001
-                last_err = e
-        raise EngineError(f"Rotate unavailable: {last_err}") from last_err
+                # отказ провайдера: уводим в кулдаун, берём следующего
+                eng.report_failure(e)
+                continue
+            res = out[0] if out else None
+            if res and res.strip():
+                clear_engine_cooldown(eng.name)
+                return res
+            # пустой ответ: провайдер жив, строку не перевёл. Отказом не
+            # считаем — просто берём следующего.
+        return None
 
 
-# реестр провайдеров для настроек
+# реестр провайдеров для настроек: только бесплатные, без нейросетей.
+# AI (OpenAI/Ollama) и офлайн-NLLB удалены решением владельца:
+# ключи, локальные серверы и модели на 600 МБ — не наш путь.
 PROVIDERS = {
+    "rotate": "Бесплатный автопилот — Google пакетами + Bing "
+              "в резерве (сам уходит в отдых при лимите и продолжает)",
     "google_free": "Google Translate — бесплатный (без ключа)",
     "bing": "Bing Translator — бесплатный (без ключа)",
-    "mymemory": "MyMemory — бесплатный API (50K символов/день, без ключа)",
-    "libretranslate": "LibreTranslate — открытый и бесплатный (публичный или свой сервер)",
-    "rotate": "Google + Bing — Google пакетами, фолбэк на Bing (быстрее)",
-    "ai": "AI — OpenAI/Ollama/LM Studio (требуется API или локальный сервер)",
-}
-
-# провайдеры для ИИ-коррекции (только LLM)
-AI_PROVIDERS = {
-    "ai": "AI — OpenAI/Ollama/LM Studio",
+    "mymemory": "MyMemory — официальный бесплатный API (5K символов/день "
+                "без почты, 50K — с почтой)",
 }
 
 
 def get_engine(name: str, **kwargs) -> BaseEngine:
     engines = {
-        "ai": AIEngine,
-        "ollama": AIEngine,
-        "openai_compat": AIEngine,
         "google_free": GoogleFreeEngine,
         "bing": BingEngine,
         "mymemory": MyMemoryEngine,
-        "libretranslate": LibreTranslateEngine,
         "rotate": RotateEngine,
     }
     if name not in engines:
-        if name in ("honyaku", "argos", "nllb"):
-            # старые настройки с удалённым офлайн-переводчиком — молча
+        if name in ("ai", "ollama", "openai_compat", "corrector",
+                    "honyaku", "argos", "nllb", "libretranslate"):
+            # старые настройки с удалёнными движками — молча
             # переводим на rotate (при запуске они обновляются в QSettings)
             return RotateEngine()
         raise EngineError(f"Unknown engine: {name}")
-    if name in ("ollama", "openai_compat"):
-        kwargs.setdefault("base_url", "http://localhost:11434")
-        return AIEngine(**kwargs)
     return engines[name](**kwargs)
 
 
-ENGINE_HINTS = {
-    "ai": (
-        "AI provider is not connected.\n\n"
-        "For local LLM: install Ollama, pull a model, it runs on port 11434.\n"
-        "For remote API: set base URL and API key in Settings.\n"
-        "Check connection with 'Test Connection' button."
-    ),
-}
+ENGINE_HINTS: dict[str, str] = {}
 
 
 def engine_hint(name: str) -> str:

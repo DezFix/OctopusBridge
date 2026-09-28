@@ -28,6 +28,16 @@ from app.core.models import TranslationEntry
 LANG_FOLDERS = {"ru": "russian", "en": "english", "ja": "japanese",
                 "zh": "chinese"}
 
+# Ren'Py держит служебную папку game/tl/None — это НЕ язык, а таблица
+# перевода языка по умолчанию (common.rpym). На реальных играх она есть
+# почти всегда, и без фильтра приложение предлагало «язык None» в выпадашке,
+# а из .rpa вытягивало tl/None/common.rpyc как будто это текст игры.
+_TL_NOT_A_LANG = {"none"}
+
+
+def _is_tl_lang(name: str) -> bool:
+    return bool(name) and name.lower() not in _TL_NOT_A_LANG
+
 
 def _extract_interp_codes(text: str) -> list[str]:
     """Вырезает сбалансированные группы [...]/{...} (Ren'Py-интерполяция
@@ -528,9 +538,9 @@ def _walk_ast(stmts) -> list[tuple[str, str]]:
                 result.append(("speaker", part))
 
         elif nt == "Menu":
-            items = getattr(nodes, "items", [])
+            items = getattr(nodes, "items", []) or []
             for item in items:
-                label = item[0] if isinstance(item, (list, tuple)) else None
+                label = item[0] if isinstance(item, (list, tuple)) and len(item) > 0 else None
                 for part in _string_parts(label):
                     if len(part) >= 2:
                         result.append(("choice", part))
@@ -577,7 +587,7 @@ def _walk_ast(stmts) -> list[tuple[str, str]]:
             _d = getattr(nodes, "displayable", None)
             disp_name = getattr(_d, "__name__", "") if _d is not None else ""
             if disp_name.removeprefix("_mock_") in ("Text", "_textbutton"):
-                for pos in getattr(nodes, "positional", []):
+                for pos in getattr(nodes, "positional", []) or []:
                     v = _sl_text_value(pos)
                     if v:
                         result.append(("screen", v))
@@ -588,12 +598,12 @@ def _walk_ast(stmts) -> list[tuple[str, str]]:
 
         # SL2-деревья: дети блоков (SLBlock.children), ветки if/showif
         # (SLIf.entries — пары (условие, блок)), блоки use (SLUse.block).
-        walk(getattr(nodes, "children", []))
-        for _e in getattr(nodes, "entries", []):
+        walk(getattr(nodes, "children", []) or [])
+        for _e in getattr(nodes, "entries", []) or []:
             if isinstance(_e, (list, tuple)) and len(_e) > 1:
                 walk(_e[1])
-        walk(getattr(nodes, "block", []))
-        walk(getattr(nodes, "body", []))
+        walk(getattr(nodes, "block", []) or [])
+        walk(getattr(nodes, "body", []) or [])
 
     walk(stmts)
     return result
@@ -635,7 +645,7 @@ def list_languages(game_dir: str) -> list[str]:
     if os.path.isdir(tl_dir):
         for name in os.listdir(tl_dir):
             if os.path.isdir(os.path.join(tl_dir, name)) \
-                    and not name.startswith("."):
+                    and not name.startswith(".") and _is_tl_lang(name):
                 langs.add(name)
     try:
         from app.core.renpy.rpa import RpaArchive, find_rpa_archives as _find_rpa
@@ -648,7 +658,7 @@ def list_languages(game_dir: str) -> list[str]:
                 if fname.startswith("tl/") \
                         and (fname.endswith(".rpy") or fname.endswith(".rpyc")):
                     head = fname[len("tl/"):].split("/", 1)[0]
-                    if head:
+                    if _is_tl_lang(head):
                         langs.add(head)
     except ImportError:
         pass
@@ -675,8 +685,14 @@ def _iter_rpy(game_dir: str, extract_lang: str | None = None):
                 if d in ("renpy", "__pycache__", "ob_fonts",
                          "ob_fonts_orig"):
                     return False
-                if extract_lang is not None and os.path.basename(root) == "tl":
-                    return d == extract_lang
+                if os.path.basename(root) == "tl":
+                    # tl/None — служебная таблица языка по умолчанию,
+                    # не перевод и не текст игры: в список языков не
+                    # показываем и в извлечение не тащим.
+                    if not _is_tl_lang(d):
+                        return False
+                    if extract_lang is not None:
+                        return d == extract_lang
                 return True
             dirs[:] = [d for d in dirs if keep(d)]
             for f in sorted(files):
@@ -699,9 +715,11 @@ def _iter_rpy(game_dir: str, extract_lang: str | None = None):
                     continue
                 if _is_ob_artifact(fname.rsplit("/", 1)[-1]):
                     continue
-                if extract_lang and fname.startswith("tl/"):
+                if fname.startswith("tl/"):
                     head = fname[len("tl/"):].split("/", 1)[0]
-                    if head != extract_lang:
+                    if not _is_tl_lang(head):
+                        continue
+                    if extract_lang and head != extract_lang:
                         continue
                 # полный путь архива + NUL: одноимённые .rpa в разных
                 # подпапках иначе читались бы из чужого архива
@@ -795,8 +813,14 @@ def extract(game_dir: str, extract_lang: str | None = None
         # ── .rpy from disk ──
         else:
             try:
-                with open(path, encoding="utf-8") as f:
-                    lines = f.readlines()
+                try:
+                    with open(path, encoding="utf-8") as f:
+                        lines = f.readlines()
+                except UnicodeDecodeError:
+                    # Старые RU-моды в cp1251: без фолбэка весь файл
+                    # молча пропускался (0 строк).
+                    with open(path, encoding="cp1251") as f:
+                        lines = f.readlines()
                 i = 0
                 n_lines = len(lines)
                 while i < n_lines:
@@ -955,7 +979,7 @@ def _written_file_ok(path: str) -> bool:
                 if (s.startswith('old "') or s.startswith('new "')) \
                         and not s.endswith('"'):
                     return False
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return False
     return True
 
@@ -1003,7 +1027,7 @@ def _ob_file_parse_broken(path: str) -> bool:
     try:
         with open(path, encoding="utf-8") as f:
             lines = f.read().splitlines()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return False
     for ln in lines:
         s = ln.strip()
@@ -1026,7 +1050,7 @@ def _read_existing_olds(out_path: str) -> set[str]:
             multiline = re.compile(RE_OLD.pattern, re.MULTILINE)
             raw = multiline.findall(f.read())
         return {_unescape_rpy_string(r) for r in raw}
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return set()
 
 
@@ -1044,11 +1068,18 @@ def apply(game_dir: str, entries: list[TranslationEntry],
     (# ob-sha1 <hex>), новые строки помечаются # ob-new — по этим
     меткам видно, сдвинулся ли текст после обновления игры.
     """
-    lang = LANG_FOLDERS.get(target_lang, target_lang)
+    # Ren'Py ищет перевод в tl/<полное-имя-языка> ("russian", "german"),
+    # а не в tl/<код> — папка tl/ru молча не подхватывается игрой.
+    # Пустой/«None» от caller'а -> русский, и в tl/None не пишем никогда.
+    lang = LANG_FOLDERS.get(target_lang, target_lang) if target_lang \
+        else LANG_FOLDERS["ru"]
+    if not _is_tl_lang(str(lang)):
+        lang = LANG_FOLDERS["ru"]
     by_file: dict[str, list[TranslationEntry]] = {}
     unsafe_count = 0
     for e in entries:
-        if e.translation.strip() and e.status != "skip":
+        if (e.translation or "").strip() and (e.original or "") \
+                and e.status != "skip":
             # Защита от самоперевода: записи, источником которых оказались
             # наши же ob_*-артефакты (старые билды извлекали их как текст
             # игры — получались файлы ob_game__tl__...rpy с теми же
@@ -1089,17 +1120,23 @@ def apply(game_dir: str, entries: list[TranslationEntry],
             global_olds.add(e.original)
             deduped.append(e)
         new_count = 0
-        with open(out_path, "w", encoding="utf-8") as f:
-            f.write(f"# OctopusBridge translation ({rel})\n"
-                    f"translate {lang} strings:\n\n")
-            for e in deduped:
-                if e.original not in existing_olds:
-                    new_count += 1
-                digest = hashlib.sha1(
-                    e.original.encode("utf-8")).hexdigest()[:12]
-                f.write(f"    # ob-sha1 {digest}\n")
-                f.write(f'    old "{_escape(e.original)}"\n')
-                f.write(f'    new "{_escape(e.translation)}"\n\n')
+        # Атомарно (tmp+rename): обрыв посреди trunc+write раньше оставлял
+        # усечённый ob_*.rpy, и Ren'Py падал на старте игры.
+        from app.core.io import atomic_write_text as _atomic_write
+        chunks = [f"# OctopusBridge translation ({rel})\n"
+                  f"translate {lang} strings:\n\n"]
+        for e in deduped:
+            if e.original not in existing_olds:
+                new_count += 1
+            digest = hashlib.sha1(
+                e.original.encode("utf-8")).hexdigest()[:12]
+            chunks.append(f"    # ob-sha1 {digest}\n")
+            chunks.append(f'    old "{_escape(e.original)}"\n')
+            chunks.append(f'    new "{_escape(e.translation)}"\n\n')
+        try:
+            _atomic_write(out_path, "".join(chunks), encoding="utf-8")
+        except OSError:
+            continue
         if not _written_file_ok(out_path):
             # свой же битый файл не оставляем: Ren'Py упадёт на старте
             try:

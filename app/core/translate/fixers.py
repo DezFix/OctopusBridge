@@ -13,6 +13,9 @@ from __future__ import annotations
 
 import re
 
+# Токены маскировщика <xN/> (толерантные варианты — см. mask._token_re).
+_TOKEN_RE = re.compile(r"</?x(\d+)\s*/?>")
+
 # ---------- code: лишние коды ----------
 
 
@@ -27,18 +30,37 @@ def fix_codes(text: str, original: str) -> str:
         return text
     from .mask import mask
 
-    _, codes = mask(text)
+    masked, codes = mask(text)
     if not codes:
         return text
-    result = text
+    # Сколько каждого кода оставить: сверх оригинального количества —
+    # лишнее (модель сочинила). Удаляем через токены <xN/>, а не через
+    # str.replace: коды пересекаются (одиночный "\" входит в "\V[1]"),
+    # и replace("\\", "", 1) сносил слэш живого кода, превращая \V[1]
+    # в V[1] — битую переменную в игре.
+    drop: dict[str, int] = {}
     for code in dict.fromkeys(codes):
-        have = result.count(code)
-        want = original.count(code)
-        if have <= want:
-            continue
-        for _ in range(have - want):
-            result = result.replace(code, "", 1)
-    return result
+        excess = codes.count(code) - original.count(code)
+        if excess > 0:
+            drop[code] = excess
+    if not drop:
+        return text
+    # Лишние экземпляры выкидываем с конца (перные вхождения — самые
+    # вероятно легитимные), остальные токены восстанавливаем в коды.
+    drop_idx: set[int] = set()
+    for i in range(len(codes) - 1, -1, -1):
+        c = codes[i]
+        if drop.get(c, 0) > 0:
+            drop[c] -= 1
+            drop_idx.add(i)
+
+    def _restore(m: re.Match) -> str:
+        i = int(m.group(1))
+        if i in drop_idx or i >= len(codes):
+            return ""
+        return codes[i]
+
+    return _TOKEN_RE.sub(_restore, masked)
 
 
 # ---------- escape: слэши ----------

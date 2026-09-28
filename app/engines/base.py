@@ -1,17 +1,20 @@
 # -*- coding: utf-8 -*-
-"""Базовый класс движкового модуля.
+"""Базовый класс движкового модуля (модульный монолит).
 
-Ядро приложения (OctopusBridge) не знает деталей движков: каждый модуль
-сам умеет определять свою игру, извлекать/внедрять текст и создавать
-свои вкладки GUI. Чтобы добавить новый движок — создаём модуль здесь
-и регистрируем в registry.py.
+Слой 1 — чистый протокол (app.engines.protocol.EngineParser):
+detect/extract/apply/verify без Qt, без UI, без live.
+Слой 2 — EngineModule: тонкий адаптер для старого UI
+(ui_tabs/file_view). Новый код UI должен идти через
+app.ui.engine_tabs, а не через движок.
 """
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
+
+from app.engines.protocol import EngineParser
 
 
-class EngineModule(ABC):
+class EngineModule(EngineParser):
     key: str = "base"                 # 'rpgmaker', 'renpy', ...
     title: str = "Базовый движок"
     variant: str = ""                 # уточнение версии: 'mz', 'mv', ...
@@ -32,11 +35,17 @@ class EngineModule(ABC):
         """Внедрить переводы. Возвращает статистику."""
 
     def ui_tabs(self, main_window) -> list[tuple]:
-        """Движковые вкладки: [(widget, заголовок, роль)].
-        Роль: 'cheats' | 'module' — для профилей видимости."""
+        """DEPRECATED: движок не должен знать про Qt.
+
+        Оставлен для совместимости. Новый код — app.ui.engine_tabs.
+        """
         return []
 
     def file_view(self, game_dir: str):
-        """Файловый доступ для вкладок движка (по умолчанию — диск)."""
+        """Файловый доступ для вкладок движка (по умолчанию — диск).
+
+        Без статического импорта rpgmaker: база ничего не знает
+        о конкретных движках (иначе граница пробита).
+        """
         from app.core.rpgmaker.fileview import DiskFileView
         return DiskFileView(game_dir)

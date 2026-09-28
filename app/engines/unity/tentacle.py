@@ -12,7 +12,7 @@ import glob
 import os
 import subprocess
 
-from app.core.tentacles.base import Tentacle
+from app.live.tentacle import Tentacle
 
 # Хелперы рядом с игрой — не игра.
 _HELPERS = {"unitycrashhandler", "unitycrashhandler64", "config", "setup",

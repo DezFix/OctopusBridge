@@ -19,10 +19,11 @@ import re
 import time
 import urllib.request
 
+from app.core.io import atomic_write_bytes, atomic_write_text
 from app.core.translate.service import build_tr_dict
 
 BRIDGE_PLUGIN_NAME = "octopus_ob"
-BRIDGE_PLUGIN_VERSION = 2
+BRIDGE_PLUGIN_VERSION = 3
 BRIDGE_PORT_START = 38900
 BRIDGE_PORT_COUNT = 12
 _BRIDGE_PROBE_TIMEOUT = 0.8
@@ -80,6 +81,7 @@ _BRIDGE_SERVER_JS = r"""
             var path = req.url.split("?")[0];
             if (path === "/probe") {
               out.name = "octopus_ob";
+              out.pid = process.pid;
             } else if (path === "/eval") {
               var reqData = JSON.parse(body || "{}");
               var fn;
@@ -292,12 +294,17 @@ def ensure_bridge_registered(game_dir: str, cheats_payload: str,
                       ("__octopus_trInstall" in src and not _dict_ok(src)) or
                       chr(0x2028) in src or chr(0x2029) in src)
         old_dict = _existing_dict(src)
+        try:
+            old_dict = js_json(json.loads(old_dict))
+        except (TypeError, ValueError):
+            old_dict = "{}"
     if need_write:
         try:
             os.makedirs(os.path.dirname(plugin_path), exist_ok=True)
-            with open(plugin_path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(build_plugin_source(
-                    cheats_payload, tr_payload, old_dict))
+            atomic_write_text(
+                plugin_path,
+                build_plugin_source(cheats_payload, tr_payload, old_dict),
+                encoding="utf-8")
         except OSError:
             ok = False
     return _ensure_plugins_entry(game_dir) and ok
@@ -312,11 +319,24 @@ def _ensure_plugins_entry(game_dir: str) -> bool:
             text = f.read()
     except OSError:
         return False
-    if f'"{BRIDGE_PLUGIN_NAME}"' in text or f"'{BRIDGE_PLUGIN_NAME}'" in text:
+    is_json = text.lstrip().startswith("[")
+    if is_json:
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return False
+        if (isinstance(data, list)
+                and any(isinstance(p, dict)
+                        and p.get("name") == BRIDGE_PLUGIN_NAME
+                        for p in data)):
+            return True
+    elif re.search(
+            r"[\"']name[\"']\s*:\s*[\"']"
+            + re.escape(BRIDGE_PLUGIN_NAME) + r"[\"']", text):
         return True
     entry = ('{"name":"octopus_ob","status":true,"description":'
              '"OctopusBridge bridge (cheats/translation)","parameters":{}}')
-    if text.lstrip().startswith("["):
+    if is_json:
         # JSON-формат (data/plugins.js в MZ) — страховка
         try:
             data = json.loads(text)
@@ -357,15 +377,13 @@ def _ensure_plugins_entry(game_dir: str) -> bool:
     except OSError:
         _orig = None
     try:
-        with open(path, "w", encoding="utf-8", newline="\n") as f:
-            f.write(new_text)
+        atomic_write_text(path, new_text, encoding="utf-8")
         # бэкап оригинала один раз рядом с файлом (.ob_backup), НЕ в
         # backup/<rel> (туда смотрит legacy-откат parser'а — не смешиваем).
         try:
             bak = path + ".ob_backup"
             if not os.path.exists(bak) and _orig is not None:
-                with open(bak, "wb") as bf:
-                    bf.write(_orig)
+                atomic_write_bytes(bak, _orig)
         except OSError:
             pass
         return True
@@ -398,8 +416,7 @@ def update_tr_dict(game_dir: str, entries: list) -> int:
             return 0
         new_src = src[:span[0]] + tr_json + src[span[1]:]
     try:
-        with open(path, "w", encoding="utf-8", newline="\n") as f:
-            f.write(new_src)
+        atomic_write_text(path, new_src, encoding="utf-8")
         return len(tr)
     except OSError:
         return 0
@@ -418,8 +435,7 @@ def unregister_bridge(game_dir: str) -> bool:
         new_text = _remove_entry_by_name(text, BRIDGE_PLUGIN_NAME)
         if new_text != text:
             try:
-                with open(path, "w", encoding="utf-8", newline="\n") as f:
-                    f.write(new_text)
+                atomic_write_text(path, new_text, encoding="utf-8")
                 changed = True
             except OSError:
                 pass
@@ -508,7 +524,7 @@ def _remove_entry_by_name(text: str, name: str) -> str:
 
 # ── клиент моста (app -> игра) ──
 
-def bridge_probe(port: int) -> bool:
+def bridge_probe(port: int, expected_pid: int | None = None) -> bool:
     try:
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}/probe",
@@ -517,20 +533,48 @@ def bridge_probe(port: int) -> bool:
         with urllib.request.urlopen(
                 req, timeout=_BRIDGE_PROBE_TIMEOUT) as r:
             data = json.loads(r.read().decode("utf-8", "replace"))
-        return data.get("name") == BRIDGE_PLUGIN_NAME
+        if data.get("name") != BRIDGE_PLUGIN_NAME:
+            return False
+        return expected_pid is None or data.get("pid") == expected_pid
     except Exception:  # noqa: BLE001
         return False
 
 
-def find_bridge_port(wait: float = 40.0) -> int:
-    """Ждёт появления моста игры (все порты диапазона, пока не найден)."""
+def find_bridge_port(wait: float = 40.0,
+                     expected_pid: int | None = None,
+                     cancelled=None) -> int:
+    """Ждёт появления моста игры (все порты диапазона, пока не найден).
+
+    Порты пробуем параллельно: было 12 x 0.8с последовательно (~10с на
+    круг), стало ~0.8с на круг. Пауза между кругами короткая и
+    прерываемая отменой, чтобы attach не висел.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    ports = list(range(BRIDGE_PORT_START,
+                       BRIDGE_PORT_START + BRIDGE_PORT_COUNT))
     deadline = time.time() + wait
     while time.time() < deadline:
-        for port in range(BRIDGE_PORT_START,
-                          BRIDGE_PORT_START + BRIDGE_PORT_COUNT):
-            if bridge_probe(port):
-                return port
-        time.sleep(1.0)
+        if cancelled is not None and cancelled():
+            return 0
+        with ThreadPoolExecutor(max_workers=len(ports)) as ex:
+            futs = {ex.submit(bridge_probe, p, expected_pid): p
+                    for p in ports}
+            for fut in futs:
+                try:
+                    if fut.result(timeout=_BRIDGE_PROBE_TIMEOUT + 0.5):
+                        return futs[fut]
+                except Exception:  # noqa: BLE001 — порт молчит, ждём дальше
+                    continue
+                if cancelled is not None and cancelled():
+                    return 0
+        # короткая прерываемая пауза вместо time.sleep(1.0)
+        for _ in range(4):
+            if cancelled is not None and cancelled():
+                return 0
+            if time.time() >= deadline:
+                break
+            time.sleep(0.25)
     return 0
 
 

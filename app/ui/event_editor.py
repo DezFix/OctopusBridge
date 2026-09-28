@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 
 from PySide6.QtCore import Qt
@@ -992,21 +993,37 @@ class _PageEditor(QWidget):
 class EventEditorDialog(QDialog):
     """Полный редактор события: страницы, изображение, условия, команды."""
 
-    def __init__(self, parent, game_dir, view, ev: dict, map_id: int = 0):
+    def __init__(self, parent, game_dir, view, ev: dict, map_id: int = 0,
+                 start_full: bool = False):
         super().__init__(parent)
+        # Удаляем себя при закрытии: раньше скрытые копии копились
+        # детьми MapTab и продолжали получать чужие ack/state.
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self._ev = ev
         self._map_id = map_id
         self._game_dir = game_dir
         self._view = view
         self._fmt = None
+        self._live_state: dict = {}
+        self._live_expected: dict[str, int] = {}
+        self._live_original: dict[tuple, object] = {}
+        self._switch_controls: list[tuple[int, QCheckBox, QLabel]] = []
+        self._var_controls: list[tuple[dict, QLabel, QPushButton]] = []
+        self._self_controls: list[tuple[str, QCheckBox, QLabel]] = []
+        self._item_controls: list[tuple[int, QLabel, QLabel, QPushButton]] = []
+        self._actor_controls: list[tuple[int, QLabel, QLabel, QPushButton]] = []
+        self._active_page = 0
         pages = [p for p in (ev.get("pages") or [])
                  if isinstance(p, dict)]
         self._orig_pages = len(pages)
         s = maprender.event_summary(ev)
         self.setWindowTitle(f"EV{s['id']} — {s['name']}")
-        self.setMinimumSize(1180, 640)
+        self.setMinimumSize(720, 480)
 
         lay = QVBoxLayout(self)
+        self.general_box = QWidget()
+        general_lay = QVBoxLayout(self.general_box)
+        general_lay.setContentsMargins(0, 0, 0, 0)
         form = QFormLayout()
         self.ed_name = QLineEdit(s["name"])
         form.addRow(TR("map_name"), self.ed_name)
@@ -1023,29 +1040,28 @@ class EventEditorDialog(QDialog):
         pos.addWidget(self.sp_y)
         pos.addStretch(1)
         form.addRow(TR("map_pos"), pos)
-        lay.addLayout(form)
+        general_lay.addLayout(form)
+        lay.addWidget(self.general_box)
 
         pages_row = QHBoxLayout()
         pages_row.addWidget(QLabel(TR("ev_pages")))
         self.cb_pages = AnimatedComboBox()
         self.cb_pages.currentIndexChanged.connect(self._page_changed)
         pages_row.addWidget(self.cb_pages, 1)
-        btn_add_page = QPushButton(TR("ev_add_page"))
-        btn_add_page.clicked.connect(self._add_page)
-        btn_dup_page = QPushButton(TR("ev_dup_page"))
-        btn_dup_page.clicked.connect(self._dup_page)
-        btn_del_page = QPushButton(TR("ev_del_page"))
-        btn_del_page.clicked.connect(self._del_page)
-        for b in (btn_add_page, btn_dup_page, btn_del_page):
+        self.btn_add_page = QPushButton(TR("ev_add_page"))
+        self.btn_add_page.clicked.connect(self._add_page)
+        self.btn_dup_page = QPushButton(TR("ev_dup_page"))
+        self.btn_dup_page.clicked.connect(self._dup_page)
+        self.btn_del_page = QPushButton(TR("ev_del_page"))
+        self.btn_del_page.clicked.connect(self._del_page)
+        for b in (self.btn_add_page, self.btn_dup_page, self.btn_del_page):
             pages_row.addWidget(b)
         lay.addLayout(pages_row)
 
         self.tabs = AnimatedTabWidget()
+        self.tabs.currentChanged.connect(self._tab_page_changed)
         lay.addWidget(self.tabs, 1)
 
-        # ── режим: простое (по умолчанию) / расширенное ──
-        # Простое: одна кнопка «Сделать видимым в игре» (включает все
-        # условия текущей страницы). Остальное добавим позже.
         mode_row = QHBoxLayout()
         self.btn_mode_simple = QPushButton(TR("ev_mode_simple"))
         self.btn_mode_simple.setCheckable(True)
@@ -1061,35 +1077,57 @@ class EventEditorDialog(QDialog):
         self.simple_box = QWidget()
         simple_lay = QVBoxLayout(self.simple_box)
         simple_lay.setContentsMargins(0, 0, 0, 0)
+        simple_lay.setSpacing(8)
+        live_title = QLabel(TR("ev_live_title"))
+        live_title.setStyleSheet("font-size: 13px; font-weight: 600;")
+        simple_lay.addWidget(live_title)
+        self.lbl_live_map = QLabel(TR("ev_live_map_unknown"))
+        self.lbl_live_map.setStyleSheet("color: #8cf;")
+        simple_lay.addWidget(self.lbl_live_map)
+        self.live_conditions = QWidget()
+        self.live_conditions_layout = QFormLayout(self.live_conditions)
+        self.live_conditions_layout.setContentsMargins(0, 0, 0, 0)
+        self.live_conditions_layout.setFieldGrowthPolicy(
+            QFormLayout.AllNonFixedFieldsGrow)
+        simple_lay.addWidget(self.live_conditions)
+        actions = QHBoxLayout()
         self.btn_visible = QPushButton(TR("ev_make_visible"))
-        self.btn_visible.setObjectName("accent")
-        self.btn_visible.setMinimumHeight(44)
         self.btn_visible.clicked.connect(self._make_visible)
-        simple_lay.addWidget(self.btn_visible)
+        self.btn_run = QPushButton(TR("ev_live_run"))
+        self.btn_run.setObjectName("accent")
+        self.btn_run.setMinimumHeight(40)
+        self.btn_run.clicked.connect(self._run_event_now)
         self.btn_undo = QPushButton(TR("ev_undo"))
         self.btn_undo.setEnabled(False)
         self.btn_undo.clicked.connect(self._undo_visible)
-        simple_lay.addWidget(self.btn_undo)
+        actions.addWidget(self.btn_visible)
+        actions.addWidget(self.btn_run, 1)
+        actions.addWidget(self.btn_undo)
+        simple_lay.addLayout(actions)
         self.lbl_visible = QLabel("")
         self.lbl_visible.setWordWrap(True)
         simple_lay.addWidget(self.lbl_visible)
         lay.addWidget(self.simple_box)
 
-        btns = QDialogButtonBox(QDialogButtonBox.Save
-                                | QDialogButtonBox.Cancel)
-        btns.accepted.connect(self.accept)
-        btns.rejected.connect(self.reject)
-        lay.addWidget(btns)
+        self.button_box = QDialogButtonBox(
+            QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        self.btn_save_dialog = self.button_box.button(QDialogButtonBox.Save)
+        self.button_box.button(QDialogButtonBox.Cancel).setText(TR("ev_close"))
+        self.button_box.accepted.connect(self.accept)
+        self.button_box.rejected.connect(self.reject)
+        lay.addWidget(self.button_box)
 
         self._rebuild_pages()
-        self._undo_stack: list[tuple] = []
         try:
             main = getattr(self.parent(), "main", None)
             if main is not None:
                 main.bridge_cheat_ack.connect(self._on_live_ack)
+                main.bridge_state.connect(self._on_live_state)
+                main.bridge_client.connect(self._on_bridge_client)
         except Exception:  # noqa: BLE001, RuntimeError
             pass
-        self._set_mode(True)
+        self._set_mode(not start_full)
+        self._request_live_state()
 
     def _set_mode(self, simple: bool) -> None:
         """Простое (кнопка видимости) / расширенное (все вкладки)."""
@@ -1097,8 +1135,17 @@ class EventEditorDialog(QDialog):
         self.btn_mode_expanded.setChecked(not simple)
         self.tabs.setVisible(not simple)
         self.simple_box.setVisible(simple)
+        self.general_box.setVisible(not simple)
+        self.btn_save_dialog.setVisible(not simple)
+        for button in (self.btn_add_page, self.btn_dup_page, self.btn_del_page):
+            button.setVisible(not simple)
         if simple:
-            self._refresh_visible()
+            self.setMinimumSize(720, 480)
+            self.resize(760, 520)
+            self._rebuild_live_panel()
+        else:
+            self.setMinimumSize(1180, 640)
+            self.resize(1180, 640)
 
     def _page_index(self) -> int:
         return self.cb_pages.currentIndex()
@@ -1134,120 +1181,653 @@ class EventEditorDialog(QDialog):
         self.cb_pages.setCurrentIndex(0)
 
     def _page_changed(self, idx: int):
+        if self._live_expected:
+            self.cb_pages.blockSignals(True)
+            self.cb_pages.setCurrentIndex(self._active_page)
+            self.cb_pages.blockSignals(False)
+            return
+        self._active_page = idx
         if 0 <= idx < self.tabs.count():
             self.tabs.setCurrentIndex(idx)
+        self._live_original.clear()
         if self.btn_mode_simple.isChecked():
-            self._refresh_visible()
+            self._rebuild_live_panel()
+
+    def _tab_page_changed(self, idx: int):
+        if idx < 0 or idx == self.cb_pages.currentIndex():
+            return
+        if self._live_expected:
+            self.tabs.setCurrentIndex(self._active_page)
+            return
+        self.cb_pages.blockSignals(True)
+        self.cb_pages.setCurrentIndex(idx)
+        self.cb_pages.blockSignals(False)
+        self._active_page = idx
+        self._live_original.clear()
+        if self.btn_mode_simple.isChecked():
+            self._rebuild_live_panel()
 
     # ── live-действия ──
+    def _main(self):
+        return getattr(self.parent(), "main", None)
+
     def _live_channel(self):
-        """Канал в запущенную игру или None (панель тогда disabled)."""
         try:
-            main = getattr(self.parent(), "main", None)
-            channel = getattr(main, "channel", None)
+            main = self._main()
+            channel = getattr(main, "ensure_channel", None)
+            if not callable(channel):
+                channel = getattr(main, "channel", None)
             return channel() if callable(channel) else None
         except Exception:  # noqa: BLE001
             return None
 
-    def _refresh_visible(self):
-        """Состояние кнопки «Сделать видимым» под текущую страницу."""
+    def _request_live_state(self):
         ch = self._live_channel()
-        ok = ch is not None
-        self.btn_visible.setEnabled(ok)
-        self.btn_visible.setToolTip("" if ok else TR("ev_live_no_channel"))
-        if not ok:
-            self.lbl_visible.setText(TR("ev_live_no_channel"))
+        if not ch:
             return
+        request = getattr(ch, "request_state_async", None)
+        if callable(request):
+            request()
+        else:
+            ch.request_state()
+
+    def _on_bridge_client(self, connected: bool):
+        self._live_expected.clear()
+        self._live_original.clear()
+        self._live_state = {}
+        if connected:
+            self._request_live_state()
+            if self.btn_mode_simple.isChecked():
+                self._rebuild_live_panel()
+        else:
+            self._refresh_live_controls()
+
+    def _current_page(self) -> dict:
         pages = self._ev.get("pages") or []
         idx = self._page_index()
-        page = pages[idx] if 0 <= idx < len(pages) else {}
+        return pages[idx] if 0 <= idx < len(pages) and isinstance(pages[idx], dict) else {}
+
+    def _switch_name(self, switch_id: int) -> str:
+        project = getattr(self._main(), "project", None)
+        names = getattr(project, "switch_names", {}) or {}
+        name = names.get(switch_id) or names.get(str(switch_id)) or ""
+        return f" — {name}" if name else ""
+
+    def _switch_value(self, switch_id: int) -> bool | None:
+        values = self._live_state.get("switches")
+        if not isinstance(values, list) or not 0 < switch_id <= len(values):
+            return None
+        return bool(values[switch_id - 1])
+
+    def _variable_value(self, variable_id: int) -> int | None:
+        values = self._live_state.get("variables")
+        if not isinstance(values, list) or not 0 < variable_id <= len(values):
+            return None
+        try:
+            return int(values[variable_id - 1])
+        except (TypeError, ValueError):
+            return None
+
+    def _self_value(self, switch_ch: str) -> bool | None:
+        values = self._live_state.get("selfSwitches")
+        if not isinstance(values, list):
+            return None
+        switch_ch = switch_ch.upper()[:1]
+        for row in values:
+            if (isinstance(row, dict)
+                    and row.get("map") == self._map_id
+                    and row.get("ev") == self._ev.get("id")
+                    and str(row.get("ch", "")).upper()[:1] == switch_ch):
+                return True
+        return False
+
+    def _item_count(self, item_id: int) -> int | None:
+        values = self._live_state.get("items")
+        if not isinstance(values, list):
+            return None
+        for row in values:
+            if (isinstance(row, dict) and row.get("kind") == "item"
+                    and row.get("id") == item_id):
+                try:
+                    return int(row.get("count", 0) or 0)
+                except (TypeError, ValueError):
+                    return 0
+        return 0
+
+    def _item_name(self, item_id: int) -> str:
+        values = self._live_state.get("items")
+        if isinstance(values, list):
+            for row in values:
+                if isinstance(row, dict) and row.get("kind") == "item" \
+                        and row.get("id") == item_id:
+                    return str(row.get("name") or "")
+        return ""
+
+    def _actor_in_party(self, actor_id: int) -> bool | None:
+        values = self._live_state.get("party")
+        if not isinstance(values, list):
+            return None
+        for row in values:
+            if isinstance(row, dict) and row.get("id") == actor_id:
+                return bool(row.get("inParty"))
+        return False
+
+    def _actor_name(self, actor_id: int) -> str:
+        values = self._live_state.get("party")
+        if isinstance(values, list):
+            for row in values:
+                if isinstance(row, dict) and row.get("id") == actor_id:
+                    return str(row.get("name") or "")
+        return ""
+
+    def _clear_live_controls(self):
+        while self.live_conditions_layout.count():
+            item = self.live_conditions_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._switch_controls.clear()
+        self._var_controls.clear()
+        self._self_controls.clear()
+        self._item_controls.clear()
+        self._actor_controls.clear()
+
+    def _rebuild_live_panel(self):
+        self._clear_live_controls()
+        ch = self._live_channel()
+        page = self._current_page()
         cond = maprender.page_conditions(page)
-        if not (cond.get("switch1_valid") or cond.get("switch2_valid")
-                or cond.get("variable_valid")
-                or cond.get("self_switch_valid")):
-            self.lbl_visible.setText(TR("ev_live_no_cond"))
+        if ch is None:
+            self.live_conditions_layout.addRow(
+                QLabel(TR("ev_live_no_channel")))
+            self.btn_visible.setEnabled(False)
+            self.btn_run.setEnabled(False)
+            self.btn_undo.setEnabled(False)
+            self.lbl_live_map.setText(TR("ev_live_map_unknown"))
+            self.lbl_visible.setText(TR("ev_live_no_channel"))
+            return
+        for key in ("switch1", "switch2"):
+            if not cond.get(f"{key}_valid"):
+                continue
+            switch_id = int(cond.get(f"{key}_id", 1) or 1)
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            checkbox = QCheckBox(TR(
+                "ev_live_switch", id=switch_id,
+                name=self._switch_name(switch_id)))
+            checkbox.toggled.connect(
+                lambda checked, sid=switch_id: self._set_switch_live(
+                    sid, checked))
+            current = QLabel("—")
+            row_layout.addWidget(checkbox)
+            row_layout.addStretch(1)
+            row_layout.addWidget(current)
+            self.live_conditions_layout.addRow("", row)
+            self._switch_controls.append((switch_id, checkbox, current))
+        if cond.get("variable_valid"):
+            variable_id = int(cond.get("variable_id", 1) or 1)
+            compare = int(cond.get("variable_compare", 0) or 0)
+            op = {0: ">=", 1: "==", 2: "<=", 3: ">",
+                  4: "<", 5: "!="}.get(compare, ">=")
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            label = QLabel(TR("ev_live_variable", id=variable_id, op=op,
+                              value=cond.get("variable_value", 0)))
+            current = QLabel("—")
+            button = QPushButton(TR("ev_live_set_value"))
+            button.clicked.connect(
+                lambda checked=False, c=dict(cond): self._set_variable_live(c))
+            row_layout.addWidget(label)
+            row_layout.addStretch(1)
+            row_layout.addWidget(current)
+            row_layout.addWidget(button)
+            self.live_conditions_layout.addRow("", row)
+            self._var_controls.append((cond, current, button))
+        if cond.get("self_switch_valid"):
+            switch_ch = str(cond.get("self_switch_ch", "A") or "A").upper()[:1]
+            if switch_ch not in "ABCD":
+                switch_ch = "A"
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            checkbox = QCheckBox(TR("ev_live_self", id=switch_ch))
+            checkbox.toggled.connect(
+                lambda checked, c=switch_ch: self._set_self_live(c, checked))
+            current = QLabel("—")
+            row_layout.addWidget(checkbox)
+            row_layout.addStretch(1)
+            row_layout.addWidget(current)
+            self.live_conditions_layout.addRow("", row)
+            self._self_controls.append((switch_ch, checkbox, current))
+        if cond.get("item_valid"):
+            item_id = int(cond.get("item_id", 1) or 1)
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            label = QLabel(TR("ev_live_item", id=item_id))
+            current = QLabel("—")
+            button = QPushButton(TR("ev_live_give_item"))
+            button.clicked.connect(
+                lambda checked=False, iid=item_id: self._give_item_live(iid))
+            row_layout.addWidget(label)
+            row_layout.addStretch(1)
+            row_layout.addWidget(current)
+            row_layout.addWidget(button)
+            self.live_conditions_layout.addRow("", row)
+            self._item_controls.append((item_id, label, current, button))
+        if cond.get("actor_valid"):
+            actor_id = int(cond.get("actor_id", 1) or 1)
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            label = QLabel(TR("ev_live_actor", id=actor_id))
+            current = QLabel("—")
+            button = QPushButton(TR("ev_live_join_actor"))
+            button.clicked.connect(
+                lambda checked=False, aid=actor_id: self._join_actor_live(aid))
+            row_layout.addWidget(label)
+            row_layout.addStretch(1)
+            row_layout.addWidget(current)
+            row_layout.addWidget(button)
+            self.live_conditions_layout.addRow("", row)
+            self._actor_controls.append((actor_id, label, current, button))
+        supported = bool(self._switch_controls or self._var_controls
+                         or self._self_controls or self._item_controls
+                         or self._actor_controls)
+        if not supported:
+            self.live_conditions_layout.addRow(
+                QLabel(TR("ev_live_no_supported")))
+        if cond.get("timer_valid") or cond.get("turn_valid") \
+                or cond.get("other_area_valid"):
+            self.live_conditions_layout.addRow(
+                QLabel(TR("ev_live_bypass")))
+        self._refresh_live_controls()
+
+    def _on_live_state(self, state):
+        if isinstance(state, str):
+            try:
+                state = json.loads(state)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                return
+        if isinstance(state, dict):
+            self._live_state = state
+            self._refresh_live_controls()
+
+    def _refresh_live_controls(self):
+        ch = self._live_channel()
+        page = self._current_page()
+        current_map = self._live_state.get("mapId")
+        if current_map is None:
+            self.lbl_live_map.setText(TR("ev_live_map_unknown"))
         else:
-            self.lbl_visible.setText("")
+            self.lbl_live_map.setText(
+                TR("ev_live_current_map", id=current_map))
+        for switch_id, checkbox, current in self._switch_controls:
+            value = self._switch_value(switch_id)
+            checkbox.blockSignals(True)
+            checkbox.setChecked(bool(value))
+            checkbox.blockSignals(False)
+            checkbox.setEnabled(ch is not None and value is not None)
+            current.setText(TR(
+                "ev_live_now",
+                value=TR("ev_live_on") if value else TR("ev_live_off"))
+                if value is not None else "—")
+        for cond, current, button in self._var_controls:
+            variable_id = int(cond.get("variable_id", 1) or 1)
+            value = self._variable_value(variable_id)
+            current.setText(TR("ev_live_now", value=value)
+                            if value is not None else "—")
+            button.setEnabled(ch is not None and value is not None)
+        for switch_ch, checkbox, current in self._self_controls:
+            value = self._self_value(switch_ch)
+            checkbox.blockSignals(True)
+            checkbox.setChecked(bool(value))
+            checkbox.blockSignals(False)
+            checkbox.setEnabled(ch is not None and value is not None)
+            current.setText(TR(
+                "ev_live_now",
+                value=TR("ev_live_on") if value else TR("ev_live_off"))
+                if value is not None else "—")
+        for item_id, label, current, button in self._item_controls:
+            value = self._item_count(item_id)
+            name = self._item_name(item_id)
+            label.setText(TR("ev_live_item_named", id=item_id, name=name)
+                          if name else TR("ev_live_item", id=item_id))
+            current.setText(TR("ev_live_now", value=value)
+                            if value is not None else "—")
+            button.setEnabled(ch is not None and value is not None
+                              and value < 1)
+        for actor_id, label, current, button in self._actor_controls:
+            value = self._actor_in_party(actor_id)
+            name = self._actor_name(actor_id)
+            label.setText(TR("ev_live_actor_named", id=actor_id, name=name)
+                          if name else TR("ev_live_actor", id=actor_id))
+            current.setText(TR(
+                "ev_live_now",
+                value=TR("ev_live_yes") if value else TR("ev_live_no"))
+                if value is not None else "—")
+            button.setEnabled(ch is not None and value is not None
+                              and not value)
+        state_ready = current_map is not None
+        self.btn_visible.setEnabled(ch is not None and state_ready and bool(
+            self._switch_controls or self._var_controls or self._self_controls
+            or self._item_controls or self._actor_controls))
+        has_commands = bool(page.get("list"))
+        on_current_map = current_map == self._map_id
+        in_battle = bool(self._live_state.get("inBattle"))
+        self.btn_run.setEnabled(ch is not None and state_ready and has_commands
+                                and on_current_map and not in_battle)
+        pending = bool(self._live_expected)
+        self.btn_undo.setEnabled(ch is not None
+                                 and bool(self._live_original) and not pending)
+        self.btn_visible.setEnabled(self.btn_visible.isEnabled() and not pending)
+        self.btn_run.setEnabled(self.btn_run.isEnabled() and not pending)
+        self.cb_pages.setEnabled(not pending)
+        self.btn_mode_simple.setEnabled(not pending)
+        self.btn_mode_expanded.setEnabled(not pending)
+        self.tabs.setEnabled(not pending)
+        self.btn_add_page.setEnabled(not pending)
+        self.btn_dup_page.setEnabled(not pending)
+        self.btn_del_page.setEnabled(not pending)
+        self.btn_save_dialog.setEnabled(not pending)
+        self.general_box.setEnabled(not pending)
+
+    def _send_live(self, cmd: str, **kwargs) -> bool:
+        ch = self._live_channel()
+        if ch is None:
+            self.lbl_visible.setText(TR("ev_live_no_channel"))
+            return False
+        self._live_expected[cmd] = self._live_expected.get(cmd, 0) + 1
+        self._arm_ack_timeout()
+        send = getattr(ch, "send_cheat_async", None)
+        sent = send(cmd, **kwargs) if callable(send) else \
+            ch.send_cheat(cmd, **kwargs)
+        if sent:
+            return True
+        count = self._live_expected.get(cmd, 1) - 1
+        if count > 0:
+            self._live_expected[cmd] = count
+        else:
+            self._live_expected.pop(cmd, None)
+        self.lbl_visible.setText(TR("ev_live_err", error="send failed"))
+        return False
+
+    def _arm_ack_timeout(self, seconds: int = 15):
+        """Таймаут ожидания ack: тихая потеря подтверждения (игра висит,
+        сокет half-open) иначе лочит весь диалог навсегда — кнопки,
+        страницы и сейв гаснут без объяснений."""
+        from PySide6.QtCore import QTimer
+        timer = getattr(self, "_ack_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._on_ack_timeout)
+            self._ack_timer = timer
+        timer.start(seconds * 1000)
+
+    def _on_ack_timeout(self):
+        if not self._live_expected:
+            return
+        self._live_expected.clear()
+        self.lbl_visible.setText(TR("ev_live_ack_timeout"))
+        self._refresh_live_controls()
+
+    def _remember(self, key: tuple, value):
+        self._live_original.setdefault(key, value)
+
+    def _set_switch_live(self, switch_id: int, value: bool) -> bool:
+        current = self._switch_value(switch_id)
+        if current is None:
+            self._request_live_state()
+            return False
+        if bool(current) != bool(value):
+            self._remember(("switch", switch_id), bool(current))
+        sent = self._send_live("switch_set", index=switch_id, value=bool(value))
+        self._refresh_live_controls()
+        return sent
+
+    def _set_variable_live(self, cond: dict) -> bool:
+        variable_id = int(cond.get("variable_id", 1) or 1)
+        current = self._variable_value(variable_id)
+        if current is None:
+            self._request_live_state()
+            return False
+        target = maprender.condition_target_value(cond, current)
+        self._remember(("variable", variable_id), current)
+        sent = self._send_live("var_set", index=variable_id, value=target)
+        self._refresh_live_controls()
+        return sent
+
+    def _set_self_live(self, switch_ch: str, value: bool) -> bool:
+        current = self._self_value(switch_ch)
+        if current is None:
+            self._request_live_state()
+            return False
+        self._remember(("self", switch_ch), bool(current))
+        sent = self._send_live(
+            "self_switch_set", mapId=self._map_id,
+            eventId=int(self._ev.get("id", 0) or 0), ch=switch_ch,
+            value=bool(value))
+        self._refresh_live_controls()
+        return sent
+
+    def _give_item_live(self, item_id: int) -> bool:
+        current = self._item_count(item_id)
+        if current is None:
+            self._request_live_state()
+            return False
+        self._remember(("item", item_id), current)
+        sent = self._send_live(
+            "give_item", kind="item", id=item_id, count=1)
+        self._refresh_live_controls()
+        return sent
+
+    def _join_actor_live(self, actor_id: int) -> bool:
+        current = self._actor_in_party(actor_id)
+        if current is None:
+            self._request_live_state()
+            return False
+        self._remember(("actor", actor_id), bool(current))
+        sent = self._send_live("actor_join", actorId=actor_id)
+        self._refresh_live_controls()
+        return sent
+
+    def _confirm_live_action(self, page: dict) -> bool:
+        try:
+            trigger = int((page or {}).get("trigger", 0))
+        except (TypeError, ValueError):
+            trigger = 0
+        if trigger in (3, 4):
+            return QMessageBox.question(
+                self, TR("ev_live_run"), TR("ev_autorun_warn")) \
+                == QMessageBox.Yes
+        return True
 
     def _make_visible(self):
-        """Одна кнопка простого меню: включить все условия текущей
-        страницы (свитчи ON, переменную в нужное значение, self ON) —
-        предмет становится виден в игре. Остальное добавим позже."""
-        ch = self._live_channel()
-        if not ch:
-            self.lbl_visible.setText(TR("ev_live_no_channel"))
+        page = self._current_page()
+        if not self._confirm_live_action(page):
             return
-        pages = self._ev.get("pages") or []
-        idx = self._page_index()
-        page = pages[idx] if 0 <= idx < len(pages) else {}
-        # Автозапуск/параллель: включение условий СРАЗУ стартует событие
-        # (затемнение/переброс/зависание игры) — предупреждаем заранее.
-        try:
-            trig = int((page or {}).get("trigger", 0))
-        except (TypeError, ValueError):
-            trig = 0
-        if trig in (3, 4):
-            if QMessageBox.question(
-                    self, TR("ev_make_visible"),
-                    TR("ev_autorun_warn")) != QMessageBox.Yes:
-                return
         cond = maprender.page_conditions(page)
-        try:
-            eid = int((self._ev or {}).get("id", 0))
-            mid = int(self._map_id or 0)
-        except (TypeError, ValueError):
-            return
-        undone: list[tuple] = []
+        sent = 0
+        failed = False
         for key in ("switch1", "switch2"):
             if cond.get(f"{key}_valid"):
-                sid = int(cond.get(f"{key}_id", 1) or 1)
-                ch.send_cheat("switch_set", index=sid, value=True)
-                undone.append(("switch_set", {"index": sid,
-                                              "value": False}))
+                switch_id = int(cond.get(f"{key}_id", 1) or 1)
+                current = self._switch_value(switch_id)
+                if current is None:
+                    failed = True
+                    continue
+                self._remember(("switch", switch_id), bool(current))
+                if self._send_live("switch_set", index=switch_id, value=True):
+                    sent += 1
+                else:
+                    failed = True
         if cond.get("variable_valid"):
-            vid = int(cond.get("variable_id", 1) or 1)
-            ch.send_cheat("var_set", index=vid,
-                          value=int(cond.get("variable_value", 0) or 0))
+            if self._set_variable_live(cond):
+                sent += 1
+            else:
+                failed = True
         if cond.get("self_switch_valid"):
-            sch = str(cond.get("self_switch_ch", "A") or "A").upper()[:1]
-            if sch not in "ABCD":
-                sch = "A"
-            ch.send_cheat("self_switch_set", mapId=mid, eventId=eid,
-                          ch=sch, value=True)
-            undone.append(("self_switch_set", {"mapId": mid, "eventId": eid,
-                                               "ch": sch, "value": False}))
-        if not undone and not cond.get("variable_valid"):
-            self.lbl_visible.setText(TR("ev_live_no_cond"))
+            switch_ch = str(cond.get("self_switch_ch", "A") or "A").upper()[:1]
+            if switch_ch not in "ABCD":
+                switch_ch = "A"
+            current = self._self_value(switch_ch)
+            if current is None:
+                failed = True
+            else:
+                self._remember(("self", switch_ch), bool(current))
+                if self._send_live(
+                        "self_switch_set", mapId=self._map_id,
+                        eventId=int(self._ev.get("id", 0) or 0),
+                        ch=switch_ch, value=True):
+                    sent += 1
+                else:
+                    failed = True
+        if cond.get("item_valid"):
+            item_id = int(cond.get("item_id", 1) or 1)
+            current = self._item_count(item_id)
+            if current is None:
+                failed = True
+            elif current < 1:
+                if self._give_item_live(item_id):
+                    sent += 1
+                else:
+                    failed = True
+        if cond.get("actor_valid"):
+            actor_id = int(cond.get("actor_id", 1) or 1)
+            current = self._actor_in_party(actor_id)
+            if current is None:
+                failed = True
+            elif not current:
+                if self._join_actor_live(actor_id):
+                    sent += 1
+                else:
+                    failed = True
+        if not failed:
+            self.lbl_visible.setText(
+                TR("ev_live_prepared") if sent else TR("ev_live_no_supported"))
+        self._refresh_live_controls()
+
+    def _run_event_now(self):
+        page = self._current_page()
+        if not page.get("list"):
+            self.lbl_visible.setText(TR("ev_live_run_empty"))
             return
-        self._undo_stack = undone
-        self.btn_undo.setEnabled(bool(undone))
-        self._live_cmd = (undone[-1][0] if undone else "var_set")
+        current_map = self._live_state.get("mapId")
+        if current_map is None:
+            self._request_live_state()
+            self.lbl_visible.setText(TR("ev_live_map_unknown"))
+            return
+        if current_map != self._map_id:
+            self.lbl_visible.setText(TR("ev_live_run_inactive"))
+            return
+        if self._live_state.get("inBattle"):
+            self.lbl_visible.setText(TR("ev_live_battle"))
+            return
+        if not self._confirm_live_action(page):
+            return
         self.lbl_visible.setText(TR("ev_visible_sent"))
+        self._send_live(
+            "event_run", mapId=self._map_id,
+            eventId=int(self._ev.get("id", 0) or 0),
+            pageIndex=self._page_index())
+        self._refresh_live_controls()
 
     def _undo_visible(self):
-        """Вернуть как было: гасим то, что включали (переменная —
-        неизвестно что было, её не трогаем)."""
-        ch = self._live_channel()
-        if not ch:
-            self.lbl_visible.setText(TR("ev_live_no_channel"))
+        if not self._live_original:
+            self.lbl_visible.setText(TR("ev_nothing_to_restore"))
             return
-        for cmd, kw in getattr(self, "_undo_stack", None) or []:
-            try:
-                ch.send_cheat(cmd, **kw)
-            except Exception:  # noqa: BLE001
-                continue
-        self._undo_stack = []
-        self.btn_undo.setEnabled(False)
-        self._live_cmd = "switch_set"
+        failed: list[tuple] = []
+        for key, original in list(self._live_original.items()):
+            kind, ident = key
+            sent = True
+            if kind == "switch":
+                sent = self._send_live("switch_set", index=ident,
+                                       value=bool(original))
+            elif kind == "variable":
+                sent = self._send_live("var_set", index=ident,
+                                       value=int(original))
+            elif kind == "self":
+                sent = self._send_live(
+                    "self_switch_set", mapId=self._map_id,
+                    eventId=int(self._ev.get("id", 0) or 0), ch=ident,
+                    value=bool(original))
+            elif kind == "item":
+                current = self._item_count(ident)
+                if current is None:
+                    sent = False
+                elif int(current) != int(original):
+                    sent = self._send_live(
+                        "give_item", kind="item", id=ident,
+                        count=int(original) - int(current))
+            elif kind == "actor":
+                current = self._actor_in_party(ident)
+                if current is None:
+                    sent = False
+                elif bool(current) != bool(original):
+                    sent = self._send_live(
+                        "actor_join" if original else "actor_leave",
+                        actorId=ident)
+            if sent:
+                self._live_original.pop(key, None)
+            else:
+                failed.append(key)
+        if failed:
+            self.lbl_visible.setText(TR("ev_live_err", error="restore failed"))
+            self._refresh_live_controls()
+            return
+        self._live_original.clear()
         self.lbl_visible.setText(TR("ev_undone"))
+        self._refresh_live_controls()
 
     def _on_live_ack(self, cmd: str, ok: bool, error: str, value: str):
-        if cmd != getattr(self, "_live_cmd", None):
+        count = self._live_expected.get(cmd, 0)
+        if count <= 0:
             return
-        if ok:
-            self.lbl_visible.setText(TR("ev_live_ok", cmd=cmd))
+        if count == 1:
+            self._live_expected.pop(cmd, None)
         else:
+            self._live_expected[cmd] = count - 1
+        if not ok:
             self.lbl_visible.setText(TR("ev_live_err", error=error or "?"))
+            self._request_live_state()
+            self._refresh_live_controls()
+            return
+        if cmd == "event_run":
+            result = value
+            try:
+                result = json.loads(value)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+            messages = {
+                "event_run_started": "ev_live_run_started",
+                "event_run_attached": "ev_live_run_attached",
+                "inactive_map": "ev_live_run_inactive",
+                "event_busy": "ev_live_run_busy",
+                "empty_page": "ev_live_run_empty",
+                "page_not_found": "ev_live_page_missing",
+                "event_not_found": "ev_live_event_missing",
+                "not_map_scene": "ev_live_not_map",
+                "game_not_ready": "ev_live_not_map",
+                "interpreter_unsupported": "ev_live_interpreter_unsupported",
+                "interpreter_depth_limit": "ev_live_interpreter_busy",
+                "interpreter_setup_failed": "ev_live_interpreter_failed",
+            }
+            result_text = str(result)
+            if result_text.startswith("interpreter_error:"):
+                self.lbl_visible.setText(TR(
+                    "ev_live_run_failed",
+                    error=result_text.split(":", 1)[1]))
+            else:
+                key = messages.get(result_text, "ev_live_ok")
+                self.lbl_visible.setText(TR(key))
+        elif not self._live_expected:
+            self.lbl_visible.setText(TR("ev_live_ok"))
+        self._request_live_state()
+        self._refresh_live_controls()
+
 
     def _new_page(self) -> dict:
         return {

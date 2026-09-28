@@ -11,14 +11,15 @@ from __future__ import annotations
 import json
 import os
 
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor, QFont
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox,
-                               QGridLayout, QGroupBox, QHBoxLayout,
-                               QHeaderView, QLabel, QLineEdit, QMenu,
-                               QMessageBox, QPushButton, QSpinBox,
-                               QTableWidget, QTableWidgetItem, QTabWidget,
-                               QVBoxLayout, QWidget)
+from PySide6.QtCore import QEvent, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (QAbstractItemDelegate, QAbstractItemView,
+                               QCheckBox, QGridLayout, QGroupBox,
+                               QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+                               QMenu, QMessageBox, QPushButton, QSpinBox,
+                               QStyledItemDelegate, QTableWidget,
+                               QTableWidgetItem, QTabWidget, QVBoxLayout,
+                               QWidget)
 
 from app.core.rpgmaker.varnames import (extract_names,
                                         extract_item_names,
@@ -29,6 +30,27 @@ from app.ui.loading_overlay import BusyLabel
 from app.ui.theme import AnimatedComboBox
 
 CHANGED_COLOR = QColor(255, 255, 150)  # жёлтый фон для изменённых ячеек
+
+
+class _CommitDelegate(QStyledItemDelegate):
+    def createEditor(self, parent, option, index):
+        editor = QLineEdit(parent)
+        editor.setObjectName("cheatValueEditor")
+        editor.selectAll()
+        editor.installEventFilter(self)
+        return editor
+
+    def eventFilter(self, editor, event):
+        if event.type() == QEvent.Type.KeyPress:
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                self.commitData.emit(editor)
+                self.closeEditor.emit(editor, QAbstractItemDelegate.NoHint)
+                return True
+            if event.key() == Qt.Key_Escape:
+                self.closeEditor.emit(
+                    editor, QAbstractItemDelegate.RevertModelCache)
+                return True
+        return super().eventFilter(editor, event)
 
 
 def _is_qthread_running(w) -> bool:
@@ -194,6 +216,12 @@ class CheatTab(QWidget):
         tabs.addTab(self._build_items_tab(), TR("cheat_items"))
         tabs.addTab(self._build_vars_tab(), TR("cheat_vars"))
         tabs.addTab(self._build_switches_tab(), TR("cheat_switches"))
+        self._value_delegate = _CommitDelegate(self)
+        self.vars_table.setItemDelegateForColumn(2, self._value_delegate)
+        self.items_table.setItemDelegateForColumn(3, self._value_delegate)
+        for column in (3, 4, 5, 6):
+            self.party_table.setItemDelegateForColumn(
+                column, self._value_delegate)
         lay.addWidget(tabs, 1)
 
         self.main.bridge_state.connect(self._on_state)
@@ -204,6 +232,13 @@ class CheatTab(QWidget):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._auto_state)
         self._timer.start(500)
+
+    def _is_editing(self) -> bool:
+        for table in (self.vars_table, self.sw_table,
+                      self.party_table, self.items_table):
+            if table.state() == QAbstractItemView.EditingState:
+                return True
+        return False
 
     def _auto_state(self):
         if not self.isVisible():
@@ -260,7 +295,23 @@ class CheatTab(QWidget):
         max; если поток не успел — он сам завершится и удалится по
         finished->deleteLater, висящих запросов не шлём (поколение
         инвалидируется, поздние done игнорятся).
+
+        Здесь же останавливаем 500мс-опрос состояния и отписываемся
+        от сигналов: вкладка пересоздаётся на каждый проект, а вечный
+        таймер слал бы запросы в чужую игру.
         """
+        try:
+            self._timer.stop()
+        except Exception:  # noqa: BLE001, RuntimeError
+            pass
+        for sig, slot in (
+                (self.main.bridge_state, self._on_state),
+                (self.main.bridge_cheat_ack, self._on_ack),
+                (self.main.bridge_client, self._on_client)):
+            try:
+                sig.disconnect(slot)
+            except Exception:  # noqa: BLE001, RuntimeError
+                pass
         worker = self._names_worker
         self._names_worker = None
         self._names_seq += 1
@@ -579,11 +630,22 @@ class CheatTab(QWidget):
             return
         self._cheat("give_item", kind=key[0], id=key[1], count=delta)
 
-    def _screenshot(self):
+    def _ensure_channel(self):
         ch = self.main.channel()
+        if ch is not None or not self.main.session.is_game_running():
+            return ch
+        self.lbl_status.setText(TR("cheat_reconnecting"))
+        ch = self.main.ensure_channel()
+        if ch is not None:
+            self.lbl_status.setText(TR("cheat_connected"))
+        return ch
+
+    def _screenshot(self):
+        ch = self._ensure_channel()
         if not ch:
-            QMessageBox.information(self, TR("cheat_no_bridge"),
-                                    TR("cheat_no_bridge"))
+            if not self.main.is_reconnecting():
+                QMessageBox.information(self, TR("cheat_no_bridge"),
+                                        TR("cheat_no_bridge"))
             return
         shot = ch.screenshot() if hasattr(ch, "screenshot") else None
         if not shot:
@@ -609,26 +671,44 @@ class CheatTab(QWidget):
 
     # ── отправка читов ──
     def _cheat(self, cmd: str, **kwargs):
-        ch = self.main.channel()
+        ch = self._ensure_channel()
         if not ch:
-            QMessageBox.information(
-                self, TR("cheat_no_bridge"),
-                TR("cheat_no_bridge") + "\n" + self.main.channel_diag())
+            if not self.main.is_reconnecting():
+                QMessageBox.information(
+                    self, TR("cheat_no_bridge"),
+                    TR("cheat_no_bridge") + "\n" + self.main.channel_diag())
             return
-        ch.send_cheat(cmd, **kwargs)
+        send = getattr(ch, "send_cheat_async", None)
+        if callable(send):
+            send(cmd, **kwargs)
+        else:
+            ch.send_cheat(cmd, **kwargs)
 
     def _request_state(self):
         ch = self.main.channel()
-        if ch:
+        if not ch:
+            return
+        request = getattr(ch, "request_state_async", None)
+        if callable(request):
+            request()
+        else:
             ch.request_state()
 
     def showEvent(self, event):
         super().showEvent(event)
-        self._request_state()
+        if self._ensure_channel() is not None:
+            self._request_state()
 
     def on_project_opened(self):
         if not self.main.project:
             return
+        # Заморозки/правки прошлой игры не переживают смену проекта:
+        # иначе дожималка слала бы чужие значения в новую игру.
+        self._frozen_vars.clear()
+        self._frozen_switches.clear()
+        self._actor_edits.clear()
+        self._prev_state = None
+        self.state = None
         mod = self.main.engine_module
         game_dir = self.main.project.game_dir
         view = mod.file_view(game_dir) if mod else None
@@ -704,6 +784,8 @@ class CheatTab(QWidget):
         self.switch_names_tr = s
         self.item_names_tr = it
         self.busy_names.stop()
+        if self._is_editing():
+            return
         self._fill_vars()
         self._fill_switches()
         self._fill_items()
@@ -765,7 +847,7 @@ class CheatTab(QWidget):
         if not self._frozen_vars and not self._frozen_switches:
             return
         try:
-            ch = self.main.channel()
+            ch = self._ensure_channel()
         except Exception:  # noqa: BLE001
             return
         if not ch:
@@ -779,7 +861,11 @@ class CheatTab(QWidget):
             return
         for cmd, kw in cmds:
             try:
-                ch.send_cheat(cmd, **kw)
+                send = getattr(ch, "send_cheat_async", None)
+                if callable(send):
+                    send(cmd, **kw)
+                else:
+                    ch.send_cheat(cmd, **kw)
             except Exception:  # noqa: BLE001
                 continue
 
@@ -797,6 +883,8 @@ class CheatTab(QWidget):
         # сохраняем предыдущее для diff-подсветки
         self._prev_state = self.state
         self.state = state
+        if self._is_editing():
+            return
         # заморозка дожимается сразу, а не следующим тиком (500мс): иначе
         # игра перезаписывает правку между тиками и «не применяется».
         self._enforce_frozen()
@@ -1075,8 +1163,10 @@ class CheatTab(QWidget):
             self._request_state()
 
     def _on_client(self, connected: bool):
-        self.lbl_status.setText(
-            TR("cheat_connected") if connected else
-            TR("cheat_disconnected"))
         if connected:
+            self.lbl_status.setText(TR("cheat_connected"))
             self._request_state()
+        elif self.main.session.is_game_running():
+            self.lbl_status.setText(TR("cheat_reconnecting"))
+        else:
+            self.lbl_status.setText(TR("cheat_disconnected"))

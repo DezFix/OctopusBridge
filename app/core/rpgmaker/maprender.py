@@ -17,6 +17,7 @@ import json
 import os
 
 from .fileview import DiskFileView, FileView
+from app.core.io import atomic_write_bytes
 
 TILE = 48
 
@@ -418,17 +419,25 @@ def event_summary(ev: dict) -> dict:
 
 def page_conditions(page: dict) -> dict:
     """Условия видимости страницы события."""
+    empty = {
+        "switch1_valid": False, "switch1_id": 1,
+        "switch2_valid": False, "switch2_id": 1,
+        "variable_valid": False, "variable_id": 1,
+        "variable_value": 0, "variable_compare": 0,
+        "self_switch_valid": False, "self_switch_ch": "A",
+        "item_valid": False, "item_id": 1,
+        "actor_valid": False, "actor_id": 1,
+        "timer_valid": False, "timer_sec": 0,
+        "turn_valid": False, "turn_command": 0,
+        "turn_passby": False,
+        "other_area_valid": False, "other_area_id": 0,
+        "other_area_unique": False,
+    }
     if not isinstance(page, dict):
-        return {
-            "switch1_valid": False, "switch1_id": 1,
-            "switch2_valid": False, "switch2_id": 1,
-            "variable_valid": False, "variable_id": 1,
-            "variable_value": 0, "self_switch_valid": False,
-            "self_switch_ch": "A",
-        }
+        return empty
     c = page.get("conditions") or {}
     if not isinstance(c, dict):
-        c = {}
+        return empty
     return {
         "switch1_valid": bool(c.get("switch1Valid")),
         "switch1_id": c.get("switch1Id", 1),
@@ -437,9 +446,38 @@ def page_conditions(page: dict) -> dict:
         "variable_valid": bool(c.get("variableValid")),
         "variable_id": c.get("variableId", 1),
         "variable_value": c.get("variableValue", 0),
+        "variable_compare": c.get("variableCompare", 0),
         "self_switch_valid": bool(c.get("selfSwitchValid")),
         "self_switch_ch": c.get("selfSwitchCh", "A"),
+        "item_valid": bool(c.get("itemValid")),
+        "item_id": c.get("itemId", 1),
+        "actor_valid": bool(c.get("actorValid")),
+        "actor_id": c.get("actorId", 1),
+        "timer_valid": bool(c.get("timerValid")),
+        "timer_sec": c.get("timerSec", 0),
+        "turn_valid": bool(c.get("turnValid")),
+        "turn_command": c.get("turnCommand", 0),
+        "turn_passby": bool(c.get("turnPassby")),
+        "other_area_valid": bool(c.get("otherAreaValid")),
+        "other_area_id": c.get("otherAreaId", c.get("otherAreaID", 0)),
+        "other_area_unique": bool(c.get("otherAreaUnique")),
     }
+
+
+def condition_target_value(cond: dict, current: int = 0) -> int:
+    try:
+        compare = int(cond.get("variable_compare", 0) or 0)
+        target = int(cond.get("variable_value", 0) or 0)
+        value = int(current or 0)
+    except (TypeError, ValueError):
+        return 0
+    if compare == 3:
+        return target + 1
+    if compare == 4:
+        return target - 1
+    if compare == 5:
+        return target + 1 if value == target else value
+    return target
 
 
 def visibility_text(page: dict) -> str:
@@ -447,13 +485,26 @@ def visibility_text(page: dict) -> str:
     c = page_conditions(page)
     parts = []
     if c["switch1_valid"]:
-        parts.append(f"SW {c['switch1_id']}=ON")
+        parts.append(_TR("map_cond_switch", id=c["switch1_id"]))
     if c["switch2_valid"]:
-        parts.append(f"SW {c['switch2_id']}=ON")
+        parts.append(_TR("map_cond_switch", id=c["switch2_id"]))
     if c["variable_valid"]:
-        parts.append(f"VAR {c['variable_id']}>={c['variable_value']}")
+        op = {0: ">=", 1: "==", 2: "<=", 3: ">", 4: "<",
+              5: "!="}.get(c["variable_compare"], ">=")
+        parts.append(_TR("map_cond_variable", id=c["variable_id"],
+                         op=op, value=c["variable_value"]))
     if c["self_switch_valid"]:
-        parts.append(f"Self {c['self_switch_ch']}=ON")
+        parts.append(_TR("map_cond_self", id=c["self_switch_ch"]))
+    if c["item_valid"]:
+        parts.append(_TR("map_cond_item", id=c["item_id"]))
+    if c["actor_valid"]:
+        parts.append(_TR("map_cond_actor", id=c["actor_id"]))
+    if c["timer_valid"]:
+        parts.append(_TR("map_cond_timer", value=c["timer_sec"]))
+    if c["turn_valid"]:
+        parts.append(_TR("map_cond_turn", id=c["turn_command"]))
+    if c["other_area_valid"]:
+        parts.append(_TR("map_cond_area", id=c["other_area_id"]))
     return ", ".join(parts) if parts else _TR("map_vis_always")
 
 
@@ -470,11 +521,12 @@ def save_map(game_dir: str, map_id: int, data: dict,
     text = json.dumps(data, ensure_ascii=False)
     if view is None:
         view = DiskFileView(game_dir)
-        path = os.path.join(game_dir, *rel.split("/"))
+    if isinstance(view, DiskFileView):
+        path = os.path.join(view.game_dir, *rel.split("/"))
         backup = path + backup_suffix
         if not os.path.exists(backup):
-            import shutil
-            shutil.copy2(path, backup)
+            with open(path, "rb") as f:
+                atomic_write_bytes(backup, f.read())
     if rel.lower().endswith(".rpgmvm"):
         from app.core.rpgmaker import crypto
         key = crypto.get_key(game_dir, view=view)

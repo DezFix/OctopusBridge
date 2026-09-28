@@ -1,852 +1,57 @@
 # -*- coding: utf-8 -*-
-"""Вкладка «Перевод файлов»: левая панель — файлы (поиск, прогресс, донут),
-правая — хлебные крошки, фильтр, таблица/карточки, инлайн-редактирование,
-статус-пилюли, степпер шагов в топбаре."""
+"""Вкладка «Перевод файлов»: TranslateTab-оркестратор.
+
+Бывший монолит (2608 строк) разрезан на app/ui/translate/*:
+helpers (чистые группировка/фильтр), workers (фоновые QThread),
+table (виджеты таблицы), dialogs (диалог перевода/диффы),
+glossary_ui (глоссарий). Здесь только TranslateTab + реэкспорты
+для совместимости импортов (main_window, tests)."""
 from __future__ import annotations
 
-import os
 import time
 
-from PySide6.QtCore import (QEvent, QPointF, QRectF, QSize, Qt, QThread,
-                            QTimer, Signal)
-from PySide6.QtGui import (QAction, QColor, QFont, QIcon,
-                           QKeySequence, QLinearGradient, QPainter,
-                           QPainterPath, QPen, QPixmap, QShortcut)
-from PySide6.QtWidgets import (QAbstractItemDelegate, QAbstractItemView,
-                               QApplication,
-                               QCheckBox, QDialog, QDialogButtonBox,
-                               QFormLayout,
+from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtWidgets import (QAbstractItemView, QApplication,
                                QFileDialog, QFrame, QHBoxLayout, QHeaderView,
-                               QLabel, QLineEdit, QMessageBox,
-                               QPlainTextEdit, QProgressBar, QPushButton,
-                               QRadioButton, QScrollArea,
-                               QSplitter,
-                               QStackedWidget, QStyledItemDelegate,
-                               QTableWidget, QTableWidgetItem,
+                               QLabel, QLineEdit, QMessageBox, QProgressBar,
+                               QPushButton, QScrollArea, QSplitter,
+                               QStackedWidget, QTableWidget, QTableWidgetItem,
                                QVBoxLayout, QWidget)
 
 from app.core.models import TranslationEntry
-from app.core.translate.detect import detect_lang
 from app.core.translate.service import Translator
 from app.ui.i18n import TR, engine_hint
 from app.ui.icons import icon
-from app.ui.loading_overlay import BusyLabel
-from app.ui.theme import (C_ACCENT, C_BG, C_GROUP_BORDER,
-                          C_PILL_DONE, C_PILL_DRAFT, C_PILL_EMPTY_FG,
-                          C_PRIMARY, C_TEXT, C_TEXT_SECONDARY,
-                          C_TRACK, AnimatedComboBox, AnimatedMenu)
-
-# ── columns ──
-COL_IDX, COL_CTX, COL_ORIG, COL_TRANS, COL_STATUS = range(5)
-
-# ── status pill states ──
-STATE_EMPTY, STATE_DRAFT, STATE_DONE, STATE_SKIP = range(4)
-
-_STATE_LABEL = {
-    STATE_EMPTY: "tr_status_empty",
-    STATE_DRAFT: "tr_status_draft",
-    STATE_DONE: "tr_status_done",
-    STATE_SKIP: "tr_status_skip",
-}
-_STATE_TO_STATUS = {
-    STATE_EMPTY: "new",
-    STATE_DRAFT: "manual",
-    STATE_DONE: "translated",
-}
-
-
-def _step_icon(n: int, active: bool = False) -> QIcon:
-    """Кружок-номер для кнопок степпера."""
-    size = 16
-    pm = QPixmap(size, size)
-    pm.fill(Qt.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing)
-    if active:
-        bg, fg = QColor(255, 255, 255, 64), QColor("#ffffff")
-    else:
-        bg, fg = QColor(C_BG), QColor(C_PILL_EMPTY_FG)
-    p.setBrush(bg)
-    p.setPen(Qt.NoPen)
-    p.drawEllipse(QRectF(0.5, 0.5, size - 1, size - 1))
-    f = QFont("Segoe UI", 7)
-    f.setBold(True)
-    p.setFont(f)
-    p.setPen(fg)
-    p.drawText(QRectF(0, 0, size, size), Qt.AlignCenter, str(n))
-    p.end()
-    return QIcon(pm)
-
-
-class ExtractWorker(QThread):
-    """Фоновое извлечение текста из игры (не морозит GUI)."""
-
-    done = Signal(object)       # list[TranslationEntry]
-    failed = Signal(str)
-
-    def __init__(self, module, game_dir: str, extract_lang: str | None = None):
-        super().__init__()
-        self.setObjectName("ExtractWorker")
-        self._module = module
-        self._game_dir = game_dir
-        self._extract_lang = extract_lang
-
-    def run(self):
-        try:
-            if self._extract_lang and hasattr(self._module, "list_languages"):
-                entries = self._module.extract(self._game_dir, self._extract_lang)
-            else:
-                entries = self._module.extract(self._game_dir)
-            if not self.isInterruptionRequested():
-                self.done.emit(entries)
-        except Exception as e:  # noqa: BLE001
-            self.failed.emit(str(e))
-
-
-class _ModeOption(QFrame):
-    """Кликабельная плитка выбора режима: заголовок + описание.
-    Подсвечивается рамкой/фоном при выборе (QSS #mode_option)."""
-
-    clicked = Signal()
-
-    def __init__(self, title: str, desc: str, parent=None):
-        super().__init__(parent)
-        self.setObjectName("mode_option")
-        self.setCursor(Qt.PointingHandCursor)
-        self.setMinimumHeight(58)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 10, 14, 10)
-        lay.setSpacing(3)
-        lbl_t = QLabel(title)
-        lbl_t.setStyleSheet(
-            "background: transparent; color: #e8eaf1; font-weight: 600;")
-        lbl_d = QLabel(desc)
-        lbl_d.setStyleSheet(
-            "background: transparent; color: #aab1c4; font-size: 11px;")
-        lbl_d.setWordWrap(True)
-        lay.addWidget(lbl_t)
-        lay.addWidget(lbl_d)
-
-    def set_selected(self, on: bool):
-        self.setProperty("selected", on)
-        self.style().unpolish(self)
-        self.style().polish(self)
-        self.update()
-
-    def is_selected(self) -> bool:
-        return self.property("selected") is True
-
-    def mousePressEvent(self, event):  # noqa: N802
-        if event.button() == Qt.LeftButton:
-            self.clicked.emit()
-        super().mousePressEvent(event)
-
-
-def group_entries_by_src_lang(
-        entries: list) -> list[tuple[str | None, int]]:
-    """Группировка записей по детекту языка оригинала: [(lang, count)].
-
-    Чистая, без Qt — для чекбоксов диалога перевода. Порядок: сначала
-    по убыванию count, None (без букв) в конце.
-    """
-    from collections import Counter
-    counts: Counter = Counter()
-    for e in entries:
-        try:
-            original = getattr(e, "original", "") or ""
-        except Exception:  # noqa: BLE001
-            continue
-        if not original.strip():
-            continue
-        try:
-            counts[detect_lang(original)] += 1
-        except Exception:  # noqa: BLE001
-            counts[None] += 1
-    ranked = sorted(counts.items(),
-                    key=lambda kv: (kv[0] is None, -(kv[1] or 0), str(kv[0])))
-    return ranked
-
-
-def filter_entries_by_src_lang(
-        entries: list, selected: set | None) -> list:
-    """Только записи выбранных языков оригинала (None — все).
-
-    Записи без детекта (цифры/знаки, lang None) всегда пропускаем в работу:
-    движок их не трогает, сервис помечает skip сам.
-    """
-    if not selected:
-        return list(entries)
-    out = []
-    for e in entries:
-        try:
-            original = getattr(e, "original", "") or ""
-        except Exception:  # noqa: BLE001
-            continue
-        try:
-            lang = detect_lang(original) if original.strip() else None
-        except Exception:  # noqa: BLE001
-            lang = None
-        if lang is None or lang in selected:
-            out.append(e)
-    return out
-
-
-class _TranslateDialog(QDialog):
-    """Выбор параметров перевода: язык (весь текст или один официальный),
-    языки оригинала (какие гнать в движок, остальные не трогаем)
-    и режим (только непереведённое / всё заново). Открывается по клику
-    на кнопку «Перевести» вместо выпадающего меню."""
-
-    def __init__(self, langs: list[str], current: str | None, parent=None,
-                 src_groups: list[tuple[str | None, int]] | None = None):
-        super().__init__(parent)
-        self.setWindowTitle(TR("tr_translate"))
-        self.setModal(True)
-        self.setMinimumWidth(460)
-        lay = QVBoxLayout(self)
-        lay.setSpacing(10)
-
-        # Старый дропдаун «Язык игры» — только для Ren'Py (официальные
-        # tl-языки). У остальных движков там один пункт «Весь текст» —
-        # прячем, чтобы не занимал место.
-        real_langs = [lang for lang in (langs or [])
-                      if lang and lang != "None"]
-        self.cb_lang = AnimatedComboBox()
-        if real_langs:
-            lay.addWidget(QLabel(TR("tr_translate_lang")))
-            self.cb_lang.addItem(TR("tr_lang_all"), None)
-            for lang in real_langs:
-                self.cb_lang.addItem(lang, lang)
-            idx = self.cb_lang.findData(current)
-            if idx < 0:
-                idx = 0
-            self.cb_lang.setCurrentIndex(idx)
-            lay.addWidget(self.cb_lang)
-        else:
-            self.cb_lang.addItem(TR("tr_lang_all"), None)
-            self.cb_lang.setVisible(False)
-
-        # ── языки оригинала: какие строки гнать в движок ──
-        # (остальные остаются как есть — не тратим запросы Google/AI).
-        self._src_checks: dict[str | None, QCheckBox] = {}
-        self._src_counts: dict[str | None, int] = {}
-        self._lbl_src_sum: QLabel | None = None
-        if src_groups:
-            lay.addWidget(QLabel(TR("tr_src_filter")))
-            for lang, count in src_groups:
-                name = TR("lang_" + lang) if lang else TR("tr_lang_unknown")
-                cb = QCheckBox(f"{name} — {count}")
-                cb.setChecked(True)
-                cb.toggled.connect(self._refresh_src_sum)
-                lay.addWidget(cb)
-                self._src_checks[lang] = cb
-                self._src_counts[lang] = count
-            quick = QHBoxLayout()
-            quick.setSpacing(8)
-            b_all = QPushButton(TR("tr_src_all"))
-            b_none = QPushButton(TR("tr_src_none"))
-            b_all.setObjectName("tool_btn")
-            b_none.setObjectName("tool_btn")
-            b_all.clicked.connect(lambda: self._set_all_src(True))
-            b_none.clicked.connect(lambda: self._set_all_src(False))
-            quick.addWidget(b_all)
-            quick.addWidget(b_none)
-            quick.addStretch(1)
-            self._lbl_src_sum = QLabel("")
-            quick.addWidget(self._lbl_src_sum)
-            lay.addLayout(quick)
-            self._refresh_src_sum()
-
-        lbl_mode = QLabel(TR("tr_mode"))
-        lay.addWidget(lbl_mode)
-        self._opt_new = _ModeOption(TR("tr_mode_new"), TR("tr_mode_new_desc"))
-        self._opt_all = _ModeOption(TR("tr_mode_all"), TR("tr_mode_all_desc"))
-        self._opt_new.clicked.connect(lambda: self._select_mode(self._opt_new))
-        self._opt_all.clicked.connect(lambda: self._select_mode(self._opt_all))
-        self._select_mode(self._opt_new)
-        lay.addWidget(self._opt_new)
-        lay.addWidget(self._opt_all)
-
-        btn_row = QHBoxLayout()
-        btn_row.addStretch(1)
-        b_ok = QPushButton(TR("btn_ok"))
-        b_cancel = QPushButton(TR("btn_cancel"))
-        b_ok.clicked.connect(self.accept)
-        b_cancel.clicked.connect(self.reject)
-        btn_row.addWidget(b_ok)
-        btn_row.addWidget(b_cancel)
-        lay.addLayout(btn_row)
-
-    def _set_all_src(self, on: bool) -> None:
-        for cb in self._src_checks.values():
-            cb.setChecked(on)
-        self._refresh_src_sum()
-
-    def _refresh_src_sum(self) -> None:
-        if self._lbl_src_sum is None:
-            return
-        total = sum(self._src_counts.get(lang, 0)
-                    for lang, cb in self._src_checks.items()
-                    if cb.isChecked())
-        self._lbl_src_sum.setText(TR("tr_src_selected", n=total))
-
-    def _select_mode(self, opt: _ModeOption):
-        self._opt_new.set_selected(opt is self._opt_new)
-        self._opt_all.set_selected(opt is self._opt_all)
-
-    def lang(self) -> str | None:
-        return self.cb_lang.currentData()
-
-    def selected_src_langs(self) -> set | None:
-        """Выбранные языки оригинала. None — все (чекбоксов не было)."""
-        if not self._src_checks:
-            return None
-        return {lang for lang, cb in self._src_checks.items()
-                if cb.isChecked()}
-
-    def overwrite(self) -> bool:
-        return self._opt_all.is_selected()
-
-
-class TranslateWorker(QThread):
-    progressed = Signal(int, int)
-    done = Signal(int, int)     # (переведено, на целевом языке — пропущено)
-    failed = Signal(str)
-
-    def __init__(self, translator: Translator, entries, src, tgt,
-                 overwrite=False):
-        super().__init__()
-        self.setObjectName("TranslateWorker")
-        self.translator = translator
-        self.entries = entries
-        self.src = src
-        self.tgt = tgt
-        self.overwrite = overwrite
-
-    def run(self):
-        try:
-            def progress_check(d, t):
-                if self.isInterruptionRequested():
-                    raise InterruptedError("cancelled")
-                self.progressed.emit(d, t)
-            n = self.translator.translate_entries(
-                self.entries, self.src, self.tgt,
-                progress=progress_check,
-                overwrite=self.overwrite)
-            skipped = sum(
-                1 for e in self.entries
-                if e.status == "skip" and not e.translation.strip())
-            if not self.isInterruptionRequested():
-                self.done.emit(n, skipped)
-        except InterruptedError:
-            pass
-        except Exception as e:  # noqa: BLE001
-            self.failed.emit(str(e))
-
-
-class CorrectWorker(QThread):
-    progressed = Signal(int, int)
-    corrections_ready = Signal(object)
-    failed = Signal(str)
-
-    def __init__(self, corrector, entries, tgt):
-        super().__init__()
-        self.setObjectName("CorrectWorker")
-        self.corrector = corrector
-        self.entries = entries
-        self.tgt = tgt
-
-    def run(self):
-        try:
-            def progress_check(d, t):
-                if self.isInterruptionRequested():
-                    raise InterruptedError("cancelled")
-                self.progressed.emit(d, t)
-            self.corrector.correct_all(self.entries, self.tgt,
-                                       progress=progress_check)
-            if not self.isInterruptionRequested():
-                self.corrections_ready.emit(self.corrector.diffs)
-        except InterruptedError:
-            pass
-        except Exception as e:  # noqa: BLE001
-            self.failed.emit(str(e))
-
-
-class AnalyzeWorker(QThread):
-    """Автоглоссарий: LLM выделяет имена и термины из текстов проекта."""
-
-    done = Signal(object)      # dict[str, str]
-    failed = Signal(str)
-
-    def __init__(self, engine, texts, src, tgt):
-        super().__init__()
-        self.setObjectName("AnalyzeWorker")
-        self._engine = engine
-        self._texts = texts
-        self._src = src
-        self._tgt = tgt
-
-    def run(self):
-        from app.core.translate.analysis import analyze_terms
-        try:
-            terms = analyze_terms(self._engine, self._texts,
-                                  self._src, self._tgt)
-            if not self.isInterruptionRequested():
-                self.done.emit(terms)
-        except Exception as e:  # noqa: BLE001
-            self.failed.emit(str(e))
-
-
-class DiffReviewDialog(QDialog):
-    def __init__(self, diffs: list, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(TR("diff_title"))
-        self.resize(850, 520)
-        self.diffs = diffs
-        lay = QVBoxLayout(self)
-
-        lbl = QLabel(TR("diff_hint", n=len(diffs)))
-        lbl.setWordWrap(True)
-        lay.addWidget(lbl)
-
-        self.table = QTableWidget(len(diffs), 4)
-        self.table.setHorizontalHeaderLabels([
-            TR("diff_col_orig"), TR("diff_col_was"),
-            TR("diff_col_became"), TR("diff_col_action")])
-        for c in range(3):
-            self.table.horizontalHeader().setSectionResizeMode(
-                c, QHeaderView.Stretch)
-        self.table.setColumnWidth(3, 100)
-        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
-
-        for r, d in enumerate(diffs):
-            self.table.setItem(r, 0, QTableWidgetItem(d.entry.original))
-            self.table.setItem(r, 1, QTableWidgetItem(d.old_text))
-            self.table.setItem(r, 2, QTableWidgetItem(d.new_text))
-            btn_a = QPushButton(TR("diff_accept"))
-            btn_r = QPushButton(TR("diff_reject"))
-            btn_a.setIcon(icon("check"))
-            btn_r.setIcon(icon("x"))
-            btn_a.clicked.connect(lambda _, row=r: self._accept(row))
-            btn_r.clicked.connect(lambda _, row=r: self._reject(row))
-            w = QWidget()
-            hb = QHBoxLayout(w)
-            hb.setContentsMargins(0, 0, 0, 0)
-            hb.addWidget(btn_a)
-            hb.addWidget(btn_r)
-            self.table.setCellWidget(r, 3, w)
-            d.accepted = False
-
-        lay.addWidget(self.table, 1)
-
-        bar = QHBoxLayout()
-        ba = QPushButton(TR("diff_accept_all"))
-        ba.clicked.connect(self._accept_all)
-        br = QPushButton(TR("diff_reject_all"))
-        br.clicked.connect(self._reject_all)
-        bp = QPushButton(TR("diff_apply"))
-        bp.setObjectName("accent")
-        bp.clicked.connect(self._apply)
-        bar.addWidget(ba)
-        bar.addWidget(br)
-        bar.addStretch(1)
-        bar.addWidget(bp)
-        lay.addLayout(bar)
-
-        self.lbl_count = QLabel()
-        lay.addWidget(self.lbl_count)
-        self._update_count()
-
-    def _accept(self, row):
-        self.diffs[row].accepted = True
-        self._style(row, True)
-        self._update_count()
-
-    def _reject(self, row):
-        self.diffs[row].accepted = False
-        self._style(row, False)
-        self._update_count()
-
-    def _accept_all(self):
-        for r in range(len(self.diffs)):
-            self.diffs[r].accepted = True
-            self._style(r, True)
-        self._update_count()
-
-    def _reject_all(self):
-        for r in range(len(self.diffs)):
-            self.diffs[r].accepted = False
-            self._style(r, False)
-        self._update_count()
-
-    def _style(self, row, accepted):
-        c = QColor(46, 125, 50, 40) if accepted else QColor(198, 40, 40, 40)
-        for col in range(3):
-            self.table.item(row, col).setBackground(c)
-
-    def _update_count(self):
-        acc = sum(1 for d in self.diffs if d.accepted)
-        self.lbl_count.setText(
-            TR("diff_count", acc=acc, total=len(self.diffs)))
-
-    def _apply(self):
-        self.accept()
-
-
-# ────────────────────────────────────────────────────────
-#  Donut (кольцевой индикатор общего прогресса)
-# ────────────────────────────────────────────────────────
-class _Donut(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._pct = 0.0
-        self.setFixedSize(34, 34)
-
-    def set_value(self, pct: float):
-        self._pct = max(0.0, min(1.0, pct))
-        self.update()
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        side = min(self.width(), self.height()) - 2
-        off = (self.width() - side) / 2
-        rect = QRectF(off, off, side, side)
-        track = QPen(QColor(C_TRACK), 3.5, Qt.SolidLine, Qt.RoundCap)
-        p.setPen(track)
-        p.setBrush(Qt.NoBrush)
-        p.drawEllipse(rect)
-
-        grad = QLinearGradient(rect.topLeft(), rect.bottomRight())
-        grad.setColorAt(0.0, QColor(C_PRIMARY))
-        grad.setColorAt(1.0, QColor(C_ACCENT))
-        fg = QPen(QColor(C_PRIMARY), 3.5, Qt.SolidLine, Qt.RoundCap)
-        fg.setBrush(grad)
-        p.setPen(fg)
-        p.drawArc(rect, 90 * 16, int(-self._pct * 360 * 16))
-        p.end()
-
-
-# ────────────────────────────────────────────────────────
-#  File list item (left panel)
-# ────────────────────────────────────────────────────────
-class _FileItem(QFrame):
-    clicked = Signal(str)
-
-    _QSS = f"""
-        QFrame#file_item {{
-            background: transparent;
-            border: 1px solid transparent;
-            border-radius: 8px;
-        }}
-        QFrame#file_item:hover {{
-            background: #1e2230;
-        }}
-        QFrame#file_item[active="true"] {{
-            background: rgba(91, 143, 239, 0.15);
-            border-color: rgba(91, 127, 255, 0.35);
-        }}
-        QFrame#file_item[all="true"] {{
-            border-bottom: 1px solid {C_GROUP_BORDER};
-            margin-bottom: 9px;
-        }}
-        QProgressBar {{
-            background: {C_TRACK};
-            border: none;
-            border-radius: 2px;
-        }}
-        QProgressBar::chunk {{
-            border-radius: 2px;
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                stop:0 {C_PRIMARY}, stop:1 {C_ACCENT});
-        }}
-        QProgressBar[fillstate="zero"]::chunk {{
-            background: transparent;
-        }}
-        QProgressBar[fillstate="done"]::chunk {{
-            background: {C_PILL_DONE};
-        }}
-    """
-
-    def __init__(self, fname: str, total: int, done: int,
-                 all_item: bool = False, target_lang: bool = False,
-                 parent=None):
-        super().__init__(parent)
-        self.setObjectName("file_item")
-        self.fname = fname
-        self._tl = target_lang
-        self.setCursor(Qt.PointingHandCursor)
-        self.setFixedHeight(52)
-        self.setMinimumWidth(0)
-        self.setStyleSheet(self._QSS)
-
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(9, 8, 9, 8)
-        lay.setSpacing(6)
-
-        top = QHBoxLayout()
-        top.setSpacing(8)
-        self.name = QLabel(fname)
-        self.name.setMinimumWidth(0)
-        bold = "font-weight: bold;" if all_item else ""
-        self.name.setStyleSheet(
-            f"color: {C_TEXT}; background: transparent; {bold}"
-            "font-size: 12px;"
-            "font-family: 'Cascadia Code', 'Consolas', monospace;")
-        top.addWidget(self.name, 1)
-        self.count = QLabel("")
-        self.count.setStyleSheet(
-            f"color: {C_PILL_EMPTY_FG}; background: transparent;"
-            "font-size: 10.5px;")
-        top.addWidget(self.count)
-        lay.addLayout(top)
-
-        self.bar = QProgressBar()
-        self.bar.setTextVisible(False)
-        self.bar.setFixedHeight(4)
-        self.bar.setMinimumWidth(0)
-        lay.addWidget(self.bar)
-
-        self.tag = QLabel("")
-        self.tag.setStyleSheet(
-            f"color: {C_PILL_DRAFT}; background: transparent;"
-            "font-size: 10.5px;")
-        self.tag.setVisible(False)
-        lay.addWidget(self.tag)
-
-        if target_lang:
-            self.bar.setVisible(False)
-            self.tag.setText(TR("tr_file_target_lang"))
-            self.tag.setVisible(True)
-            self.count.setText("")
-            self.setToolTip(TR("tr_file_target_lang_hint"))
-        self.update_counts(done, total)
-
-    def update_counts(self, done: int, total: int):
-        pct = round(done / total * 100) if total else 0
-        self.bar.setMaximum(max(total, 1))
-        self.bar.setValue(done)
-        if done == 0:
-            state = "zero"
-        elif done >= total:
-            state = "done"
-        else:
-            state = "part"
-        self.bar.setProperty("fillstate", state)
-        self.bar.style().unpolish(self.bar)
-        self.bar.style().polish(self.bar)
-        if not self._tl:
-            self.count.setText(f"{done}/{total}")
-            self.count.setStyleSheet(
-                ("color: #39c98f;" if pct == 100 else
-                 f"color: {C_PILL_EMPTY_FG};")
-                + " background: transparent; font-size: 10.5px;")
-            self.setToolTip(f"{done}/{total} ({pct}%)")
-
-    def set_active(self, active: bool):
-        self.setProperty("active", active)
-        self.style().unpolish(self)
-        self.style().polish(self)
-        self.name.setStyleSheet(
-            ("color: #ffffff;" if active else f"color: {C_TEXT};")
-            + " background: transparent; font-size: 12px;"
-              "font-family: 'Cascadia Code', 'Consolas', monospace;")
-
-    def mousePressEvent(self, event):
-        self.clicked.emit(self.fname)
-        super().mousePressEvent(event)
-
-
-# ────────────────────────────────────────────────────────
-#  Inline translation editor (textarea в таблице/карточках)
-# ────────────────────────────────────────────────────────
-class _TransEditor(QPlainTextEdit):
-    commit_requested = Signal()
-    cancel_requested = Signal()
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFrameShape(QFrame.Shape.NoFrame)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.document().setDocumentMargin(3)
-        self.setStyleSheet(f"""
-            QPlainTextEdit {{
-                background: #1e2230;
-                border: 1.5px solid {C_PRIMARY};
-                border-radius: 6px;
-                color: {C_TEXT};
-                padding: 2px;
-                font-size: 12.5px;
-            }}
-        """)
-
-    def keyPressEvent(self, event):
-        if event.key() in (Qt.Key_Return, Qt.Key_Enter) \
-                and not (event.modifiers() & Qt.ShiftModifier):
-            event.accept()
-            self.commit_requested.emit()
-            return
-        if event.key() == Qt.Key_Escape:
-            event.accept()
-            self.cancel_requested.emit()
-            return
-        super().keyPressEvent(event)
-
-
-class _TransDelegate(QStyledItemDelegate):
-    """Клик по ячейке перевода → textarea прямо в таблице.
-    Enter — сохранить, Esc — отмена, потеря фокуса — автосохранение."""
-
-    def createEditor(self, parent, option, index):
-        ed = _TransEditor(parent)
-        ed.commit_requested.connect(
-            lambda: (self.commitData.emit(ed),
-                     self.closeEditor.emit(
-                         ed, QAbstractItemDelegate.EndEditHint.EditFinished)))
-        ed.cancel_requested.connect(
-            lambda: self.closeEditor.emit(
-                ed, QAbstractItemDelegate.EndEditHint.NoHint))
-        return ed
-
-    def setEditorData(self, editor, index):
-        editor.setPlainText(index.data(Qt.ItemDataRole.DisplayRole) or "")
-
-    def updateEditorGeometry(self, editor, option, index):
-        r = option.rect
-        h = max(r.height() * 3, 64)
-        editor.setGeometry(r.x(), r.y(), r.width(), h)
-
-    def setModelData(self, editor, model, index):
-        model.setData(index,
-                      editor.toPlainText(), Qt.ItemDataRole.EditRole)
-
-
-# ────────────────────────────────────────────────────────
-#  Status pill delegate (клик — циклическая смена статуса)
-# ────────────────────────────────────────────────────────
-def _pill_colors(state: int) -> tuple[QColor, QColor, QColor]:
-    """(bg, fg, dot) для состояния пилюли."""
-    if state == STATE_DRAFT:
-        return (QColor(240, 169, 62, 33), QColor(C_PILL_DRAFT),
-                QColor(240, 169, 62))
-    if state == STATE_DONE:
-        return (QColor(57, 201, 143, 33), QColor(C_PILL_DONE),
-                QColor(57, 201, 143))
-    if state == STATE_SKIP:
-        return (QColor(93, 99, 119, 38), QColor("#5d6377"),
-                QColor(93, 99, 119))
-    return (QColor(255, 255, 255, 13), QColor(C_PILL_EMPTY_FG),
-            QColor(C_PILL_EMPTY_FG))
-
-
-class _StatusDelegate(QStyledItemDelegate):
-    cycled = Signal(int)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._meta = None   # fn(entry_id) -> (state, label)
-
-    def set_meta_lookup(self, fn):
-        self._meta = fn
-
-    def paint(self, painter, option, index):
-        state, label = STATE_EMPTY, ""
-        if self._meta:
-            eid = index.data(Qt.ItemDataRole.UserRole)
-            if eid is not None:
-                state, label = self._meta(int(eid))
-        bg, fg, dot = _pill_colors(state)
-
-        painter.save()
-        painter.setRenderHint(QPainter.Antialiasing)
-        rect = option.rect.adjusted(6, 6, -6, -6)
-        if rect.height() > 0:
-            path = QPainterPath()
-            path.addRoundedRect(QRectF(rect), rect.height() / 2,
-                                rect.height() / 2)
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(bg)
-            painter.drawPath(path)
-            c = QPointF(rect.left() + 11, rect.top() + rect.height() / 2)
-            painter.setBrush(dot)
-            painter.drawEllipse(c, 3, 3)
-            if label:
-                painter.setPen(fg)
-                f = painter.font()
-                f.setPixelSize(11)
-                f.setBold(True)
-                painter.setFont(f)
-                painter.drawText(
-                    QRectF(rect.left() + 19, rect.top(),
-                           max(rect.width() - 25, 0), rect.height()),
-                    Qt.AlignVCenter | Qt.AlignLeft, label)
-        painter.restore()
-
-    def sizeHint(self, option, index):
-        return QSize(118, 30)
-
-    def editorEvent(self, event, model, option, index):
-        if (event.type() == QEvent.Type.MouseButtonRelease
-                and event.button() == Qt.MouseButton.LeftButton
-                and index.isValid()):
-            eid = index.data(Qt.ItemDataRole.UserRole)
-            if eid is not None:
-                self.cycled.emit(int(eid))
-                return True
-        return super().editorEvent(event, model, option, index)
-
+from app.ui.theme import (C_GROUP_BORDER, C_PILL_EMPTY_FG, C_TEXT,
+                          C_TEXT_SECONDARY, AnimatedComboBox, AnimatedMenu)
+
+from app.ui.translate.dialogs import _TranslateDialog
+from app.ui.translate.glossary_ui import GlossaryDialog
+from app.ui.translate.helpers import (extract_busy, filter_entries_by_src_lang,
+                                      group_entries_by_src_lang,
+                                      project_lang_options, translate_busy)
+from app.ui.translate.table import (COL_CTX, COL_IDX, COL_ORIG, COL_STATUS,
+                                    COL_TRANS, STATE_EMPTY, STATE_SKIP,
+                                    _STATE_LABEL, _STATE_TO_STATUS, _Donut,
+                                    _FileItem, _StatusDelegate, _TransDelegate,
+                                    _ctx_short, _entry_matches,
+                                    _file_is_target_lang, _fmt, _state_of,
+                                    _step_icon)
+# ExtractWorker здесь не используется, но реэкспортируется для
+# main_window (ленивый импорт). Убирать нельзя.
+from app.ui.translate.workers import (ExtractWorker,  # noqa: F401
+                                      TranslateWorker)
 
 
 # ────────────────────────────────────────────────────────
 #  Main translate tab
 # ────────────────────────────────────────────────────────
-def _state_of(e: TranslationEntry) -> int:
-    if e.status == "skip":
-        return STATE_SKIP
-    if e.status in ("translated", "corrected"):
-        return STATE_DONE
-    if e.status == "manual":
-        return STATE_DRAFT
-    return STATE_EMPTY
-
-
-def _entry_matches(q: str, e: TranslationEntry) -> bool:
-    """Поиск по строке: имя/оригинал/перевод (без учёта регистра)."""
-    return (q in (e.original or "").lower()
-            or q in (e.translation or "").lower())
-
-
-def _file_is_target_lang(fe: list[TranslationEntry], tgt: str) -> bool:
-    """Файл целиком на целевом языке — перевод ему не нужен.
-
-    Проверяем выборку строк (до 40): если все распознанные языки
-    совпадают с целевым — файл отделяется в конец списка с меткой.
-    """
-    texts = [e.original for e in fe if e.original.strip()]
-    if not texts:
-        return False
-    known = [l for l in (detect_lang(t) for t in texts[:40]) if l]
-    if not known:
-        return False
-    return all(l == tgt for l in known)
-
-
-def _ctx_short(ctx: str) -> str:
-    parts = [x for x in ctx.replace("\\", "/").split("/") if x]
-    return "/".join(parts[-2:]) if len(parts) > 2 else ctx
-
-
-def _fmt(n: int) -> str:
-    return f"{n:,}".replace(",", " ")
-
-
 class TranslateTab(QWidget):
     def __init__(self, main_window):
         super().__init__()
         self.main = main_window
         self.worker: TranslateWorker | None = None
-        self.worker_correct: CorrectWorker | None = None
         self._loading = False
         self._cancelling = False
         self._cancel_elapsed = 0
@@ -854,10 +59,27 @@ class TranslateTab(QWidget):
         self._status_timer: QTimer | None = None
         self._last_progress = (0, 0)
         self._pending_overwrite = False
+        self._pending_src_langs: set | None = None
+        self._left_over = 0
+        # пользователь нажал «Перевести» во время фонового прогона:
+        # его выбор ждёт остановки текущего (см. translate_all)
+        self._queued_request = False
         self._selected_file = ""
         self._file_items: list[_FileItem] = []
         self._toast_timer: QTimer | None = None
         self._mem_cache: dict[int, list[dict]] = {}
+        # Индекс id -> запись: ручная правка шла линейным сканом
+        # по 40k строк на каждое нажатие Enter. Источник валидности —
+        # сам список проекта (см. _entry_by_id).
+        self._entry_index: dict[int, TranslationEntry] = {}
+        self._entry_index_src: list | None = None
+        # Дебаунс автосейва: раньше каждая правка синхронно писала
+        # весь .ob.json на диск. Теперь правим в памяти сразу,
+        # на диск — пачкой через 800 мс тишины.
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(800)
+        self._save_timer.timeout.connect(self._flush_save)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -898,12 +120,6 @@ class TranslateTab(QWidget):
         self.btn_restore.setCursor(Qt.PointingHandCursor)
         self.btn_restore.clicked.connect(self.restore_original)
         bar.addWidget(self.btn_restore)
-
-        self.btn_correct = QPushButton(TR("tr_correct"))
-        self.btn_correct.setObjectName("tool_btn")
-        self.btn_correct.setIcon(icon("ai", 14, C_TEXT_SECONDARY))
-        self.btn_correct.clicked.connect(self.correct_all)
-        bar.addWidget(self.btn_correct)
 
         self.btn_glossary = QPushButton(TR("tr_glossary"))
         self.btn_glossary.setObjectName("tool_btn")
@@ -1166,16 +382,52 @@ class TranslateTab(QWidget):
         self._toast_timer.timeout.connect(self.toast.hide)
         self._toast_timer.start(1000)
 
+    # ── индекс записей + дебаунс сейва ──
+
+    def _entry_by_id(self, entry_id: int) -> TranslationEntry | None:
+        """Запись по id за O(1). Индекс ленивый: перестраивается,
+        когда список проекта сменился (extract) или вырос."""
+        p = self._project()
+        if not p:
+            return None
+        entries = p.entries
+        if self._entry_index_src is not entries \
+                or len(self._entry_index) != len(entries):
+            self._entry_index = {e.id: e for e in entries}
+            self._entry_index_src = entries
+        return self._entry_index.get(entry_id)
+
+    def _schedule_save(self):
+        """Отложенная запись проекта (см. _flush_save)."""
+        if self._project() is None:
+            return
+        if not self._save_timer.isActive():
+            self._save_timer.start()
+
+    def _flush_save(self):
+        """Немедленно записать отложенное. Тост — только после
+        реальной записи, иначе «Сохранено» врёт."""
+        self._save_timer.stop()
+        if self._project() is None:
+            return
+        try:
+            self.main.save_project()
+        except Exception:  # noqa: BLE001
+            return
+        self._flash_saved()
+
+    def flush_save(self):
+        """Публичный форс сейва: смена проекта, extract, выход."""
+        self._flush_save()
+
     # ── шаги (степпер) ──
 
     def _update_steps(self):
         p = self._project()
         n = len(p.entries) if p else 0
-        translated = sum(1 for e in p.entries if e.translation.strip()) \
+        translated = sum(1 for e in p.entries if (e.translation or "").strip()) \
             if p else 0
-        busy = bool((self.worker and self.worker.isRunning())
-                    or (self.worker_correct
-                        and self.worker_correct.isRunning()))
+        busy = bool(self.worker and self.worker.isRunning())
         extract_busy = bool(getattr(self.main, "_extract_worker", None)
                             and self.main._extract_worker.isRunning())
         self.btn_extract.setEnabled(
@@ -1209,9 +461,16 @@ class TranslateTab(QWidget):
         if not self.main.engine_module:
             QMessageBox.warning(self, TR("err"), TR("tr_no_engine"))
             return
+        if translate_busy(self):  # иначе воркер мутирует orphan-объекты
+            QMessageBox.warning(self, TR("err"), TR("tr_translating"))
+            return
+        self.flush_save()
         self.btn_extract.setEnabled(False)
         self.lbl_status.setText(TR("tr_extracting"))
-        self.main.start_extraction(self._on_extracted)
+        if not self.main.start_extraction(self._on_extracted):
+            # воркер не стартовал (гонка с другим извлечением) —
+            # _on_extracted не придёт, кнопку разблокируем сами.
+            self.btn_extract.setEnabled(True)
 
     def _on_extracted(self, restored: int, error: str):
         self.btn_extract.setEnabled(True)
@@ -1272,7 +531,8 @@ class TranslateTab(QWidget):
         # «Все файлы» — агрегат, всегда виден
         all_total = len(p.entries)
         all_done = sum(1 for e in p.entries
-                       if e.translation.strip() and e.status != "skip")
+                            if (e.translation or "").strip()
+                            and e.status != "skip")
         all_item = _FileItem(TR("tr_all_files"), all_total, all_done,
                              all_item=True)
         all_item.clicked.connect(lambda _: self._select_file(""))
@@ -1295,7 +555,8 @@ class TranslateTab(QWidget):
             for fname, fe in groups[key]:
                 total = len(fe)
                 done = sum(1 for e in fe
-                           if e.translation.strip() and e.status != "skip")
+                                if (e.translation or "").strip()
+                            and e.status != "skip")
                 item = _FileItem(fname, total, done,
                                  target_lang=(key == "tl"))
                 item.clicked.connect(
@@ -1429,19 +690,20 @@ class TranslateTab(QWidget):
     def _on_item_changed(self, item: QTableWidgetItem):
         if self._loading or item.column() != COL_TRANS:
             return
-        p = self._project()
-        if not p:
+        if not self._project():
             return
         entry_id = item.data(Qt.UserRole)
-        for e in p.entries:
-            if e.id == entry_id:
-                e.translation = item.text()
-                e.status = "manual"
-                break
+        e = self._entry_by_id(entry_id)
+        if e is None:
+            return
+        e.translation = item.text()
+        e.status = "manual"
+        # На диск — дебаунсом: синхронная запись всего .ob.json
+        # на каждую правку замораживала UI на больших проектах.
+        self._schedule_save()
         self._update_stats()
         self._update_steps()
         self.table.viewport().update()
-        self._flash_saved()
 
     # ── копирование текста из таблицы ──
 
@@ -1693,10 +955,9 @@ class TranslateTab(QWidget):
     # ── статус-пилюля: клик циклически меняет статус ──
 
     def _cycle_status(self, entry_id: int):
-        p = self._project()
-        if not p:
+        if not self._project():
             return
-        e = next((x for x in p.entries if x.id == entry_id), None)
+        e = self._entry_by_id(entry_id)
         if not e:
             return
         state = _state_of(e)
@@ -1705,6 +966,7 @@ class TranslateTab(QWidget):
         else:
             next_state = (state + 1) % 3
         e.status = _STATE_TO_STATUS[next_state]
+        self._schedule_save()
         self.table.viewport().update()
         self._update_stats()
 
@@ -1716,7 +978,7 @@ class TranslateTab(QWidget):
             return 0, 0, 0, 0
         done = draft = empty = 0
         for e in p.entries:
-            if e.translation.strip():
+            if (e.translation or "").strip():
                 if e.status == "skip":
                     draft += 1
                 else:
@@ -1738,7 +1000,8 @@ class TranslateTab(QWidget):
             if fe is None:
                 continue
             done_f = sum(1 for e in fe
-                         if e.translation.strip() and e.status != "skip")
+                         if (e.translation or "").strip()
+                         and e.status != "skip")
             item.update_counts(done_f, len(fe))
         # донут
         if total:
@@ -1753,7 +1016,8 @@ class TranslateTab(QWidget):
         n_files = len(by_file)
         done_files = sum(
             1 for fe in by_file.values()
-            if fe and all(e.translation.strip() and e.status != "skip"
+            if fe and all((e.translation or "").strip()
+                          and e.status != "skip"
                           for e in fe))
         self.lbl_files_sum.setText(
             "" if not p else TR("tr_files_summary",
@@ -1764,30 +1028,7 @@ class TranslateTab(QWidget):
     # ── translate ──
 
     def _lang_options(self) -> list[str]:
-        """Официальные языки игры (Ren'Py: game/tl/*). Отбрасываем
-        «None» (системные строки) и папки, где лежат только переводы,
-        созданные самим приложением (ob_*-файлы) — это не языки
-        разработчика."""
-        module = self.main.engine_module
-        p = self._project()
-        if not (module and p and hasattr(module, "list_languages")):
-            return []
-        try:
-            langs = list(module.list_languages(p.game_dir) or [])
-        except Exception:  # noqa: BLE001
-            return []
-        res = []
-        for lang in langs:
-            if not lang or lang == "None":
-                continue
-            tl_dir = os.path.join(p.game_dir, "game", "tl", lang)
-            if os.path.isdir(tl_dir):
-                files = [f for f in os.listdir(tl_dir)
-                         if not f.endswith((".rpyc", ".json"))]
-                if files and all(f.startswith("ob_") for f in files):
-                    continue
-            res.append(lang)
-        return res
+        return project_lang_options(self.main.engine_module, self._project())
 
     def _on_lang_extracted_then_translate(self, restored: int, error: str):
         self.btn_extract.setEnabled(True)
@@ -1823,10 +1064,30 @@ class TranslateTab(QWidget):
             return
         self.translate_all()
 
+    def notify_pending_resume(self, pending: int):
+        """Показать предложение дотянуть незаконченный перевод.
+
+        Только строка статуса — БЕЗ старта воркера и БЕЗ оверлея:
+        человек мог открыть игру ради читов, и молчаливый старт
+        «перевожу» на весь экран — это баг с точки зрения пользователя.
+        Продолжение — кнопка «Перевести», игнор — ничего не происходит.
+        """
+        self.lbl_status.setText(TR("tr_resume_offer", n=int(pending)))
+        self._flash_saved(TR("tr_resume_offer", n=int(pending)))
+
     def translate_all(self):
         p = self._project()
         if not p or not p.entries:
             QMessageBox.information(self, TR("err"), TR("tr_no_data"))
+            return
+        if extract_busy(self):  # иначе воркер мутирует orphan-объекты
+            QMessageBox.warning(self, TR("err"), TR("tr_extracting"))
+            return
+        if self.worker and self.worker.isRunning():
+            # Явное действие важнее: прерываем текущий прогон и ставим
+            # запрос в очередь — он выполнится сразу после остановки.
+            self._queued_request = True
+            self.cancel_translate()
             return
         engine = self.main.create_engine("files")
         if engine is None:
@@ -1834,10 +1095,9 @@ class TranslateTab(QWidget):
                                  TR("tr_engine_create_fail"))
             return
         s = self.main.settings
-        engine_name = s.value("engine_files", s.value("engine", "rotate"))
-        if not engine.ping():
-            QMessageBox.warning(self, TR("err"), engine_hint(engine_name))
-            return
+        # ping() — в воркере (в GUI морозил окно); текст ошибки — здесь.
+        engine_name = getattr(engine, "name", "rotate")
+        ping_hint = engine_hint(engine_name)
         translator = Translator(engine, tm=self.main.tm,
                                 glossary=self.main.glossary)
         # Только выбранные в диалоге языки оригинала (остальные строки
@@ -1845,44 +1105,57 @@ class TranslateTab(QWidget):
         # списка (list), а не живой p.entries.
         src_langs = getattr(self, "_pending_src_langs", None)
         targets = filter_entries_by_src_lang(p.entries, src_langs)
+        # Помечаем прогон как начавшийся: если приложение закроют (или
+        # провайдеры сядут) посередине, tr_pending останется > 0 и
+        # при следующем открытии предложим дотянуть (без автостарта).
+        if p is not None and hasattr(p, "tr_pending"):
+            p.tr_pending = len(targets)
+            self.main.save_project()
         self.worker = TranslateWorker(
             translator, list(targets),
             s.value("source_lang", "auto"), s.value("target_lang", "ru"),
-            overwrite=self._pending_overwrite)
+            overwrite=self._pending_overwrite, prefill=True,
+            ping_hint=ping_hint)
         self.worker.progressed.connect(self._on_progress)
+        self.worker.left.connect(self._on_left_over)
+        self.worker.status.connect(self.lbl_status.setText)
+        self.worker.status.connect(self.main.loading.set_text)
         self.worker.done.connect(self._on_translated)
         self.worker.failed.connect(self._on_translate_failed)
         self._cancelling = False
         self._last_progress = (0, 0)
+        self._left_over = 0
         self.progress.setVisible(True)
         self.progress.setValue(0)
         self.btn_cancel.setVisible(True)
         self.btn_cancel.setEnabled(True)
         self.btn_translate.setEnabled(False)
-        self.btn_correct.setEnabled(False)
         self.main.loading.show_loading(TR("tr_translating"), TR("tr_cancel"),
                                        self.cancel_translate)
         self.worker.start()
+
+    def _on_left_over(self, n: int):
+        """Сколько строк не осилил ни один провайдер. Показываем честно:
+        они остались не переведёнными и повторятся при следующем запуске."""
+        self._left_over = int(n or 0)
+        if self._left_over:
+            self.lbl_status.setText(
+                TR("tr_waiting_providers").format(n=self._left_over))
 
     def cancel_translate(self):
         """Мягкая отмена: флаги остановки + ожидание фонового завершения
         через таймер (GUI не блокируется, полоса/текст доигрывают плавно)."""
         self._cancelling = True
         self._cancel_elapsed = 0
-        for w in (self.worker, self.worker_correct):
-            if not w:
-                continue
+        w = self.worker
+        if w is not None:
             translator = getattr(w, "translator", None)
             if translator is not None:
                 translator.cancel()
-            corrector = getattr(w, "corrector", None)
-            if corrector is not None:
-                corrector.cancel()
             w.requestInterruption()
         self.btn_cancel.setEnabled(False)
         self.main.loading.set_text(TR("tr_cancelling"))
-        busy = (self.worker and self.worker.isRunning()) or (
-            self.worker_correct and self.worker_correct.isRunning())
+        busy = self.worker and self.worker.isRunning()
         if not busy:
             self._finish_cancelled()
             return
@@ -1901,8 +1174,7 @@ class TranslateTab(QWidget):
         пропадало без сохранения.
         """
         self._cancel_elapsed += 120
-        busy = (self.worker and self.worker.isRunning()) or (
-            self.worker_correct and self.worker_correct.isRunning())
+        busy = self.worker and self.worker.isRunning()
         if busy:
             self._cancel_timer.start(120)
             return
@@ -1911,6 +1183,11 @@ class TranslateTab(QWidget):
     def _finish_cancelled(self):
         done, total = self._last_progress
         self._finish_translate(TR("tr_cancelled", done=done, total=total))
+        # Отменил пользователь — авто-возобновление не должно потом
+        # начинать то же самое без спроса.
+        p = self._project()
+        if p is not None and hasattr(p, "tr_pending"):
+            p.tr_pending = 0
         self.main.save_project()
         self._rebuild_file_list()
         self.fill_table()
@@ -1937,20 +1214,36 @@ class TranslateTab(QWidget):
         if self._cancelling:
             return
         self._finish_translate()
+        # что осталось не довести — по этому числу авто-возобновление
+        # поймёт, что прошлый прогон не дошёл до конца
+        p = self._project()
+        if p is not None and hasattr(p, "tr_pending"):
+            p.tr_pending = int(self._left_over or 0)
         self.main.save_project()
         self._rebuild_file_list()
         self.fill_table()
         skipped_note = TR("tr_translate_done_skipped", skipped=skipped) \
             if skipped else ""
+        left_note = ""
+        if self._left_over:
+            # честно говорим, что часть строк не осилил ни один провайдер:
+            # они остались не переведёнными, а не «готовыми»
+            left_note = "\n\n" + TR("tr_left_over").format(n=self._left_over)
         QMessageBox.information(
             self, TR("done"),
             TR("tr_translate_done", n=n, skipped=skipped,
-               skipped_note=skipped_note))
+               skipped_note=skipped_note) + left_note)
 
     def _on_translate_failed(self, msg):
         if self._cancelling:
             return
         self._finish_translate()
+        # Прогон завершён ошибкой — дотягивать нечего: без сброса
+        # tr_pending следующее открытие проекта молча стартовало бы
+        # перевод заново без нажатия кнопки.
+        p = self._project()
+        if p is not None and hasattr(p, "tr_pending"):
+            p.tr_pending = 0
         self.main.save_project()
         self._rebuild_file_list()
         self.fill_table()
@@ -1961,14 +1254,11 @@ class TranslateTab(QWidget):
         self.progress.setVisible(False)
         self.btn_cancel.setVisible(False)
         self.btn_cancel.setEnabled(False)
-        self.btn_correct.setEnabled(True)
         # P0: без wait() в слоте GUI — done/failed уже означают конец run(),
         # поток либо завершён, либо завершится сам; удаляем без блокировки.
-        for _attr in ("worker", "worker_correct"):
-            _w = getattr(self, _attr)
-            if _w is None:
-                continue
-            setattr(self, _attr, None)
+        _w = self.worker
+        self.worker = None
+        if _w is not None:
             try:
                 if _w.isRunning():
                     _w.requestInterruption()
@@ -1995,73 +1285,17 @@ class TranslateTab(QWidget):
             self._status_timer.start(4000)
         self._cancelling = False
         self._update_steps()
-
-    # ── correct ──
-
-    def correct_all(self):
-        p = self._project()
-        if not p or not p.entries:
-            return
-        from app.core.translate.corrector import Corrector
-        engine = self.main.create_engine("corrector")
-        if engine is None:
-            QMessageBox.critical(self, TR("err"),
-                                 TR("tr_engine_create_fail"))
-            return
-        try:
-            corrector = Corrector(engine)
-        except Exception as e:  # noqa: BLE001
-            QMessageBox.warning(self, TR("tr_correct"), str(e))
-            return
-        # P0: копию списка — см. выше (живой p.entries мутирует из GUI).
-        self.worker_correct = CorrectWorker(
-            corrector, list(p.entries),
-            self.main.settings.value("target_lang", "ru"))
-        self.worker_correct.progressed.connect(self._on_progress)
-        self.worker_correct.corrections_ready.connect(self._on_corrections)
-        self.worker_correct.failed.connect(self._on_translate_failed)
-        self.progress.setVisible(True)
-        self.progress.setValue(0)
-        self.btn_cancel.setVisible(True)
-        self.btn_cancel.setEnabled(True)
-        self.btn_correct.setEnabled(False)
-        self.main.loading.show_loading(TR("tr_correcting"), TR("tr_cancel"),
-                                       self.cancel_translate)
-        self.worker_correct.start()
-
-    def _on_corrections(self, diffs):
-        if self._cancelling:
-            return
-        self._finish_translate()
-        if not diffs:
-            QMessageBox.information(self, TR("done"),
-                                    TR("tr_correct_done", n=0))
-            return
-        dlg = DiffReviewDialog(diffs, self)
-        if dlg.exec() == QDialog.Accepted:
-            accepted = [d for d in diffs if d.accepted]
-            for d in accepted:
-                d.entry.translation = d.new_text
-                d.entry.status = "corrected"
-            self.main.save_project()
-            self._rebuild_file_list()
-            self.fill_table()
-            QMessageBox.information(
-                self, TR("done"),
-                TR("tr_correct_reviewed",
-                    accepted=len(accepted), total=len(diffs)))
+        # Пользователь нажал «Перевести» во время фонового прогона —
+        # выполняем его выбор с выбранным режимом (см. translate_all).
+        if self._queued_request:
+            self._queued_request = False
+            QTimer.singleShot(0, self.translate_all)
 
     # ── glossary ──
 
     def edit_glossary(self):
-        p = self._project()
-        texts = [e.original for e in p.entries] if p else []
-        if self.main.settings.value("glossary_use_ai", True, type=bool):
-            engine = self.main.create_engine("corrector")
-        else:
-            engine = None
-        GlossaryDialog(self.main.glossary, self.main.settings, self,
-                       texts=texts, engine=engine).exec()
+        GlossaryDialog(self.main.glossary, self.main.settings,
+                       self).exec()
 
     # ── export / import ──
 
@@ -2098,10 +1332,12 @@ class TranslateTab(QWidget):
             for row in csv.DictReader(f, delimiter=";"):
                 try:
                     e = by_id.get(int(row["id"]))
-                except (ValueError, KeyError):
+                except (ValueError, KeyError, TypeError):
                     continue
-                if e and row.get("translation", "").strip():
-                    e.translation = row["translation"]
+                # Короткая строка CSV даёт None вместо "" — гард обязателен.
+                tr = row.get("translation") or ""
+                if e and tr.strip():
+                    e.translation = tr
                     e.status = "manual"
                     updated += 1
         self.main.save_project()
@@ -2115,7 +1351,7 @@ class TranslateTab(QWidget):
         p = self._project()
         if not p or not p.entries:
             return
-        translated = sum(1 for e in p.entries if e.translation.strip())
+        translated = sum(1 for e in p.entries if (e.translation or "").strip())
         module = self.main.engine_module
         if not module:
             return
@@ -2188,421 +1424,5 @@ class TranslateTab(QWidget):
             TR("tr_restore_done", n=stats.get("restored", 0)))
         self._update_steps()
 
-
-# ────────────────────────────────────────────────────────
-#  Term candidates dialog (автоглоссарий)
-# ────────────────────────────────────────────────────────
-class TermsDialog(QDialog):
-    """Кандидаты терминов от LLM: чекбокс + термин + перевод."""
-
-    def __init__(self, terms: dict[str, str], parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(TR("glossary_terms_title"))
-        self.resize(620, 420)
-        self.terms = terms
-        self.selected: dict[str, str] = {}
-        lay = QVBoxLayout(self)
-        hint = QLabel(TR("glossary_terms_hint"))
-        hint.setWordWrap(True)
-        lay.addWidget(hint)
-
-        self.table = QTableWidget(len(terms), 3)
-        self.table.setHorizontalHeaderLabels([
-            TR("glossary_terms_col_use"), TR("glossary_terms_col_orig"),
-            TR("glossary_terms_col_tr")])
-        self.table.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(
-            2, QHeaderView.Stretch)
-        self.table.setColumnWidth(0, 40)
-        for r, (term, trans) in enumerate(sorted(terms.items())):
-            chk = QTableWidgetItem()
-            chk.setCheckState(Qt.Checked)
-            self.table.setItem(r, 0, chk)
-            self.table.setItem(r, 1, QTableWidgetItem(term))
-            self.table.setItem(r, 2, QTableWidgetItem(trans))
-        lay.addWidget(self.table, 1)
-
-        row = QHBoxLayout()
-        btn_apply = QPushButton(TR("glossary_terms_apply"))
-        btn_apply.setObjectName("accent")
-        btn_apply.clicked.connect(self._collect)
-        btn_cancel = QPushButton(TR("btn_cancel"))
-        btn_cancel.clicked.connect(self.reject)
-        row.addStretch(1)
-        row.addWidget(btn_cancel)
-        row.addWidget(btn_apply)
-        lay.addLayout(row)
-
-    def _collect(self):
-        for r in range(self.table.rowCount()):
-            item = self.table.item(r, 0)
-            if item and item.checkState() == Qt.Checked:
-                term = self.table.item(r, 1).text().strip()
-                trans = self.table.item(r, 2).text().strip()
-                if term and trans:
-                    self.selected[term] = trans
-        self.accept()
-
-
-# ────────────────────────────────────────────────────────
-# ────────────────────────────────────────────────────────
-#  Glossary dialog
-# ────────────────────────────────────────────────────────
-class _TermEditDialog(QDialog):
-    """Диалог строки глоссария: термин / перевод / категория."""
-
-    def __init__(self, parent=None, term: str = "", tr: str = "",
-                 group: str = "", groups: list[str] | None = None):
-        super().__init__(parent)
-        self.setWindowTitle(TR("glossary_edit_title"))
-        self.setMinimumWidth(420)
-        lay = QVBoxLayout(self)
-        form = QFormLayout()
-
-        self.ed_term = QLineEdit(term)
-        form.addRow(TR("glossary_term"), self.ed_term)
-
-        self.ed_tr = QLineEdit(tr)
-        form.addRow(TR("glossary_term_tr"), self.ed_tr)
-
-        self.cb_group = AnimatedComboBox()
-        self.cb_group.setEditable(True)
-        self.cb_group.setInsertPolicy(AnimatedComboBox.NoInsert)
-        self.cb_group.addItem(TR("glossary_group_none"))
-        for g in (groups or []):
-            if g:
-                self.cb_group.addItem(g)
-        if group:
-            self.cb_group.setCurrentText(group)
-        form.addRow(TR("glossary_term_group"), self.cb_group)
-
-        lay.addLayout(form)
-        btns = QDialogButtonBox(QDialogButtonBox.Save
-                                | QDialogButtonBox.Cancel)
-        btns.accepted.connect(self.accept)
-        btns.rejected.connect(self.reject)
-        lay.addWidget(btns)
-
-    def values(self) -> tuple[str, str, str]:
-        g = self.cb_group.currentText().strip()
-        return (self.ed_term.text().strip(), self.ed_tr.text().strip(),
-                "" if g == TR("glossary_group_none") else g)
-
-
-class GlossaryDialog(QDialog):
-    """Глоссарий: понятные пары языков, категории, явное редактирование."""
-
-    _LANG_CODES = ["ja", "zh", "en", "ru"]
-    _LANG_KEYS = {
-        "ja": "glossary_lang_ja", "zh": "glossary_lang_zh",
-        "en": "glossary_lang_en", "ru": "glossary_lang_ru",
-    }
-
-    def __init__(self, glossary, settings, parent=None,
-                 texts: list[str] | None = None, engine=None):
-        super().__init__(parent)
-        self.glossary = glossary
-        self.texts = texts or []
-        self.engine = engine
-        self.analyze_worker: AnalyzeWorker | None = None
-        self.setWindowTitle(TR("glossary_title"))
-        self.setWindowIcon(icon("book-bookmark", 18, C_TEXT_SECONDARY))
-        self.resize(760, 560)
-        self.setMinimumSize(600, 400)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 14, 14, 10)
-        lay.setSpacing(8)
-
-        # ── верх: источник → целевой язык ──
-        top = QHBoxLayout()
-        top.addWidget(QLabel(TR("glossary_src")))
-        self.cb_src = AnimatedComboBox()
-        for code in self._LANG_CODES:
-            self.cb_src.addItem(TR(self._LANG_KEYS[code]), userData=code)
-        top.addWidget(self.cb_src)
-        top.addWidget(QLabel("→"))
-        top.addWidget(QLabel(TR("glossary_tgt")))
-        self.cb_tgt = AnimatedComboBox()
-        for code in self._LANG_CODES:
-            self.cb_tgt.addItem(TR(self._LANG_KEYS[code]), userData=code)
-        top.addWidget(self.cb_tgt)
-        src = settings.value("source_lang", "auto")
-        src = "ja" if src == "auto" else src
-        tgt = settings.value("target_lang", "ru")
-        for i in range(self.cb_src.count()):
-            if self.cb_src.itemData(i) == src:
-                self.cb_src.setCurrentIndex(i)
-                break
-        for i in range(self.cb_tgt.count()):
-            if self.cb_tgt.itemData(i) == tgt:
-                self.cb_tgt.setCurrentIndex(i)
-                break
-        self.cb_src.currentIndexChanged.connect(self._on_pair_changed)
-        self.cb_tgt.currentIndexChanged.connect(self._on_pair_changed)
-        top.addStretch(1)
-        self.count_label = QLabel("")
-        self.count_label.setStyleSheet(f"color: {C_TEXT_SECONDARY};")
-        top.addWidget(self.count_label)
-        lay.addLayout(top)
-
-        # ── поиск + фильтр категории ──
-        filt = QHBoxLayout()
-        self.search = QLineEdit()
-        self.search.setPlaceholderText(TR("glossary_search"))
-        self.search.setClearButtonEnabled(True)
-        self.search.addAction(icon("magnifying-glass", 15, C_TEXT_SECONDARY),
-                              QLineEdit.LeadingPosition)
-        self.search.textChanged.connect(self._fill)
-        filt.addWidget(self.search, 1)
-        self.cb_group = AnimatedComboBox()
-        self.cb_group.currentIndexChanged.connect(self._fill)
-        filt.addWidget(self.cb_group)
-        lay.addLayout(filt)
-
-        # ── таблица: термин / перевод / категория ──
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(
-            [TR("glossary_col_orig"), TR("glossary_col_tr"),
-             TR("glossary_col_group")])
-        self.table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(
-            2, QHeaderView.ResizeToContents)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.setAlternatingRowColors(True)
-        self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(30)
-        self.table.setSortingEnabled(True)
-        self.table.itemDoubleClicked.connect(self._edit)
-        lay.addWidget(self.table, 1)
-
-        # ── кнопки ──
-        row = QHBoxLayout()
-        self.btn_add = QPushButton(TR("glossary_add"))
-        self.btn_add.setIcon(icon("plus", 15, C_TEXT))
-        self.btn_add.clicked.connect(self._add)
-        self.btn_edit = QPushButton(TR("glossary_edit"))
-        self.btn_edit.setIcon(icon("pencil", 15, C_TEXT))
-        self.btn_edit.clicked.connect(self._edit)
-        self.btn_del = QPushButton(TR("glossary_del"))
-        self.btn_del.setIcon(icon("trash", 15, C_TEXT))
-        self.btn_del.clicked.connect(self._del)
-        self.btn_analyze = QPushButton(TR("glossary_analyze"))
-        self.btn_analyze.setIcon(icon("sparkles", 15, C_TEXT))
-        self.btn_analyze.clicked.connect(self._analyze)
-        self.btn_save = QPushButton(TR("glossary_save"))
-        self.btn_save.setIcon(icon("floppy-disk", 15, C_TEXT))
-        self.btn_save.clicked.connect(self._save)
-        self.btn_save.setDefault(True)
-        self.busy = BusyLabel(self, size=14)
-        for b in (self.btn_add, self.btn_edit, self.btn_del):
-            row.addWidget(b)
-        row.addWidget(self.busy)
-        row.addStretch(1)
-        row.addWidget(self.btn_analyze)
-        row.addWidget(self.btn_save)
-        lay.addLayout(row)
-
-        hint = QLabel(TR("glossary_hint"))
-        hint.setWordWrap(True)
-        hint.setStyleSheet(f"color: {C_TEXT_SECONDARY};")
-        lay.addWidget(hint)
-        self._fill()
-
-    def _current_pair(self) -> tuple[str, str]:
-        return (str(self.cb_src.currentData()),
-                str(self.cb_tgt.currentData()))
-
-    def _on_pair_changed(self, *args):
-        self._fill()
-
-    def _fill(self):
-        src, tgt = self._current_pair()
-        entries = self.glossary.entries(src, tgt)
-        groups = self.glossary.groups(src, tgt)
-
-        # перестроить фильтр категорий, не теряя выбор
-        cur = self.cb_group.currentText()
-        self.cb_group.blockSignals(True)
-        self.cb_group.clear()
-        self.cb_group.addItem(TR("glossary_group_all"))
-        for g in groups:
-            self.cb_group.addItem(g)
-        if cur:
-            idx = self.cb_group.findText(cur)
-            if idx >= 0:
-                self.cb_group.setCurrentIndex(idx)
-        self.cb_group.blockSignals(False)
-        sel_group = self.cb_group.currentText()
-
-        query = self.search.text().strip().lower()
-        rows = []
-        for k, e in entries.items():
-            if sel_group != TR("glossary_group_all") \
-                    and e["group"] != sel_group:
-                continue
-            if query and query not in k.lower() \
-                    and query not in e["tr"].lower() \
-                    and query not in e["group"].lower():
-                continue
-            rows.append((k, e["tr"], e["group"]))
-
-        self.table.setSortingEnabled(False)
-        self.table.setRowCount(len(rows))
-        for r, (k, v, g) in enumerate(rows):
-            self.table.setItem(r, 0, QTableWidgetItem(k))
-            self.table.setItem(r, 1, QTableWidgetItem(v))
-            self.table.setItem(r, 2, QTableWidgetItem(g))
-        self.table.setSortingEnabled(True)
-
-        self.count_label.setText(
-            TR("glossary_count", shown=len(rows),
-               total=len(entries)))
-
-    def _selected_row(self) -> int:
-        items = self.table.selectedItems()
-        return items[0].row() if items else -1
-
-    def _add(self):
-        dlg = _TermEditDialog(self, groups=self.glossary.groups(
-            *self._current_pair()))
-        if dlg.exec() != QDialog.Accepted:
-            return
-        term, tr, group = dlg.values()
-        if not term:
-            return
-        src, tgt = self._current_pair()
-        entries = self.glossary.entries(src, tgt)
-        entries[term] = {"tr": tr, "group": group}
-        self.glossary.set_entries(src, tgt, entries)
-        self._fill()
-
-    def _edit(self, *args):
-        row = self._selected_row()
-        if row < 0:
-            return
-        term = self.table.item(row, 0).text()
-        tr = self.table.item(row, 1).text()
-        group = self.table.item(row, 2).text()
-        dlg = _TermEditDialog(self, term, tr, group,
-                              groups=self.glossary.groups(
-                                  *self._current_pair()))
-        if dlg.exec() != QDialog.Accepted:
-            return
-        n_term, n_tr, n_group = dlg.values()
-        if not n_term:
-            return
-        src, tgt = self._current_pair()
-        entries = self.glossary.entries(src, tgt)
-        if n_term != term:
-            entries.pop(term, None)
-        entries[n_term] = {"tr": n_tr, "group": n_group}
-        self.glossary.set_entries(src, tgt, entries)
-        self._fill()
-
-    def _del(self):
-        row = self._selected_row()
-        if row < 0:
-            return
-        term = self.table.item(row, 0).text()
-        src, tgt = self._current_pair()
-        entries = self.glossary.entries(src, tgt)
-        entries.pop(term, None)
-        self.glossary.set_entries(src, tgt, entries)
-        self._fill()
-
-    def _analyze(self):
-        if not self.texts:
-            QMessageBox.information(
-                self, TR("err"), TR("tr_no_data"))
-            return
-        if self.engine is None or not self.engine.ping():
-            QMessageBox.warning(
-                self, TR("err"), TR("glossary_analyze_need_ai"))
-            return
-        src, tgt = self._current_pair()
-        self._set_busy(True)
-        self.analyze_worker = AnalyzeWorker(self.engine, self.texts, src, tgt)
-        self.analyze_worker.done.connect(self._analyze_done)
-        self.analyze_worker.failed.connect(self._analyze_failed)
-        self.setWindowTitle(TR("glossary_analyze_running"))
-        self.analyze_worker.start()
-
-    def _set_busy(self, busy: bool):
-        self.busy.setVisible(busy)
-        if busy:
-            self.busy.spinner.setVisible(True)
-            self.busy.start(TR("glossary_analyze_running"))
-        else:
-            self.busy.stop()
-        for w in (self.btn_analyze, self.btn_save, self.btn_add,
-                  self.btn_edit, self.btn_del, self.cb_src, self.cb_tgt,
-                  self.search, self.cb_group, self.table):
-            w.setEnabled(not busy)
-
-    def _analyze_done(self, terms: dict):
-        self.setWindowTitle(TR("glossary_title"))
-        self._set_busy(False)
-        if not terms:
-            QMessageBox.information(
-                self, TR("done"), TR("glossary_analyze_none"))
-            return
-        dlg = TermsDialog(terms, self)
-        if dlg.exec() == QDialog.Accepted:
-            src, tgt = self._current_pair()
-            entries = self.glossary.entries(src, tgt)
-            for t, tr in dlg.selected.items():
-                old = entries.get(t, {})
-                entries[t] = {"tr": tr, "group": old.get("group", "")}
-            self.glossary.set_entries(src, tgt, entries)
-            self._fill()
-            QMessageBox.information(
-                self, TR("done"),
-                TR("glossary_analyze_added", accepted=len(dlg.selected),
-                   total=len(terms)))
-
-    def _analyze_failed(self, err: str):
-        self.setWindowTitle(TR("glossary_title"))
-        self._set_busy(False)
-        QMessageBox.critical(
-            self, TR("err"), TR("glossary_analyze_fail", msg=err))
-
-    def _save(self):
-        src, tgt = self._current_pair()
-        entries = {}
-        for r in range(self.table.rowCount()):
-            t = self.table.item(r, 0)
-            v = self.table.item(r, 1)
-            g = self.table.item(r, 2)
-            if t and t.text().strip():
-                entries[t.text().strip()] = {
-                    "tr": v.text().strip() if v else "",
-                    "group": g.text().strip() if g else "",
-                }
-        self.glossary.set_entries(src, tgt, entries)
-
-    def closeEvent(self, event):
-        # P0: не блокируем GUI дольше 200мс; незавершённый воркер
-        # доудалится сам по finished (иначе Qt упадёт с
-        # «QThread: Destroyed while thread ... is still running»).
-        _aw = getattr(self, "analyze_worker", None)
-        if _aw is not None:
-            try:
-                if _aw.isRunning():
-                    _aw.requestInterruption()
-                    if _aw.wait(200):
-                        _aw.deleteLater()
-                    else:
-                        _aw.finished.connect(_aw.deleteLater)
-                else:
-                    _aw.deleteLater()
-            except RuntimeError:
-                pass
-            self.analyze_worker = None
-        self._save()  # автосохранение при закрытии
-        super().closeEvent(event)
+# ── конец TranslateTab: диалоги/воркеры/таблица/глоссарий живут в
+#    app/ui/translate/* и импортируются в шапке файла ──

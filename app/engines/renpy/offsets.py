@@ -133,10 +133,51 @@ class RenpyOffsetDB:
         return None
 
 
+def detect_version_from_engine_files(game_dir: str) -> str | None:
+    """Версия движка по файлам, которые игра ВСЕГДА везёт с собой.
+
+    Установленная (не запущенная) игра не имеет log.txt, а версия exe
+    у Ren'Py часто не зашита — прошлый код возвращал None, и живой агент
+    генерировался без знания диалекта. Для Ren'Py 7 это py2, для 8 — py3:
+    ошибка здесь = мёртвые читы в игре.
+
+    Источники по убыванию надёжности:
+      renpy/__init__.py   -> version_tuple = (7, 4, 9, vc_version)
+      game/script_version.txt -> (7, 4, 9)
+    """
+    init_py = os.path.join(game_dir, "renpy", "__init__.py")
+    try:
+        with open(init_py, encoding="utf-8", errors="replace") as f:
+            head = f.read(65536)
+        m = re.search(r"version_tuple\s*=\s*\(([^)]*)\)", head)
+        if m:
+            parts = [p.strip() for p in m.group(1).split(",")]
+            nums = [p for p in parts if re.fullmatch(r"\d+", p)]
+            if len(nums) >= 2:
+                return ".".join(nums[:3])
+    except OSError:
+        pass
+    script_ver = os.path.join(game_dir, "game", "script_version.txt")
+    try:
+        with open(script_ver, encoding="utf-8", errors="replace") as f:
+            m = re.search(r"\(([\d,\s]+)\)", f.read(256))
+        if m:
+            nums = [p.strip() for p in m.group(1).split(",")
+                    if p.strip().isdigit()]
+            if len(nums) >= 2:
+                return ".".join(nums[:3])
+    except OSError:
+        pass
+    return None
+
+
 def detect_version(game_dir: str, exe_path: str | None = None) -> tuple[str | None, str | None]:
     ver = detect_version_from_log(game_dir)
     if ver:
         return ver, "log"
+    ver = detect_version_from_engine_files(game_dir)
+    if ver:
+        return ver, "engine"
     if exe_path and os.path.isfile(exe_path):
         ver = detect_version_from_exe(exe_path)
         if ver:

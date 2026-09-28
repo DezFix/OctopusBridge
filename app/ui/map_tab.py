@@ -3,7 +3,7 @@
 
 Левая колонка: список карт + текущая карта игрока.
 Правая колонка: полная отрисовка карты (тайлсеты) + зум.
-Клик по карте: пустой клетка → телепорт; событие → меню редактирования.
+Клик по карте: событие → быстрый просмотр; пустая клетка → выбор.
 
 Отрисовка тяжёлых слоёв (тайлы+тени) вынесена в фоновый поток —
 интерфейс не замирает на больших картах; зум лишь перекомпоновывает
@@ -16,11 +16,10 @@ import os
 
 from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
-from PySide6.QtWidgets import (QCheckBox, QDialog, QFormLayout,
-                                QHBoxLayout, QLabel, QLineEdit, QListWidget,
-                                QListWidgetItem, QMessageBox,
-                                QPushButton, QScrollArea, QSpinBox,
-                                QSplitter, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QLineEdit,
+                                QListWidget, QListWidgetItem, QMessageBox,
+                                QPushButton, QScrollArea, QSplitter,
+                                QVBoxLayout, QWidget)
 
 from app.core.rpgmaker import crypto, maprender
 from app.core.rpgmaker.varnames import extract_maps
@@ -103,7 +102,6 @@ class _LayerPainter:
                     (self._flags[tile_id] & maprender.FLAG_TABLE))
 
     def draw_tile(self, painter: QPainter, tile_id: int, dx: int, dy: int):
-        t = maprender.TILE
         parts = maprender.tile_parts(tile_id, self._flags)
         if not parts:
             return
@@ -340,6 +338,7 @@ class MapTab(QWidget):
         # упадёт («QThread: Destroyed while thread is still running»)
         self._render_threads: set = set()
         self._pending_tp: tuple | None = None
+        self._selected_cell: tuple[int, int] | None = None
         self._live_switches: list | None = None
 
         root = QVBoxLayout(self)
@@ -428,6 +427,18 @@ class MapTab(QWidget):
         self.reload()
         self._request_state()
 
+    def _live_channel(self):
+        ensure = getattr(self.main, "ensure_channel", None)
+        if callable(ensure):
+            return ensure()
+        return self.main.channel()
+
+    def _send_cheat(self, ch, cmd: str, **kwargs) -> bool:
+        send = getattr(ch, "send_cheat_async", None)
+        if callable(send):
+            return bool(send(cmd, **kwargs))
+        return bool(ch.send_cheat(cmd, **kwargs))
+
     def _request_state(self):
         """Попросить игру прислать state (карта + координаты игрока).
 
@@ -435,11 +446,15 @@ class MapTab(QWidget):
         открытии в одиночку никогда не узнаёт, где персонаж.
         """
         try:
-            ch = self.main.channel()
+            ch = self._live_channel()
         except Exception:  # noqa: BLE001
             return
         if ch:
-            ch.request_state()
+            request = getattr(ch, "request_state_async", None)
+            if callable(request):
+                request()
+            else:
+                ch.request_state()
 
     def reload(self):
         game_dir = self._game_dir()
@@ -495,6 +510,14 @@ class MapTab(QWidget):
         w, h, lower, upper, shadow, region = \
             maprender.map_layers(self._map_data)
         events = copy.deepcopy(self._map_data.get("events") or [])
+        # Старые рендеры просим остановиться: без этого быстрое
+        # листание карт плодило N параллельных тяжёлых потоков
+        # (результат протухших и так отбрасывается по token).
+        for th in list(self._render_threads):
+            try:
+                th.requestInterruption()
+            except RuntimeError:
+                pass
         self._render_seq += 1
         token = self._render_seq
         self._base_img = None
@@ -622,14 +645,14 @@ class MapTab(QWidget):
             title.setEnabled(False)
             menu.addSeparator()
 
+            act_edit = menu.addAction(TR("map_ctx_edit"))
+            act_edit.triggered.connect(lambda: self._edit_event_dialog(ev))
+
             act_tp = menu.addAction(TR("map_ctx_teleport"))
             act_tp.triggered.connect(
                 lambda: self._send_teleport(self._map_id, x, y))
 
             menu.addSeparator()
-            act_edit = menu.addAction(TR("map_ctx_edit"))
-            act_edit.triggered.connect(lambda: self._edit_event_dialog(ev))
-
             act_dup = menu.addAction(TR("map_ctx_dup"))
             act_dup.triggered.connect(
                 lambda: self._duplicate_event(ev))
@@ -637,24 +660,14 @@ class MapTab(QWidget):
             act_del = menu.addAction(TR("map_ctx_del"))
             act_del.triggered.connect(
                 lambda: self._delete_event(ev))
-
-            pages = ev.get("pages") or []
-            page = pages[0] if pages else {}
-            cond = maprender.page_conditions(page)
-            if cond["switch1_valid"]:
-                sw_id = cond["switch1_id"]
-                act_sw = menu.addAction(
-                    TR("map_ctx_toggle_sw", id=sw_id))
-                act_sw.triggered.connect(
-                    lambda sid=sw_id: self._toggle_switch_live(sid))
         else:
-            act_tp = menu.addAction(TR("map_ctx_teleport_here"))
-            act_tp.triggered.connect(
-                lambda: self._send_teleport(self._map_id, x, y))
-
             act_new = menu.addAction(TR("map_ctx_new_event"))
             act_new.triggered.connect(
                 lambda: self._new_event(x, y))
+
+            act_tp = menu.addAction(TR("map_ctx_teleport_here"))
+            act_tp.triggered.connect(
+                lambda: self._send_teleport(self._map_id, x, y))
 
         menu.exec(global_pos)
 
@@ -671,13 +684,12 @@ class MapTab(QWidget):
         if ev:
             self._edit_event_dialog(ev)
             return
-        # пустая клетка — телепорт (контракт вкладки в docstring):
-        # без карты или вне границ делать нечего
         if not self._map_data:
             return
         w, h, *_ = maprender.map_layers(self._map_data)
         if 0 <= x < w and 0 <= y < h:
-            self._send_teleport(self._map_id, x, y)
+            self._selected_cell = (x, y)
+            self.lbl_map_info.setText(TR("map_cell_selected", x=x, y=y))
 
     # ── диалог редактирования события ──
     def _edit_event_dialog(self, ev: dict):
@@ -759,14 +771,14 @@ class MapTab(QWidget):
 
     # ── live: телепорт / переключатель ──
     def _send_teleport(self, map_id: int, x: int, y: int):
-        ch = self.main.channel()
+        ch = self._live_channel()
         if not ch:
             QMessageBox.information(
                 self, TR("cheat_no_bridge"),
                 TR("cheat_no_bridge") + "\n" + self.main.channel_diag())
             return
         self._pending_tp = (map_id, x, y)
-        ch.send_cheat("teleport", mapId=map_id, x=x, y=y)
+        self._send_cheat(ch, "teleport", mapId=map_id, x=x, y=y)
 
     def _on_cheat_ack(self, cmd: str, ok: bool, error: str, value: str):
         # Видимый ответ телепорта: раньше команда уходила молча и
@@ -783,7 +795,7 @@ class MapTab(QWidget):
         self._pending_tp = None
 
     def _toggle_switch_live(self, switch_id: int):
-        ch = self.main.channel()
+        ch = self._live_channel()
         if not ch:
             return
         # Флип по живому состоянию (а не всегда ON): повторный клик
@@ -794,7 +806,7 @@ class MapTab(QWidget):
             cur = bool(sw[switch_id - 1]) if 0 < switch_id <= len(sw) else False
         except Exception:  # noqa: BLE001
             cur = False
-        ch.send_cheat("switch_set", index=switch_id, value=not cur)
+        self._send_cheat(ch, "switch_set", index=switch_id, value=not cur)
 
     # ── сохранение ──
     def _save_and_reload_map(self) -> tuple[bool, bool]:
@@ -813,9 +825,9 @@ class MapTab(QWidget):
         except OSError as e:
             QMessageBox.critical(self, TR("err"), str(e))
             return False, False
-        ch = self.main.channel()
+        ch = self._live_channel()
         if ch:
-            ch.send_cheat("reload_map")
+            self._send_cheat(ch, "reload_map")
             return True, True
         return True, False
 

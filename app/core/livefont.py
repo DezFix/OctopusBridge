@@ -22,25 +22,44 @@ import json
 def _rpgm_refresh_snippet() -> str:
     """ES5-кусок обновления окон текущей сцены (для вставки в IIFE)."""
     return (
-        "var refreshed=0;"
-        "try{"
-        "var sc=null;try{sc=SceneManager._scene;}catch(e4){}"
-        "if(sc){"
-        "var wins=[];"
-        "try{if(sc._windowLayer&&sc._windowLayer.children)"
-        "{wins=wins.concat(sc._windowLayer.children);}}catch(e5){}"
-        "var keys=[\"_messageWindow\",\"_scrollTextWindow\",\"_goldWindow\","
-        "\"_statusWindow\",\"_itemWindow\",\"_skillWindow\",\"_equipWindow\","
-        "\"_optionsWindow\",\"_helpWindow\",\"_commandWindow\",\"_actorWindow\"];"
-        "for(var i=0;i<keys.length;i++){"
-        "try{var w=sc[keys[i]];if(w){wins.push(w);}}catch(e6){}}"
-        "for(var j=0;j<wins.length;j++){"
-        "var w2=wins[j];if(!w2){continue;}"
-        "try{if(typeof w2.resetFontSettings===\"function\")"
-        "{w2.resetFontSettings();refreshed++;}}catch(e7){}"
+        "var refreshed=0,seen=[],nodes=[];"
+        "function obHas(list,item){"
+        "for(var i=0;i<list.length;i++){if(list[i]===item)return true;}"
+        "return false;}"
+        "function obIsWindow(w){"
+        "if(!w)return false;"
+        "try{if(typeof Window_Base!==\"undefined\"&&w instanceof Window_Base)"
+        "return true;}catch(e1){}"
+        "try{return !!w.contents&&(typeof w.resetFontSettings===\"function\""
+        "||typeof w.updateMessage===\"function\");}catch(e2){return false;}"
         "}"
+        "function obRefreshWindow(w){"
+        "if(!obIsWindow(w)||obHas(seen,w))return;"
+        "seen.push(w);var changed=false;"
+        "try{if(typeof w.resetFontSettings===\"function\")"
+        "{w.resetFontSettings();changed=true;}}catch(e3){}"
+        "try{if(typeof w.refresh===\"function\"){w.refresh();}}catch(e4){}"
+        "try{if(typeof w.updateMessage===\"function\")"
+        "{w.updateMessage();}}catch(e5){}"
+        "if(changed){refreshed++;}"
         "}"
-        "}catch(e10){}"
+        "function obWalk(node,depth){"
+        "if(!node||depth>6||obHas(nodes,node))return;nodes.push(node);"
+        "obRefreshWindow(node);"
+        "try{if(node.children&&node.children.length){"
+        "for(var i=0;i<node.children.length;i++)"
+        "{obWalk(node.children[i],depth+1);}}}catch(e6){}"
+        "try{if(node._windowLayer){obWalk(node._windowLayer,depth+1);}}catch(e7){}"
+        "}"
+        "function obScene(scene){"
+        "if(!scene)return;"
+        "try{for(var key in scene){if(!scene.hasOwnProperty(key))continue;"
+        "try{obRefreshWindow(scene[key]);}catch(e8){}}}catch(e9){}"
+        "try{obWalk(scene._windowLayer,0);}catch(e10){}"
+        "try{if(scene._spriteset){obWalk(scene._spriteset._windowLayer,0);}}"
+        "catch(e11){}"
+        "}"
+        "try{obScene(SceneManager._scene);}catch(e12){}"
     )
 
 
@@ -48,17 +67,22 @@ def build_rpgm_font_size_js(size: int) -> str:
     """JS (ES5) живого размера шрифта RPG Maker. Возвращает 'ok:N'."""
     n = max(12, min(64, int(size)))
     return (
-        "(function(){var n=" + str(n) + ";"
+        "(function(){var n=" + str(n) + ",patched=false,candidate;"
         "window.__octopus_fontSize=n;"
         "try{if(window.$dataSystem&&$dataSystem.advanced)"
         "{$dataSystem.advanced.fontSize=n;}}catch(e){}"
-        "try{if(window.$gameSystem&&typeof $gameSystem._mainFontSize"
-        "!==\"undefined\"){$gameSystem._mainFontSize=n;}}catch(e2){}"
+        "try{if(window.$gameSystem){"
+        "$gameSystem._mainFontSize=n;"
+        "if(typeof $gameSystem.mainFontSize===\"function\"){"
+        "candidate=function(){return n;};$gameSystem.mainFontSize=candidate;}}}"
+        "catch(e2){}"
         "try{if(typeof Window_Base!==\"undefined\"&&Window_Base.prototype){"
-        "Window_Base.prototype.standardFontSize=function(){return n;};"
-        "}}catch(e3){}"
+        "candidate=function(){return n;};"
+        "Window_Base.prototype.standardFontSize=candidate;"
+        "patched=Window_Base.prototype.standardFontSize===candidate;}}"
+        "catch(e3){}"
         + _rpgm_refresh_snippet() +
-        "return \"ok:\"+refreshed;})()"
+        "return patched?\"ok:\"+refreshed:\"no-window-base\";})()"
     )
 
 
@@ -115,8 +139,8 @@ def apply_rpgm_font_size_live(tentacle, size: int) -> bool:
     if not attached:
         return False
     js = build_rpgm_font_size_js(size)
-    ok, _val = _tentacle_evaluate(tentacle, js)
-    return bool(ok)
+    ok, val = _tentacle_evaluate(tentacle, js)
+    return bool(ok and str(val or "").startswith("ok:"))
 
 
 def apply_rpgm_font_live(tentacle, font_filename: str) -> bool:
@@ -132,8 +156,8 @@ def apply_rpgm_font_live(tentacle, font_filename: str) -> bool:
     js = build_rpgm_font_face_js(font_filename)
     if not js:
         return False
-    ok, _val = _tentacle_evaluate(tentacle, js)
-    return bool(ok)
+    ok, val = _tentacle_evaluate(tentacle, js)
+    return bool(ok and str(val or "").startswith("ok:"))
 
 
 def build_ajin_font_size_js(size: int) -> str:

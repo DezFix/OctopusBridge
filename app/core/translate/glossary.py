@@ -44,16 +44,21 @@ class Glossary:
             with open(self.path, "w", encoding="utf-8") as f:
                 json.dump(self.data, f, ensure_ascii=False, indent=1)
 
+    def _pair(self, src: str, tgt: str) -> dict:
+        """Сырая пара словаря; ручная правка JSON может положить не-dict."""
+        pair = self.data.get(f"{src}->{tgt}") or {}
+        return pair if isinstance(pair, dict) else {}
+
     def terms(self, src: str, tgt: str) -> dict[str, str]:
         """Термины как {термин: перевод} — для трансляторов."""
         return {t: _norm(v)[0]
-                for t, v in (self.data.get(f"{src}->{tgt}") or {}).items()
+                for t, v in self._pair(src, tgt).items()
                 if t and _norm(v)[0]}
 
     def entries(self, src: str, tgt: str) -> dict[str, dict]:
         """Термины с категориями: {термин: {"tr": ..., "group": ...}}."""
         return {t: {"tr": _norm(v)[0], "group": _norm(v)[1]}
-                for t, v in (self.data.get(f"{src}->{tgt}") or {}).items()
+                for t, v in self._pair(src, tgt).items()
                 if t}
 
     def groups(self, src: str, tgt: str) -> list[str]:

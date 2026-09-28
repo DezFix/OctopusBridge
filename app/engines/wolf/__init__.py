@@ -12,13 +12,13 @@ MapData.wolf (*.mps). Внедрение — loose-файлы Data/<Папка>/
 from __future__ import annotations
 
 from app.engines.base import EngineModule
-from app.ui.i18n import TR
 
 
 class WolfModule(EngineModule):
     key = "wolf"
     title = "Wolf RPG"
     variant = ""
+    maturity = "experimental"
     features = {"files", "font"}
 
     @classmethod
@@ -45,9 +45,3 @@ class WolfModule(EngineModule):
     def restore_original(self, game_dir: str) -> dict:
         from app.core.wolf import parser
         return parser.restore_original(game_dir)
-
-    def ui_tabs(self, main_window) -> list[tuple]:
-        translate = main_window.translate_tab
-        return [
-            (translate, TR("tab_translate"), "translate"),
-        ]

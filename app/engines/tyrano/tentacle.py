@@ -17,7 +17,7 @@ import time
 
 from app.core import process as proc
 from app.transport.cdp import browser
-from app.core.tentacles.cdp_base import (
+from app.live.cdp_base import (
     CDPTentacle, DEFAULT_SCAN_PORTS, bruteforce_port,
     cdp_page_is_game,
     probe_game_port as _base_probe,

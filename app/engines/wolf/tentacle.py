@@ -13,7 +13,7 @@ import glob
 import os
 import subprocess
 
-from app.core.tentacles.base import Tentacle
+from app.live.tentacle import Tentacle
 
 
 def find_launcher(game_dir: str) -> str | None:

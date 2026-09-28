@@ -15,16 +15,25 @@ from app.core.rpgmaker.fontpatch import patch_font_mz, patch_font_mv
 
 
 def make_project(root: str, variant: str = "mz") -> None:
+    # plugins.js есть у любой настоящей игры (RPG Maker генерирует
+    # его даже для пустого списка) — без него install_runtime
+    # честно отказывает: регистрировать перевод некуда.
     if variant == "mv":
         data = os.path.join(root, "www", "data")
         os.makedirs(data)
         os.makedirs(os.path.join(root, "www", "js"))
         open(os.path.join(root, "www", "js", "rpg_core.js"), "w").close()
+        with open(os.path.join(root, "www", "js", "plugins.js"), "w",
+                  encoding="utf-8") as f:
+            f.write("var $plugins = [];\n")
     else:
         data = os.path.join(root, "data")
         os.makedirs(data)
         os.makedirs(os.path.join(root, "js"))
         open(os.path.join(root, "js", "rmmz_core.js"), "w").close()
+        with open(os.path.join(root, "js", "plugins.js"), "w",
+                  encoding="utf-8") as f:
+            f.write("var $plugins = [];\n")
     common = [None, {"id": 1, "name": "テスト", "list": [
         {"code": 401, "indent": 0, "parameters": ["私は魔女です"]},
         {"code": 356, "indent": 0, "parameters": ["ShowText こんにちは"]},
@@ -766,7 +775,19 @@ with tempfile.TemporaryDirectory() as td:
         src = f.read()
     assert "__TR_DICT__" not in src
     assert "__octopus_trInstall({});" in src
-    assert "__octopusBridgeVersion = 2" in src
+    from app.core.rpgmaker.mv_bridge import BRIDGE_PLUGIN_VERSION
+    assert f"__octopusBridgeVersion = {BRIDGE_PLUGIN_VERSION}" in src
+    # протухший мост (старая версия) перегенерируется с сохранением словаря
+    with open(plugin, encoding="utf-8") as f:
+        stale = f.read()
+    with open(plugin, "w", encoding="utf-8") as f:
+        f.write(stale.replace(
+            f"__octopusBridgeVersion = {BRIDGE_PLUGIN_VERSION}",
+            "__octopusBridgeVersion = 1"))
+    assert mv_bridge.ensure_bridge_registered(td, _cheats, _tr_p)
+    with open(plugin, encoding="utf-8") as f:
+        upgraded = f.read()
+    assert f"__octopusBridgeVersion = {BRIDGE_PLUGIN_VERSION}" in upgraded
     assert 'localStorage.getItem("__octopus_last_err")' in src
     assert "require(\"http\")" in src and "/probe" in src and "/errlog" in src
     assert "window.__octopus_collectState" in src
@@ -841,7 +862,7 @@ with tempfile.TemporaryDirectory() as td:
     assert mv_bridge.ensure_bridge_registered(td, _cheats, _tr_p)
     with open(plugin, encoding="utf-8") as f:
         src = f.read()
-    assert "__octopusBridgeVersion = 2" in src
+    assert f"__octopusBridgeVersion = {BRIDGE_PLUGIN_VERSION}" in src
     assert '"Привет": "Hello"' in src
     assert mv_bridge.unregister_bridge(td)
     assert not os.path.isfile(plugin)
@@ -2093,11 +2114,16 @@ class _Ch65:
 _FakeMain65.channel = lambda self: _Ch65(self)
 _m65 = _FakeMain65()
 _mt65 = _MapTab65(_m65)
-# клик по пустой клетке загруженной карты — команда телепорта в канал
+# клик по пустой клетке загруженной карты — выбор клетки, а не
+# мгновенный телепорт (раньше случайный клик уносил героя).
+# Телепорт — через контекстное меню («Телепорт сюда»).
 _mt65._map_id = 7
 _mt65._map_data = {"width": 20, "height": 15,
                    "data": [0] * 20 * 15 * 6, "events": []}
 _mt65.select_event_at(12, 9)
+assert _mt65._selected_cell == (12, 9), _mt65._selected_cell
+assert _m65.cheats == [], _m65.cheats
+_mt65._send_teleport(7, 12, 9)
 assert ("teleport", {"mapId": 7, "x": 12, "y": 9}) in _m65.cheats, \
     _m65.cheats
 # клик вне границ — тихо, без команды
@@ -2163,7 +2189,12 @@ _dlg67 = _EV67(_mt65, None, None, _ev67, map_id=7)
 assert _dlg67.btn_mode_simple.isChecked()
 assert not _dlg67.tabs.isVisibleTo(_dlg67)
 assert _dlg67.simple_box.isVisibleTo(_dlg67)
-assert _dlg67.btn_visible.isEnabled(), "канал есть — кнопка активна"
+# без живого состояния кнопка выключена — нужно состояние с картой
+assert not _dlg67.btn_visible.isEnabled(), "без state кнопка молчит"
+_dlg67._on_live_state({"mapId": 7, "playerX": 1, "playerY": 1,
+                       "switches": [False] * 40, "variables": [0] * 10,
+                       "selfSwitches": []})
+assert _dlg67.btn_visible.isEnabled(), "канал + карта — кнопка активна"
 _dlg67.btn_visible.click()
 _kinds67 = [c for c, _k in _m65.cheats]
 assert "switch_set" in _kinds67 and "var_set" in _kinds67 \
@@ -2182,12 +2213,19 @@ import PySide6.QtWidgets as _QW67q
 _qq67 = _QW67q.QMessageBox.question
 _QW67q.QMessageBox.question = staticmethod(lambda *a, **k: _QW67q.QMessageBox.No)
 _dlg67a = _EV67(_mt65, None, None, _ev67a, map_id=7)
+_dlg67a._on_live_state({"mapId": 7, "playerX": 0, "playerY": 0,
+                        "switches": [False] * 40, "variables": [0] * 10,
+                        "selfSwitches": []})
+assert _dlg67a.btn_visible.isEnabled()
 _n67a = len(_m65.cheats)
 _dlg67a.btn_visible.click()
 assert len(_m65.cheats) == _n67a, "отказ — ничего не отправляем"
 _QW67q.QMessageBox.question = staticmethod(lambda *a, **k: _QW67q.QMessageBox.Yes)
 _dlg67a.btn_visible.click()
 assert ("switch_set", {"index": 9, "value": True}) in _m65.cheats
+# пока нет ack — кнопки висят в pending
+assert not _dlg67a.btn_undo.isEnabled(), "pending блокирует undo"
+_dlg67a._on_live_ack("switch_set", True, "", "")
 # undo гасит обратно
 assert _dlg67a.btn_undo.isEnabled()
 _dlg67a.btn_undo.click()
@@ -2195,6 +2233,10 @@ assert ("switch_set", {"index": 9, "value": False}) in _m65.cheats, \
     _m65.cheats
 _QW67q.QMessageBox.question = _qq67
 _dlg67a.reject()
+# гасим pending первого диалога — иначе кнопки режима заблокированы
+_dlg67._on_live_ack("switch_set", True, "", "")
+_dlg67._on_live_ack("var_set", True, "", "")
+_dlg67._on_live_ack("self_switch_set", True, "", "")
 # расширенное показывает вкладки
 _dlg67.btn_mode_expanded.click()
 assert not _dlg67.simple_box.isVisibleTo(_dlg67)

@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 
 from app.core import asar
+from app.core.io import atomic_write_bytes
 
 
 class FileView:
@@ -33,7 +34,10 @@ class FileView:
         try:
             return body.decode("utf-8-sig")
         except UnicodeDecodeError:
-            return None
+            try:
+                return body.decode("cp932")
+            except UnicodeDecodeError:
+                return None
 
     def exists(self, rel: str) -> bool:
         raise NotImplementedError
@@ -107,8 +111,7 @@ class DiskFileView(FileView):
     def write_bytes(self, rel: str, data: bytes) -> None:
         path = self._path(rel)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "wb") as f:
-            f.write(data)
+        atomic_write_bytes(path, data)
 
 
 class AsarFileView(FileView):

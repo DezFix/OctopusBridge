@@ -81,6 +81,9 @@ def make_wolf(root: str) -> None:
 print("1) Реестр движков...")
 assert MODULES == [AjinModule, RpgMakerModule, RenPyModule, TwineModule,
                    TyranoModule, WolfModule, UnityModule]
+from app.engines.registry import DISABLED_ENGINES, enabled_modules
+assert DISABLED_ENGINES >= {"ajin", "twine", "tyrano", "wolf", "unity"}
+assert {c.key for c in enabled_modules()} == {"rpgmaker", "renpy"}
 with tempfile.TemporaryDirectory() as td:
     make_rpgm(td, "mv")
     mod = detect_engine(td)
@@ -89,17 +92,19 @@ with tempfile.TemporaryDirectory() as td:
 with tempfile.TemporaryDirectory() as td:
     make_renpy(td)
     assert isinstance(detect_engine(td), RenPyModule)
+# Отложенные движки: код на месте (прямой detect класса работает),
+# но общий детект их не видит — фокус на RPGM и Ren'Py.
 with tempfile.TemporaryDirectory() as td:
     make_twine(td)
-    assert isinstance(detect_engine(td), TwineModule)
+    assert TwineModule.detect(td) > 0
+    assert detect_engine(td) is None
 with tempfile.TemporaryDirectory() as td:
     make_tyrano(td)
-    assert isinstance(detect_engine(td), TyranoModule)
+    assert detect_engine(td) is None
 with tempfile.TemporaryDirectory() as td:
     make_wolf(td)
-    mod = detect_engine(td)
-    assert isinstance(mod, WolfModule), type(mod)
-    assert {"files", "font"} <= mod.features
+    assert WolfModule.detect(td) > 0
+    assert detect_engine(td) is None
 with tempfile.TemporaryDirectory() as td:
     assert detect_engine(td) is None
 print("   OK")
@@ -128,43 +133,36 @@ with tempfile.TemporaryDirectory() as td:
     make_renpy(td)
     assert w.open_project(td) == "renpy"
     assert not w.welcome_tab.font_box.isHidden()
+# Отложенные движки не открываются как проекты: детект их не видит.
+# Код и тесты движков на месте — вернутся отдельной задачей.
 with tempfile.TemporaryDirectory() as td:
     make_twine(td)
-    assert w.open_project(td) == "twine"
-    roles = [r for _, r in w._engine_tabs]
-    # вкладка «Перевод» для Twine — файловый перевод в НОВУЮ html-копию
-    # игры (оригинал не трогаем), рядом с ней «Текст игры» — человеко-
-    # читаемый просмотр пассажей (код свёрнут в маркеры ⟦…⟧)
-    assert roles[0] == "translate"
-    assert "module" in roles and roles.count("module") >= 2
+    assert w.open_project(td) == "unknown"
+    assert w.engine_module is None
 with tempfile.TemporaryDirectory() as td:
     make_tyrano(td)
-    assert w.open_project(td) == "tyrano"
-    roles = [r for _, r in w._engine_tabs]
-    # переменных в Tyrano нет (только внутренний конфиг движка) —
-    # вкладка читов/переменных не добавляется
-    assert roles == ["translate"]
-    assert "cheats" not in w.engine_module.features
+    assert w.open_project(td) == "unknown"
+    assert w.engine_module is None
 with tempfile.TemporaryDirectory() as td:
     make_wolf(td)
-    assert w.open_project(td) == "wolf"
-    roles = [r for _, r in w._engine_tabs]
-    # Wolf RPG: только файловый перевод (нативный процесс без канала),
-    # шрифт — заменой TTF (после перезапуска), размер не поддерживается
-    assert roles == ["translate"]
-    assert "cheats" not in w.engine_module.features
-    assert "font" in w.engine_module.features
+    assert w.open_project(td) == "unknown"
+    assert w.engine_module is None
 print("   OK")
 
-print("4) Настройки: 4 вкладки (Основные/Файлы/ИИ корректор/Система)...")
+print("4) Настройки: 3 вкладки (Основные/Файлы/Система, без нейро)...")
 from app.ui.settings_tab import SettingsDialog
 d = SettingsDialog(w)
 tabs = [d.tabs.tabText(i) for i in range(d.tabs.count())]
-assert len(tabs) == 4, tabs
-assert "ИИ корректор" in tabs or "AI Corrector" in tabs
+assert len(tabs) == 3, tabs
 assert "Система" in tabs or "System" in tabs
-assert hasattr(d, "glossary_use_ai")
-assert d.glossary_use_ai.isChecked()
+assert not hasattr(d, "glossary_use_ai")
+assert not hasattr(d, "corr_eng")
+# движок один, без выбора: combo нет, только почта MyMemory
+assert d.files_eng["engine"] == "rotate"
+assert "base_url" not in d.files_eng and "api_key" not in d.files_eng, \
+    "Libre-поля должны быть удалены"
+assert not d.files_eng["email"].isHidden()
+d.files_eng["email"].setText("test@example.com")
 assert hasattr(d, "cache_size_label") and d.cache_size_label.text()
 assert hasattr(d, "btn_clean_cache") and hasattr(d, "auto_clean")
 assert hasattr(d, "btn_open_cache") and d.btn_open_cache.icon().isNull() is False
@@ -172,8 +170,9 @@ assert d.cache_limit_spin.value() == w.settings.value("cache_auto_clean_mb", 200
 old_lang = w.settings.value("ui_lang", "en")
 was_auto = d.auto_clean.isChecked()
 d._save_and_close()
-assert w.settings.value("glossary_use_ai", True, type=bool)
 assert w.settings.value("cache_auto_clean", False, type=bool) == was_auto
+assert w.settings.value("engine_files") == "rotate"
+assert w.settings.value("mymemory_email") == "test@example.com"
 w.settings.setValue("ui_lang", old_lang)
 print("   OK:", tabs)
 
@@ -266,28 +265,24 @@ wiz = SetupWizard(w)
 assert wiz._stack.count() == 4
 assert wiz.btn_back.isHidden()
 wiz._on_next()  # → языки
-wiz.cb_source.setCurrentIndex(wiz.cb_source.findData("ja"))
+# Исходный язык не выбирается с 7.22 — всегда auto (см. setup_wizard).
+assert wiz.cb_source is None
 wiz.cb_target.setCurrentIndex(wiz.cb_target.findData("en"))
 wiz.cb_ui_lang.setCurrentIndex(1)  # пересборка, выборы не теряются
-assert wiz.cb_source.currentData() == "ja"
 assert wiz.cb_target.currentData() == "en"
 assert wiz.cb_ui_lang.currentIndex() == 1
 wiz._on_next()  # → переводчик
-wiz.cb_provider.setCurrentIndex(wiz.cb_provider.findData("ai"))
-wiz.ed_base_url.setText("http://127.0.0.1:1234/v1")
-wiz.ed_model.setText("wizard-model")
-assert not wiz.ed_base_url.isHidden()
-wiz.cb_provider.setCurrentIndex(wiz.cb_provider.findData("rotate"))
-assert wiz.ed_base_url.isHidden()
-wiz.cb_provider.setCurrentIndex(wiz.cb_provider.findData("ai"))
+# выбора движка нет: один Автопилот, Libre-полей нет
+assert not hasattr(wiz, "cb_provider")
+assert not hasattr(wiz, "ed_base_url")
+assert not hasattr(wiz, "ed_api_key")
 wiz._on_next()  # → поведение
 wiz._on_next()  # → готово
 assert s.value("setup_done", False, type=bool) is True
-assert s.value("source_lang") == "ja"
+assert s.value("source_lang") == "auto"
 assert s.value("target_lang") == "en"
 assert s.value("ui_lang") == "en"
-assert s.value("engine_files") == "ai"
-assert s.value("model") == "wizard-model"
+assert s.value("engine_files") == "rotate"
 # «Пропустить» — просто ставит флаг
 s.setValue("setup_done", False)
 wiz2 = SetupWizard(w)
@@ -356,6 +351,38 @@ assert frozen_corrections([5], [True], {1: 5, 99: "x"}, {1: True}) == [
     ("var_set", {"index": 99, "value": "x"})]
 assert frozen_corrections(None, None, {1: 1}, None) == [
     ("var_set", {"index": 1, "value": 1})]
+print("   OK")
+
+print("14) Открытие проекта НЕ стартует перевод сам (только предложение)...")
+w2 = MainWindow()
+with tempfile.TemporaryDirectory() as td:
+    make_rpgm(td, "mz")
+    assert w2.open_project(td) == "mz"
+    w2.project.entries = w2.engine_module.extract(td)
+    assert len(w2.project.entries) > 0
+    w2.project.tr_pending = 5
+    w2.save_project()
+    w2.open_project(td)  # повторное открытие с tr_pending > 0
+    tt = w2.translate_tab
+    assert tt.worker is None or not tt.worker.isRunning(), \
+        "перевод стартовал сам при открытии"
+    assert "5" in tt.lbl_status.text(), tt.lbl_status.text()
+    # оверлей не показан — висеть нечему
+    assert "Перевож" not in w2.loading.lbl_text.text(), \
+        w2.loading.lbl_text.text()
+w2.close()
+print("   OK")
+
+print("15) Ren'Py-приёмник не падает на битом пакете + cleanup останавливает опрос...")
+from app.ui.renpy_cheat_tab import VariablesTab as _VT15
+_vt15 = _VT15(w)
+_vt15._on_vars("{{битый пакет")  # не должно бросить
+_vt15._on_vars('[{"name": "gold", "value": 5}]')
+assert any(v["name"] == "gold" for v in _vt15._vars), _vt15._vars
+assert _vt15._timer.isActive()
+_vt15.cleanup()
+assert not _vt15._timer.isActive(), "таймер опроса не остановлен"
+_vt15.deleteLater()
 print("   OK")
 
 print()

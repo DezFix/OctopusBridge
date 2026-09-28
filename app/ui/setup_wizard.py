@@ -3,28 +3,23 @@
 
 Шаги: приветствие → языки → переводчик → поведение. Пишет те же ключи
 QSettings, что и диалог настроек (ui_lang, source_lang, target_lang,
-engine_files, base_url_files, api_key_files, model, auto_launch,
-auto_backup). По завершении ставит setup_done=true.
+engine_files, auto_launch, auto_backup). По завершении ставит
+setup_done=true.
 """
 from __future__ import annotations
 
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import (QCheckBox, QDialog, QFormLayout,
-                               QGroupBox, QHBoxLayout, QLabel, QLineEdit,
+                               QGroupBox, QHBoxLayout, QLabel,
                                QPushButton, QStackedWidget,
                                QVBoxLayout, QWidget)
 
-from app.core.translate.engines import (PROVIDERS, SOURCE_LANGS, TARGET_LANGS,
-                                         LIBRETRANSLATE_DEFAULT_URL)
-from app.ui.i18n import TR, provider_name, set_language
+from app.core.translate.engines import TARGET_LANGS
+from app.ui.i18n import TR, set_language
 from app.ui.theme import (C_TEXT, C_TEXT_SECONDARY,
                           AnimatedComboBox)
 
-PRESET_OPENROUTER = "https://openrouter.ai/api/v1"
-
 _STEPS = 4  # приветствие, языки, переводчик, поведение
-
-_AI_FIELDS = ("ed_base_url", "ed_api_key", "ed_model")
 
 
 class SetupWizard(QDialog):
@@ -79,17 +74,13 @@ class SetupWizard(QDialog):
         """Текущие значения полей — пересборка страниц их не потеряет."""
         snap: dict = {}
         for name in ("cb_ui_lang", "cb_source", "cb_target",
-                     "cb_provider", "ed_base_url", "ed_api_key",
-                     "ed_model", "cb_auto_launch",
-                     "cb_auto_backup"):
+                     "cb_auto_launch", "cb_auto_backup"):
             w = getattr(self, name, None)
             if w is None:
                 continue
             if isinstance(w, AnimatedComboBox):
                 if name == "cb_ui_lang":
                     snap["cb_ui_lang_idx"] = w.currentIndex()
-                elif name == "cb_provider":
-                    snap["cb_provider_data"] = w.currentData()
                 else:
                     snap[name + "_saved"] = w.currentData()
             elif isinstance(w, QCheckBox):
@@ -168,14 +159,11 @@ class SetupWizard(QDialog):
         self.cb_ui_lang.currentIndexChanged.connect(self._on_ui_lang_changed)
         form.addRow(TR("settings_ui_lang"), self.cb_ui_lang)
 
-        self.cb_source = AnimatedComboBox()
-        for code in SOURCE_LANGS:
-            self.cb_source.addItem(TR("lang_" + code), code)
-        saved = snap.get("cb_source_saved",
-                         self.settings.value("source_lang", "auto"))
-        self.cb_source.setCurrentIndex(max(
-            self.cb_source.findData(saved), 0))
-        form.addRow(TR("settings_src_lang"), self.cb_source)
+        # Исходный язык не выбирается — он всегда auto (определяется по
+        # каждой строке). Выбирается только язык перевода.
+        self.cb_source = None
+        form.addRow(TR("settings_src_lang_auto"),
+                    QLabel(TR("settings_src_lang_auto_note")))
 
         self.cb_target = AnimatedComboBox()
         for code in TARGET_LANGS:
@@ -218,59 +206,13 @@ class SetupWizard(QDialog):
         box = QGroupBox(TR("settings_provider"))
         form = QFormLayout(box)
 
-        self.cb_provider = AnimatedComboBox()
-        for key in PROVIDERS:
-            self.cb_provider.addItem(provider_name(key), key)
-        saved_p = self.settings.value("engine_files", "rotate")
-        idx = self.cb_provider.findData(
-            snap.get("cb_provider_data", saved_p))
-        self.cb_provider.setCurrentIndex(max(idx, 0))
-        self.cb_provider.currentIndexChanged.connect(self._on_provider_changed)
-        form.addRow(TR("settings_provider_lbl"), self.cb_provider)
+        info = QLabel(TR("settings_provider_fixed"))
+        info.setWordWrap(True)
+        form.addRow(info)
 
-        self.ed_base_url = QLineEdit(
-            snap.get("ed_base_url",
-                     self.settings.value("base_url_files",
-                                         PRESET_OPENROUTER)))
-        form.addRow(TR("settings_base_url"), self.ed_base_url)
-
-        self.ed_api_key = QLineEdit(
-            snap.get("ed_api_key", self.settings.value("api_key_files", "")))
-        self.ed_api_key.setEchoMode(QLineEdit.Password)
-        self.ed_api_key.setPlaceholderText(TR("settings_api_key_ph"))
-        form.addRow(TR("settings_api_key"), self.ed_api_key)
-
-        self.ed_model = QLineEdit(
-            snap.get("ed_model",
-                     self.settings.value("model", "qwen2.5:7b")))
-        self.ed_model.setPlaceholderText("gpt-4o-mini, qwen2.5:7b, …")
-        form.addRow(TR("settings_model"), self.ed_model)
-
-        self._ai_fields: list[tuple[QLabel, QLineEdit]] = [
-            (lbl, ed) for lbl, ed in zip(
-                (form.labelForField(self.ed_base_url),
-                 form.labelForField(self.ed_api_key),
-                 form.labelForField(self.ed_model)),
-                (self.ed_base_url, self.ed_api_key, self.ed_model))]
         lay.addWidget(box)
         lay.addStretch(1)
-        self._on_provider_changed()
         return w
-
-    def _on_provider_changed(self, *_):
-        key = self.cb_provider.currentData()
-        need_fields = key in ("ai", "libretranslate")
-        for lbl, ed in getattr(self, "_ai_fields", []):
-            if lbl is not None:
-                lbl.setVisible(need_fields)
-            ed.setVisible(need_fields)
-        if key == "libretranslate":
-            cur = self.ed_base_url.text().strip()
-            if not cur or cur == PRESET_OPENROUTER:
-                self.ed_base_url.setText(LIBRETRANSLATE_DEFAULT_URL)
-            self.ed_api_key.setPlaceholderText(TR("settings_api_key_lt_ph"))
-        else:
-            self.ed_api_key.setPlaceholderText(TR("settings_api_key_ph"))
 
     # ── шаг 4: поведение ──
     def _build_behavior(self, snap: dict) -> QWidget:
@@ -340,12 +282,9 @@ class SetupWizard(QDialog):
         s = self.settings
         s.setValue("ui_lang", "ru" if self.cb_ui_lang.currentIndex() == 0
                    else "en")
-        s.setValue("source_lang", self.cb_source.currentData())
+        s.setValue("source_lang", "auto")
         s.setValue("target_lang", self.cb_target.currentData())
-        s.setValue("engine_files", self.cb_provider.currentData())
-        s.setValue("base_url_files", self.ed_base_url.text().strip())
-        s.setValue("api_key_files", self.ed_api_key.text().strip())
-        s.setValue("model", self.ed_model.text().strip())
+        s.setValue("engine_files", "rotate")
         s.setValue("auto_launch", self.cb_auto_launch.isChecked())
         s.setValue("auto_backup", self.cb_auto_backup.isChecked())
         s.setValue("setup_done", True)

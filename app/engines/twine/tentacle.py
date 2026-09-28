@@ -34,7 +34,7 @@ import zlib
 from http import server as http_server
 from urllib.parse import quote
 
-from app.core.tentacles.base import Tentacle
+from app.live.tentacle import Tentacle
 from app.core.translate.service import build_tr_dict  # noqa: F401 — реэкспорт
 
 # ── JS-пэйлоад ────────────────────────────────────────────────────────

@@ -11,13 +11,13 @@ from __future__ import annotations
 import os
 
 from app.engines.base import EngineModule
-from app.ui.i18n import TR
 
 
 class TwineModule(EngineModule):
     key = "twine"
     title = "Twine"
     features = {"files", "cheats"}
+    maturity = "frozen"  # фокус — RPG-семья; только критические фиксы
 
     @classmethod
     def detect(cls, game_dir: str) -> int:
@@ -81,22 +81,3 @@ class TwineModule(EngineModule):
     def restore_original(self, game_dir: str) -> dict:
         from app.core.twine import parser
         return parser.restore_original(game_dir)
-
-    def ui_tabs(self, main_window) -> list[tuple]:
-        from app.ui.save_editor_tab import SaveEditorTab
-        from app.ui.twine_text_tab import TwineTextTab
-        translate = main_window.translate_tab
-        save_tab = SaveEditorTab(main_window)
-        text_tab = TwineTextTab(main_window)
-        # «Перевод» — обычная вкладка файлового перевода: извлечение
-        # текста с фильтром кода (макросы/переменные/ссылки не
-        # переводятся), перевод провайдером из настроек и внедрение
-        # в НОВУЮ html-копию игры («игра_язык.html»), оригинал не
-        # трогается. «Текст игры» — человекочитаемый просмотр того,
-        # что читает игрок (пассажи по порядку, код свёрнут в ⟦…⟧).
-        # (renpy_cheat_tab остаётся за Ren'Py — не трогать.)
-        return [
-            (translate, TR("tab_translate"), "translate"),
-            (text_tab, TR("tab_twine_text"), "module"),
-            (save_tab, TR("tab_save_editor"), "module"),
-        ]

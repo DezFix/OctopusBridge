@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from app.engines.base import EngineModule
-from app.ui.i18n import TR
 
 
 class RenPyModule(EngineModule):
     key = "renpy"
     title = "Ren'Py"
     features = {"files", "cheats", "resources", "font", "langs"}
+    maturity = "stable"  # ядро парсера + live-агент проверены тестами
 
     @classmethod
     def detect(cls, game_dir: str) -> int:
@@ -55,18 +55,3 @@ class RenPyModule(EngineModule):
         from app.core.renpy import parser
         return parser.apply(game_dir, entries,
                             target_lang=kwargs.get("target_lang", "ru"))
-
-    def ui_tabs(self, main_window) -> list[tuple]:
-        from app.ui.renpy_cheat_tab import VariablesTab, TriggersTab
-        from app.ui.resource_tab import ResourceTab
-        translate = main_window.translate_tab
-        var_tab = VariablesTab(main_window)
-        trg_tab = TriggersTab(main_window)
-        resources = ResourceTab(main_window)
-        main_window.cheat_tab = var_tab
-        return [
-            (translate, TR("tab_translate"), "translate"),
-            (var_tab, TR("tab_cheats"), "cheats"),
-            (trg_tab, TR("tab_triggers"), "triggers"),
-            (resources, TR("tab_resources"), "module"),
-        ]

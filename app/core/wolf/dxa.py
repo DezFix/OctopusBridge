@@ -26,7 +26,6 @@ from __future__ import annotations
 import os
 import struct
 from dataclasses import dataclass, field
-from pathlib import Path
 
 DX_MAGIC = 0x5844  # 'DX' LE
 DX_VER_8 = 8
@@ -492,7 +491,6 @@ def extract_file(arc: WolfArchive, info: WolfFileInfo) -> bytes:
         key = info.key or b""
         if huff:
             want = info.press_size if comp else info.data_size
-            total = info.huff_size + want
             # DXA8: хвост может читаться вторым проходом (huffmanKB);
             # упрощённо читаем весь нужный диапазон сразу — покрывает
             # файлы перевода (.dat/.mps, до десятков МБ).

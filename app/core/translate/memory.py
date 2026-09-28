@@ -36,6 +36,8 @@ _WS_RE = re.compile(r"\s+")
 
 def normalize_source(text: str) -> str:
     """Нормализованный ключ строки: NFC + strip + collapse whitespace."""
+    if not isinstance(text, str):
+        return ""
     return _WS_RE.sub(" ", unicodedata.normalize("NFC", text)).strip()
 
 
@@ -103,8 +105,14 @@ class TranslationMemory:
         self.db.commit()
 
     # ---------- чтение ----------
-    def get(self, source: str, src_lang: str, tgt_lang: str) -> str | None:
-        """Точное совпадение, затем совпадение по нормализованной строке."""
+    def get(self, source: str, src_lang: str, tgt_lang: str,
+            count_hit: bool = True) -> str | None:
+        """Точное совпадение, затем совпадение по нормализованной строке.
+
+        count_hit=False — чтение без записи (для UI-подсказок из
+        GUI-потока: UPDATE+commit на хит — лишний fsync и contention
+        с воркером перевода за тем же локом).
+        """
         norm = normalize_source(source)
         with self._lock:
             row = self.db.execute(
@@ -113,12 +121,13 @@ class TranslationMemory:
                 (source, src_lang, tgt_lang),
             ).fetchone()
             if row:
-                self.db.execute(
-                    "UPDATE tm2 SET hits=hits+1 WHERE source=?"
-                    " AND src_lang=? AND tgt_lang=?",
-                    (source, src_lang, tgt_lang),
-                )
-                self.db.commit()
+                if count_hit:
+                    self.db.execute(
+                        "UPDATE tm2 SET hits=hits+1 WHERE source=?"
+                        " AND src_lang=? AND tgt_lang=?",
+                        (source, src_lang, tgt_lang),
+                    )
+                    self.db.commit()
                 return row[0]
             row = self.db.execute(
                 "SELECT target FROM tm2 WHERE norm_source=? AND src_lang=?"
@@ -126,12 +135,13 @@ class TranslationMemory:
                 (norm, src_lang, tgt_lang),
             ).fetchone()
             if row:
-                self.db.execute(
-                    "UPDATE tm2 SET hits=hits+1 WHERE norm_source=?"
-                    " AND src_lang=? AND tgt_lang=?",
-                    (norm, src_lang, tgt_lang),
-                )
-                self.db.commit()
+                if count_hit:
+                    self.db.execute(
+                        "UPDATE tm2 SET hits=hits+1 WHERE norm_source=?"
+                        " AND src_lang=? AND tgt_lang=?",
+                        (norm, src_lang, tgt_lang),
+                    )
+                    self.db.commit()
                 return row[0]
             # fallback: старая таблица (на случай если миграция не прошла)
             row = self.db.execute(
@@ -210,8 +220,8 @@ class TranslationMemory:
             if hit_norms:
                 self.db.executemany(
                     "UPDATE tm2 SET hits=hits+1 WHERE norm_source=?"
-                    " AND src_lang=?",
-                    list(hit_norms),
+                    " AND src_lang=? AND tgt_lang=?",
+                    [(n, s, tgt_lang) for n, s in hit_norms],
                 )
                 self.db.commit()
         return out
@@ -263,7 +273,7 @@ class TranslationMemory:
         идёт первым, если есть.
         """
         out: list[dict] = []
-        exact = self.get(source, src_lang, tgt_lang)
+        exact = self.get(source, src_lang, tgt_lang, count_hit=False)
         if exact is not None:
             out.append({"source": source, "target": exact, "score": 1.0})
         norm = normalize_source(source)

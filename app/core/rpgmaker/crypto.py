@@ -21,6 +21,12 @@ def _view(game_dir: str, view=None):
     return view or DiskFileView(game_dir)
 
 
+def _key_bytes(key_hex: str) -> bytes:
+    if not isinstance(key_hex, str) or not re.fullmatch(r"[0-9a-fA-F]{32}", key_hex):
+        raise ValueError("invalid RPGM encryption key")
+    return bytes.fromhex(key_hex)
+
+
 def get_key_mz(game_dir: str, view=None) -> str | None:
     view = _view(game_dir, view)
     for rel in ("data/System.json", "www/data/System.json"):
@@ -29,9 +35,9 @@ def get_key_mz(game_dir: str, view=None) -> str | None:
             continue
         try:
             key = json.loads(text).get("encryptionKey")
-        except ValueError:
+        except (TypeError, ValueError):
             continue
-        if key:
+        if isinstance(key, str) and re.fullmatch(r"[0-9a-fA-F]{32}", key):
             return key
     return None
 
@@ -50,7 +56,7 @@ def get_key_mv(game_dir: str, view=None) -> str | None:
         text = view.read_text("www/js/rpg_core.js")
     if text is None:
         return None
-    m = re.search(r'encryptionKey["\'=\s:]+([0-9a-f]{32})', text)
+    m = re.search(r'encryptionKey["\'=\s:]+([0-9a-fA-F]{32})', text)
     return m.group(1) if m else None
 
 
@@ -58,14 +64,14 @@ def decrypt_bytes(body: bytes, key_hex: str) -> bytes:
     """Расшифровывает содержимое .png_/.rpgmvp и т.п. из памяти."""
     if body[:HEADER_LEN] != SIGNATURE:
         raise ValueError("Not an encrypted RPGM file (signature mismatch)")
-    key = bytes.fromhex(key_hex)
+    key = _key_bytes(key_hex)
     head = bytes(b ^ key[i] for i, b in enumerate(body[HEADER_LEN:HEADER_LEN * 2]))
     return head + body[HEADER_LEN * 2:]
 
 
 def encrypt_bytes(body: bytes, key_hex: str) -> bytes:
     """Обратная операция: шифрует байты (16-байтный заголовок + XOR)."""
-    key = bytes.fromhex(key_hex)
+    key = _key_bytes(key_hex)
     head = bytes(b ^ key[i] for i, b in enumerate(body[:HEADER_LEN]))
     return SIGNATURE + head + body[HEADER_LEN:]
 
@@ -86,7 +92,8 @@ def get_key(game_dir: str, view=None) -> str | None:
 
 
 # варианты имени для незашифрованного ext: (MZ-суффикс, MV-замена ext)
-_MV_ENC_EXT = {".png": ".rpgmvp", ".ogg": ".rpgmvo", ".m4a": ".rpgmvm"}
+_MV_ENC_EXT = {".png": ".rpgmvp", ".ogg": ".rpgmvo", ".m4a": ".rpgmvo",
+              ".webm": ".rpgmvm", ".mp4": ".rpgmvm"}
 
 
 def _resource_rels(rel_no_ext: str, exts: tuple[str, ...]) -> list[str]:

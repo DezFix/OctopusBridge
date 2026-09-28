@@ -54,11 +54,11 @@ def split_text_attr(text: str):
     """
     s = text.strip()
     if s.startswith("&"):
-        expr = True
+        pass
     elif s.startswith("%") and (_DOTTED_RE.search(s) or "[" in s):
-        expr = True
+        pass
     elif ("'" in s or '"' in s) and _DOTTED_RE.search(s):
-        expr = True
+        pass
     elif ("'" not in s and '"' not in s) and _DOTTED_RE.search(s) \
             and _OP_RE.search(s):
         return "skip", []

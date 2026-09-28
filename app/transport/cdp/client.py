@@ -28,10 +28,10 @@ def _ws_connect_compat(ws_url: str):
     """connect() с учётом разных версий websockets (13..16+):
     новые kwargs пробуем первыми, при TypeError — урезаем."""
     attempts = [
-        {"open_timeout": 10, "max_size": 64 * 1024 * 1024,
+        {"open_timeout": 5, "max_size": 64 * 1024 * 1024,
          "ping_interval": 20, "close_timeout": 5, "compression": None},
-        {"open_timeout": 10, "max_size": 64 * 1024 * 1024},
-        {"open_timeout": 10},
+        {"open_timeout": 5, "max_size": 64 * 1024 * 1024},
+        {"open_timeout": 5},
         {},
     ]
     last: Exception | None = None
@@ -114,7 +114,7 @@ class CDPClient(QObject):
 
     # ── команды ──
     def call(self, method: str, params: dict | None = None,
-             timeout: float = 15.0) -> dict:
+             timeout: float = 15.0, close_on_timeout: bool = True) -> dict:
         ws = self._ws
         if not ws:
             raise CDPError("not connected")
@@ -142,10 +142,11 @@ class CDPClient(QObject):
             with self._pend_lock:
                 self._pending.pop(mid, None)
             self.last_error = f"timeout calling {method}"
-            try:
-                self.close()
-            except Exception:  # noqa: BLE001
-                pass
+            if close_on_timeout:
+                try:
+                    self.close()
+                except Exception:  # noqa: BLE001
+                    pass
             raise CDPError(f"timeout calling {method}")
         if slot["error"]:
             raise slot["error"]
@@ -201,13 +202,13 @@ class CDPClient(QObject):
 
     # ── удобства поверх Runtime ──
     def evaluate(self, expression: str, await_promise: bool = False,
-                 timeout: float = 15.0):
+                 timeout: float = 15.0, close_on_timeout: bool = True):
         """Runtime.evaluate с returnByValue. Возвращает (ok, value)."""
         res = self.call("Runtime.evaluate", {
             "expression": expression,
             "returnByValue": True,
             "awaitPromise": await_promise,
-        }, timeout=timeout)
+        }, timeout=timeout, close_on_timeout=close_on_timeout)
         if "exceptionDetails" in res:
             ex = res["exceptionDetails"]
             text = ex.get("text", "JS exception")

@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 from app.engines.base import EngineModule
-from app.ui.i18n import TR
 
 
 class TyranoModule(EngineModule):
@@ -19,6 +18,7 @@ class TyranoModule(EngineModule):
     # в переменных движка (kag.variables/kag.tmp) только внутренний
     # конфиг (громкость, галерея CG) — вкладка читов не нужна
     features = {"files"}
+    maturity = "frozen"  # фокус — RPG-семья; только критические фиксы
 
     @classmethod
     def detect(cls, game_dir: str) -> int:
@@ -44,9 +44,3 @@ class TyranoModule(EngineModule):
     def restore_original(self, game_dir: str) -> dict:
         from app.core.tyrano import parser
         return parser.restore_original(game_dir)
-
-    def ui_tabs(self, main_window) -> list[tuple]:
-        translate = main_window.translate_tab
-        return [
-            (translate, TR("tab_translate"), "translate"),
-        ]

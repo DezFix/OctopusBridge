@@ -16,7 +16,7 @@ import socket
 import threading
 import time
 
-from app.core.tentacles.base import Tentacle
+from app.live.tentacle import Tentacle
 from app.engines.renpy.agent import agent_rpy_source, agent_source
 from app.engines.renpy.offsets import RenpyOffsetDB, detect_version
 
@@ -355,7 +355,7 @@ class RenPyTentacle(Tentacle):
         # Ветка агента выбирается по версии Ren'Py: 7.x = py2, 8.x = py3.
         version, _ = detect_version(game_dir, exe)
         db = RenpyOffsetDB()
-        abi = db.get_abi_branch(version) if version else "py3"
+        abi = (db.get_abi_branch(version) if version else None) or "py3"
         install_agent_rpy(game_dir, self._server.port, abi)
         if version:
             self.log.emit(f"Ren'Py {version} (ветка {abi}) — "
@@ -399,7 +399,7 @@ class RenPyTentacle(Tentacle):
         # Версия для выбора ветки агента (py2/py3) и офсетов CPython.
         version, _ = detect_version(exe_dir, exe_path)
         db = RenpyOffsetDB()
-        abi = db.get_abi_branch(version) if version else "py3"
+        abi = (db.get_abi_branch(version) if version else None) or "py3"
 
         # 1) RPY-агент из предыдущей сессии уже в game/? (об_agent.rpy мог
         #    остаться, если приложение закрылось без detach). Игра уже

@@ -2,8 +2,9 @@
 """Читы для Ren'Py и Twine: «Переменные» и «Триггеры» (две вкладки).
 
 Живой режим: плагин в игре шлёт список переменных (store+persistent /
-SugarCube State.variables, вложенные — dot-path), правки применяются
-мгновенно: числа/строки — по вводу, триггеры (bool) — по галочке.
+SugarCube State.variables, вложенные — dot-path). Правка значения
+уходит в игру по commit редактора (Enter или уход фокуса), Escape
+отменяет; триггеры (bool) применяются по галочке сразу.
 
 Режим сейва (Twine): переменные читаются из .save-файла SugarCube и
 правятся прямо в нём — когда игра не запущена или live недоступен.
@@ -323,9 +324,32 @@ class _VarsBaseTab(QWidget):
         self._scan_reset()
         self._fill_vars()
 
+    def cleanup(self):
+        """Остановка опроса и отписка от сигналов при сносе вкладки.
+
+        Раньше метода не было вовсе: 1с-таймер жил дальше и слал
+        get_vars в чужую игру после смены проекта.
+        """
+        try:
+            self._timer.stop()
+        except Exception:  # noqa: BLE001, RuntimeError
+            pass
+        for sig, slot in (
+                (self.main.bridge_vars, self._on_vars),
+                (self.main.bridge_cheat_ack, self._on_ack),
+                (self.main.bridge_client, self._on_client)):
+            try:
+                sig.disconnect(slot)
+            except Exception:  # noqa: BLE001, RuntimeError
+                pass
+
     # ── живой приём ──
     def _on_vars(self, variables: str):
-        variables = json.loads(variables)
+        try:
+            variables = json.loads(variables)
+        except (ValueError, TypeError):
+            # Битый пакет от игры — ронять приёмник нельзя.
+            return
         if self._is_save_mode():
             return
         frozen = self._model.frozen

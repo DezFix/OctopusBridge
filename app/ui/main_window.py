@@ -9,16 +9,16 @@ from __future__ import annotations
 import json
 import os
 
-from PySide6.QtCore import QSettings, Signal
+from PySide6.QtCore import QSettings, QThread, QTimer, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QMainWindow
 
 import app as app_paths
 from app.core import cache as app_cache
-from app.core.session import GameSession
-from app.core.tentacles import create_tentacle
+from app.live import create_tentacle
+from app.live.session import GameSession
 from app.core.models import Project
-from app.core.translate.engines import GoogleFreeEngine, get_engine
+from app.core.translate.engines import GoogleFreeEngine
 from app.core.translate.glossary import Glossary
 from app.core.translate.memory import TranslationMemory
 from app.engines.registry import detect_engine
@@ -47,6 +47,32 @@ _TAB_ROLE_ICONS = {
 }
 
 
+class _ReconnectWorker(QThread):
+    done = Signal(bool, object)
+
+    def __init__(self, session, tentacle, parent=None):
+        super().__init__(parent)
+        self._session = session
+        self.tentacle = tentacle
+        self.wait_timeout = 5000
+
+    def cancel(self):
+        self.requestInterruption()
+        if self.tentacle is not None:
+            try:
+                self.tentacle.detach()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def run(self):
+        ok = False
+        try:
+            ok = bool(self._session.reconnect(start_watchdog=False))
+        except Exception:  # noqa: BLE001
+            ok = False
+        self.done.emit(ok, self.tentacle)
+
+
 def _migrate_qsettings(new: QSettings):
     """Одноразовый перенос настроек со старого бренда WrGameBridge."""
     if new.allKeys():
@@ -60,14 +86,20 @@ def _migrate_qsettings(new: QSettings):
 def _cleanup_legacy_settings(s: QSettings):
     """Чистит остатки удалённых движков и переводит старые настройки
     на актуальные провайдеры:
-    - nllb / argos / honyaku (удалённый офлайн-переводчик) -> rotate;
-    - engine_corrector 'nllb' -> 'ai'."""
+    - ai / ollama / openai_compat / corrector / nllb / argos / honyaku /
+      libretranslate (удалённые переводчики) -> rotate;
+    - мусорные ключи удалённых эпох удаляются."""
     for key in s.allKeys():
         if key.startswith("nllb_gpu_") or key == "engine_nllb":
             s.remove(key)
-    for key in ("engine_files", "engine_corrector"):
-        if s.value(key) in ("nllb", "argos", "honyaku"):
-            s.setValue(key, "ai" if key == "engine_corrector" else "rotate")
+    for key in ("engine_files", "engine_corrector", "engine"):
+        if s.value(key) in ("ai", "ollama", "openai_compat", "corrector",
+                            "nllb", "argos", "honyaku", "libretranslate"):
+            s.setValue(key, "rotate")
+    for key in ("engine_corrector", "base_url_corrector", "base_url_files",
+                "api_key_corrector", "api_key_files", "model", "ollama_model",
+                "glossary_use_ai"):
+        s.remove(key)
     # системный трей убран из приложения — настройка больше не читается
     s.remove("close_to_tray")
     # светлая тема удалена (dark-only) — чистим остатки
@@ -120,11 +152,13 @@ class MainWindow(QMainWindow):
                                               "glossary.json"))
         self.project: Project | None = None
         self.session = GameSession(self)
+        self._session_generation = 0
+        self._session_operation = 0
+        self._reconnect_worker: _ReconnectWorker | None = None
         # ретрансляция сигналов щупальца в сигналы главного окна
         self.session.attached.connect(
             lambda: self.bridge_client.emit(True))
-        self.session.detached.connect(
-            lambda _reason="": self.bridge_client.emit(False))
+        self.session.detached.connect(self._on_session_detached)
         self.session.state_received.connect(
             lambda d: self.bridge_state.emit(
                 json.dumps(d, ensure_ascii=False)))
@@ -209,8 +243,14 @@ class MainWindow(QMainWindow):
         self.cheat_tab = None
         self.engine_module = module
         if module:
+            from app.ui.engine_tabs import build_tabs
             from app.ui.icons import icon
-            for widget, title, role in module.ui_tabs(self):
+            try:
+                tabs = build_tabs(module.key, self)
+            except (KeyError, ValueError, ImportError):
+                # неизвестный движок: legacy-фолбэк через модуль
+                tabs = module.ui_tabs(self)
+            for widget, title, role in tabs:
                 ic = (_TAB_ROLE_ICONS.get(type(widget).__name__)
                       or _TAB_ROLE_ICONS.get(role))
                 self.tabs.addTab(widget,
@@ -225,6 +265,29 @@ class MainWindow(QMainWindow):
         return project_file_for(game_dir)
 
     def open_project(self, game_dir: str) -> str:
+        # Смена проекта во время фоновых работ теряет их результат
+        # (воркер мутирует orphan-объекты старого p.entries).
+        try:
+            from app.ui.translate.helpers import (extract_busy,
+                                                  translate_busy)
+            tt = getattr(self, "translate_tab", None)
+            if tt is not None and (translate_busy(tt)
+                                   or extract_busy(tt)):
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, TR("err"), TR("tr_translating"))
+                p0 = getattr(self, "project", None)
+                return getattr(p0, "engine", "unknown") if p0 else "unknown"
+        except Exception:  # noqa: BLE001 — гард не должен мешать открытию
+            pass
+        # Сбрасываем отложенный автосейв вкладки перевода, иначе
+        # ручные правки старого проекта потеряются вместе с объектом.
+        try:
+            tt = getattr(self, "translate_tab", None)
+            flush = getattr(tt, "flush_save", None)
+            if callable(flush):
+                flush()
+        except Exception:  # noqa: BLE001
+            pass
         # Если это .html файл — для проекта берём родительскую папку
         if os.path.isfile(game_dir) and game_dir.lower().endswith(".html"):
             game_dir = os.path.dirname(game_dir)
@@ -312,7 +375,35 @@ class MainWindow(QMainWindow):
             from PySide6.QtCore import QTimer
             QTimer.singleShot(300, self.welcome_tab._action_launch_toggle)
 
+        self._maybe_resume_translation()
         return engine
+
+    def _maybe_resume_translation(self) -> None:
+        """Предложить дотянуть незаконченный перевод (НЕ стартовать).
+
+        Только если прошлый прогон реально не дошёл до конца
+        (Project.tr_pending > 0 — провайдеры сели на лимите или сети не
+        было). Не по факту «есть непереведённые строки»: они есть всегда.
+
+        Автозапуск убран сознательно: человек, открывший игру ради
+        читов, получал «перевожу» на весь экран без спроса, а оверлей
+        висел без прогресса, пока шёл ping. Теперь — только строка
+        в статусе вкладки «Перевод»: продолжение — одна кнопка,
+        игнор — ничего не происходит.
+        Отключается настройкой tr_autoresume.
+        """
+        if not self.settings.value("tr_autoresume", True, type=bool):
+            return
+        p = self.project
+        if not p or not p.entries:
+            return
+        pending = getattr(p, "tr_pending", 0) or 0
+        if pending <= 0:
+            return
+        tab = self.translate_tab
+        if tab.worker and tab.worker.isRunning():
+            return
+        tab.notify_pending_resume(int(pending))
 
     def save_project(self):
         if not self.project:
@@ -362,7 +453,7 @@ class MainWindow(QMainWindow):
         if self.project:
             total = len(self.project.entries)
             for e in self.project.entries:
-                if e.translation.strip():
+                if (e.translation or "").strip():
                     if e.status == "skip":
                         draft += 1
                     else:
@@ -442,32 +533,20 @@ class MainWindow(QMainWindow):
         self.settings.setValue("recent_projects", json.dumps(recent,
                                                               ensure_ascii=False))
 
+    def _files_provider(self) -> str:
+        # Движок один на всех (rotate-пул), выбора нет: старые значения
+        # мигрируют при старте (см. _cleanup_legacy_settings).
+        return "rotate"
+
     # ---------- движок перевода ----------
     def create_engine(self, engine_type: str = "files"):
+        """Всегда единый rotate-пул: Google → Bing → MyMemory (с почтой).
+        Параметр оставлен для совместимости вызовов."""
         s = self.settings
-        if engine_type == "corrector":
-            name = s.value("engine_corrector",
-                           s.value("engine_files", s.value("engine", "rotate")))
-        else:
-            name = s.value("engine_files", s.value("engine", "rotate"))
-        model = s.value("model", s.value("ollama_model", "qwen2.5:7b"))
-        pfx = engine_type
         try:
-            if name == "ai":
-                return get_engine("ai",
-                                  base_url=s.value(
-                                      f"base_url_{pfx}",
-                                      "https://openrouter.ai/api/v1"),
-                                  api_key=s.value(f"api_key_{pfx}", ""),
-                                  model=model)
-            if name == "libretranslate":
-                from app.core.translate.engines import LIBRETRANSLATE_DEFAULT_URL
-                return get_engine("libretranslate",
-                                  base_url=s.value(
-                                      f"base_url_{pfx}",
-                                      LIBRETRANSLATE_DEFAULT_URL),
-                                  api_key=s.value(f"api_key_{pfx}", ""))
-            return get_engine(name)
+            from app.core.translate.engines import RotateEngine
+            return RotateEngine(
+                mymemory_email=s.value("mymemory_email", ""))
         except Exception:  # noqa: BLE001
             return None
 
@@ -494,6 +573,12 @@ class MainWindow(QMainWindow):
         self._extract_worker.done.connect(
             lambda entries: _finish(self._merge_extracted(entries), ""))
         self._extract_worker.failed.connect(lambda e: _finish(0, e))
+        # Страховка от тихого прерывания: ExtractWorker при
+        # requestInterruption выходит без done/failed (например, на
+        # выходе из приложения) — оверлей иначе висит навсегда.
+        # hide_loading идемпотентен: на штатном пути уже спрятан.
+        self._extract_worker.finished.connect(
+            lambda: self.loading.hide_loading())
         self._extract_worker.start()
         return True
 
@@ -502,9 +587,9 @@ class MainWindow(QMainWindow):
         по ключу и по тексту). Возвращает число восстановленных."""
         p = self.project
         old_by_key = {(e.file, e.json_path): (e.translation, e.status)
-                      for e in p.entries if e.translation.strip()}
+                      for e in p.entries if (e.translation or "").strip()}
         old_by_text = {e.original: (e.translation, e.status)
-                       for e in p.entries if e.translation.strip()}
+                       for e in p.entries if (e.translation or "").strip()}
         restored = 0
         for e in new_entries:
             hit = old_by_key.get((e.file, e.json_path)) \
@@ -520,7 +605,62 @@ class MainWindow(QMainWindow):
     def channel(self):
         """Активное щупальце или None — точка доступа чит-вкладок."""
         t = self.session.tentacle
-        return t if (t and t.is_attached()) else None
+        if t is None:
+            return None
+        try:
+            return t if t.is_attached() else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def ensure_channel(self):
+        t = self.channel()
+        if t is not None:
+            return t
+        if not self.session.is_game_running():
+            return None
+        worker = self._reconnect_worker
+        if worker is not None:
+            try:
+                if worker.isRunning():
+                    return None
+            except RuntimeError:
+                self._reconnect_worker = None
+        tentacle = self.session.tentacle
+        if tentacle is None:
+            return None
+        self._reconnect_worker = _ReconnectWorker(
+            self.session, tentacle, self)
+        self._reconnect_worker.done.connect(self._on_reconnect_done)
+        self._reconnect_worker.finished.connect(
+            self._reconnect_worker.deleteLater)
+        self._reconnect_worker.start()
+        return None
+
+    def _on_session_detached(self, _reason: str = ""):
+        self.bridge_client.emit(False)
+        if self.session.tentacle is None:
+            return
+        if not self.session.is_game_running() or self.is_reconnecting():
+            return
+        QTimer.singleShot(250, self.ensure_channel)
+
+    def is_reconnecting(self) -> bool:
+        worker = self._reconnect_worker
+        if worker is None:
+            return False
+        try:
+            return bool(worker.isRunning())
+        except RuntimeError:
+            return False
+
+    def _on_reconnect_done(self, ok: bool, tentacle):
+        if tentacle is not self.session.tentacle:
+            return
+        if ok:
+            self.session.start_watchdog()
+            self.refresh_status_bar()
+        elif not self.session.is_game_running():
+            self.bridge_client.emit(False)
 
     def channel_diag(self) -> str:
         """Одна строка диагностики «почему нет канала» для диалогов.
@@ -571,30 +711,82 @@ class MainWindow(QMainWindow):
         return translator.translate_texts(list(texts),
                                           lang_from, lang_to)
 
-    def start_session(self, target: str,
-                      attach_pid: int | None = None,
-                      port_hint: int = 0) -> bool:
-        """Создаёт щупальце для текущего движка и подключает его к игре."""
+    def _new_tentacle(self, port_hint: int = 0):
         key = self.engine_module.key if self.engine_module else ""
         tentacle = create_tentacle(key)
         if tentacle is None:
             self.session.error.emit(TR("dash_session_unsupported"))
-            return False
+            return None
         tentacle.setParent(self)
         if port_hint and hasattr(tentacle, "set_port_hint"):
             tentacle.set_port_hint(port_hint)
         if key == "twine":
             tentacle.set_tr_callback(self._live_translate)
+        return tentacle
+
+    def prepare_session(self, target: str, port_hint: int = 0,
+                        generation: int | None = None):
+        if generation is not None and generation != self._session_generation:
+            return None
+        self._session_operation += 1
+        operation = self._session_operation
+        tentacle = self._new_tentacle(port_hint)
+        if tentacle is None:
+            return None
+        self.session.begin_pending(tentacle)
+        return tentacle, operation
+
+    def finish_session(self, tentacle, ok: bool, operation: int,
+                       generation: int, attach_pid: int | None = None):
+        current = (generation == self._session_generation
+                   and operation == self._session_operation)
+        if not current:
+            self.session.discard(tentacle)
+            return False
         if attach_pid is not None:
-            ok = self.session.attach(tentacle, attach_pid)
+            ok = self.session.finish_attach(tentacle, attach_pid, ok)
         else:
-            ok = self.session.launch(tentacle, target)
+            ok = self.session.finish_launch(tentacle, ok)
         if not ok:
             self.status_bar.set_connected(False)
-            return ok
+        return ok
+
+    def start_session(self, target: str,
+                      attach_pid: int | None = None,
+                      port_hint: int = 0,
+                      generation: int | None = None) -> bool:
+        """Создаёт щупальце для текущего движка и подключает его к игре."""
+        current_generation = self._session_generation
+        if generation is not None and generation != current_generation:
+            return False
+        self._session_operation += 1
+        operation = self._session_operation
+
+        def current() -> bool:
+            return (generation is None
+                    or generation == self._session_generation) and \
+                operation == self._session_operation
+
+        tentacle = self._new_tentacle(port_hint)
+        if tentacle is None:
+            return False
+        if attach_pid is not None:
+            ok = self.session.attach(tentacle, attach_pid, guard=current)
+        else:
+            ok = self.session.launch(tentacle, target, guard=current)
+        if not ok and current():
+            self.status_bar.set_connected(False)
         return ok
 
     def stop_session(self, kill_game: bool = True):
+        self._session_generation += 1
+        self._session_operation += 1
+        worker = self._reconnect_worker
+        if worker is not None:
+            try:
+                worker.cancel()
+            except RuntimeError:
+                pass
         self.session.stop(kill_game=kill_game)
         if hasattr(self, "status_bar"):
             self.status_bar.set_connected(False)
@@ -604,9 +796,8 @@ class MainWindow(QMainWindow):
         """Обновляет провайдера и соединение в нижнем статус-баре."""
         if not hasattr(self, "status_bar"):
             return
-        name = self.settings.value(
-            "engine_files", self.settings.value("engine", "rotate"))
-        self.status_bar.set_provider(provider_short_name(str(name)))
+        name = self._files_provider()
+        self.status_bar.set_provider(provider_short_name(name))
         self.status_bar.set_connected(self.session.is_active(),
                                       backend=self._backend_name())
 
@@ -624,7 +815,7 @@ class MainWindow(QMainWindow):
     def _stop_workers(self):
         """Мягко останавливает фоновые QThread перед выходом.
 
-        Только cooperative отмена: translator/corrector.cancel() +
+        Только cooperative отмена: translator.cancel() +
         worker.cancel()/requestInterruption() + wait(800) max.
         Никакого terminate(): он убивает поток посреди C-кода
         (requests/SSL/sqlite) и роняет весь процесс с AV до сохранения.
@@ -634,10 +825,10 @@ class MainWindow(QMainWindow):
         for worker, cancel in (
                 (tt.worker, getattr(tt.worker.translator, "cancel", None)
                  if tt.worker else None),
-                (tt.worker_correct,
-                 getattr(tt.worker_correct.corrector, "cancel", None)
-                 if tt.worker_correct else None),
                 (getattr(self, "_extract_worker", None), None),
+                (getattr(getattr(self, "welcome_tab", None),
+                         "_launch_worker", None), None),
+                (getattr(self, "_reconnect_worker", None), None),
                 (getattr(self.cheat_tab, "_names_worker", None)
                  if self.cheat_tab else None, None)):
             if not worker:
@@ -659,7 +850,7 @@ class MainWindow(QMainWindow):
                     worker.finished.connect(worker.deleteLater)
                 except Exception:  # noqa: BLE001, RuntimeError
                     pass
-                worker.wait(800)
+                worker.wait(getattr(worker, "wait_timeout", 800))
             except RuntimeError:   # C++-объект уже удалён (deleteLater)
                 pass
         # вкладки движка: останавливаем их фоновые потоки
@@ -677,8 +868,8 @@ class MainWindow(QMainWindow):
         # сохраняем проект ДО остановки воркеров: даже если при выходе
         # что-то упадёт, переведённое останется на диске
         self.save_project()
-        self._stop_workers()
         self.stop_session(kill_game=True)
+        self._stop_workers()
         self.save_project()
         self.tm.close()
         super().closeEvent(event)

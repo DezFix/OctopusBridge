@@ -152,6 +152,18 @@ _STRINGS = {
         "ru": "Применено к запущенной игре без перезапуска.",
         "en": "Applied to the running game without restart.",
     },
+    "dash_font_live_failed": {
+        "ru": "Сохранено, но текущая игра не обновлена — повторите после подключения.",
+        "en": "Saved, but the running game was not updated; retry after connecting.",
+    },
+    "dash_font_size_live_ok": {
+        "ru": "Размер шрифта применён к запущенной игре.",
+        "en": "Font size applied to the running game.",
+    },
+    "dash_font_size_live_failed": {
+        "ru": "Размер сохранён, но текущая игра не обновлена.",
+        "en": "Font size saved, but the running game was not updated.",
+    },
     "dash_font_need_restart": {
         "ru": "Игра не запущена — вступит в силу после перезапуска.",
         "en": "Game not running — takes effect after restart.",
@@ -181,6 +193,18 @@ _STRINGS = {
         "en": "Extracting text from the game…",
     },
     "tr_translating": {"ru": "Перевожу…", "en": "Translating…"},
+    "tr_status_ping": {
+        "ru": "Проверка связи с переводчиком…",
+        "en": "Checking translator connection…",
+    },
+    "tr_status_memory": {
+        "ru": "Поиск готовых переводов в памяти…",
+        "en": "Looking up translation memory…",
+    },
+    "tr_status_wait": {
+        "ru": "Провайдеры отдыхают от лимита, жду {sec} с…",
+        "en": "Providers cooling down, waiting {sec}s…",
+    },
     "tr_correcting": {"ru": "ИИ-коррекция…", "en": "Correcting…"},
     "tr_mode_new": {"ru": "Только новые и сбойные", "en": "New & failed only"},
     "tr_mode_all": {"ru": "Перевести всё заново", "en": "Re-translate all"},
@@ -412,6 +436,33 @@ _STRINGS = {
         "en": "Enter — save · Esc — cancel",
     },
     "tr_saved": {"ru": "Сохранено", "en": "Saved"},
+    "tr_resuming": {
+        "ru": "Продолжаем незаконченный перевод...",
+        "en": "Resuming unfinished translation...",
+    },
+    "tr_waiting_providers": {
+        "ru": "Провайдеры отдыхают от лимита, ждём. Осталось не переведено: {n}",
+        "en": "Providers are resting on their limits, waiting. "
+              "Still untranslated: {n}",
+    },
+    "tr_left_over": {
+        "ru": "Не переведено {n} строк: ни один бесплатный провайдер сейчас "
+              "не смог. Они сохранены как есть и повторятся при следующем "
+              "запуске — можно закрыть приложение и вернуться позже.",
+        "en": "{n} lines were not translated: no free provider could handle "
+              "them right now. They are saved as is and will be retried on "
+              "the next run — you can close the app and come back later.",
+    },
+    "tr_autoresume": {
+        "ru": "Предлагать дотянуть перевод при открытии проекта",
+        "en": "Offer to resume unfinished translation when opening a project",
+    },
+    "tr_resume_offer": {
+        "ru": "Прошлый перевод не закончен (осталось строк: {n}). "
+              "Нажмите «Перевести», чтобы продолжить, — или игнорируйте.",
+        "en": "Previous translation did not finish ({n} lines left). "
+              "Press Translate to continue — or ignore this.",
+    },
     "tr_filter_all_lines": {"ru": "Все строки", "en": "All lines"},
     "tr_filter_drafts": {"ru": "Черновики", "en": "Drafts"},
     "tr_filter_finished": {"ru": "Готовые", "en": "Finished"},
@@ -496,10 +547,10 @@ _STRINGS = {
     },
     "cheat_apply_vars": {"ru": "Применить значения", "en": "Apply values"},
     "cheat_var_hint": {
-        "ru": "Живое значение: меняете число — сразу меняется в игре. "
-              "Имя редактируется и сохраняется в проекте.",
-        "en": "Live value: edit a number — it changes in game at once. "
-              "Names are editable and saved to project.",
+        "ru": "Введите новое значение и нажмите Enter — применить. "
+              "Escape — отменить. Имя сохраняется в проекте.",
+        "en": "Enter a new value and press Enter to apply. "
+              "Escape cancels. Names are saved to the project.",
     },
     "cheat_sw_hint": {
         "ru": "Галочка применяется сразу. Имя редактируется и сохраняется.",
@@ -526,6 +577,10 @@ _STRINGS = {
     "cheat_connected": {
         "ru": "Игра подключена — читы активны",
         "en": "Game connected — cheats active",
+    },
+    "cheat_reconnecting": {
+        "ru": "Восстанавливаю подключение к игре…",
+        "en": "Reconnecting to the game…",
     },
     "cheat_disconnected": {"ru": "Жду подключения игры…", "en": "Waiting for game…"},
     "cheat_done": {"ru": "Чит {cmd}: выполнен", "en": "Cheat {cmd}: done"},
@@ -618,12 +673,36 @@ _STRINGS = {
               "same LLM engine as the AI corrector.",
     },
     "settings_provider_lbl": {"ru": "Провайдер:", "en": "Provider:"},
+    "settings_provider_fixed": {
+        "ru": "Один движок на всех — Автопилот: Google пакетами, "
+              "при лимите — Bing, дальше MyMemory (с почтой). "
+              "Крутится по кругу, пока всё не переведёт. Выбирать нечего.",
+        "en": "One engine for everything — Autopilot: Google in batches, "
+              "then Bing on limits, then MyMemory (with e-mail). "
+              "Cycles until everything is translated. Nothing to choose.",
+    },
+    "settings_mymemory_email": {
+        "ru": "Почта для MyMemory:",
+        "en": "MyMemory e-mail:",
+    },
+    "settings_mymemory_email_ph": {
+        "ru": "необязательно — с почтой 50K символов/день",
+        "en": "optional — 50K chars/day with e-mail",
+    },
     "settings_preset": {"ru": "Пресет:", "en": "Preset:"},
     "settings_base_url": {"ru": "URL сервера:", "en": "Base URL:"},
     "settings_api_key": {"ru": "API-ключ:", "en": "API Key:"},
     "settings_model": {"ru": "Модель:", "en": "Model:"},
     "settings_ollama_url": {"ru": "URL Ollama:", "en": "Ollama URL:"},
     "settings_src_lang": {"ru": "Язык оригинала:", "en": "Source language:"},
+    "settings_src_lang_auto": {
+        "ru": "Язык оригинала:",
+        "en": "Source language:",
+    },
+    "settings_src_lang_auto_note": {
+        "ru": "определяется автоматически",
+        "en": "detected automatically",
+    },
     "settings_tgt_lang": {"ru": "Язык перевода:", "en": "Target language:"},
     "settings_check": {"ru": "Проверить провайдера", "en": "Check provider"},
     "settings_status_ping": {
@@ -1126,6 +1205,38 @@ _STRINGS = {
     "map_sw1": {"ru": "Переключатель 1", "en": "Switch 1"},
     "map_sw2": {"ru": "Переключатель 2", "en": "Switch 2"},
     "map_vis_now": {"ru": "Условие", "en": "Condition"},
+    "map_cond_switch": {
+        "ru": "Переключатель {id}=ВКЛ",
+        "en": "Switch {id}=ON",
+    },
+    "map_cond_variable": {
+        "ru": "Переменная {id} {op} {value}",
+        "en": "Variable {id} {op} {value}",
+    },
+    "map_cond_self": {
+        "ru": "Переключатель события {id}=ВКЛ",
+        "en": "Event switch {id}=ON",
+    },
+    "map_cond_item": {
+        "ru": "В инвентаре есть предмет #{id}",
+        "en": "Inventory contains item #{id}",
+    },
+    "map_cond_actor": {
+        "ru": "В группе есть герой #{id}",
+        "en": "Party contains actor #{id}",
+    },
+    "map_cond_timer": {
+        "ru": "Таймер ≥ {value} сек.",
+        "en": "Timer ≥ {value} sec",
+    },
+    "map_cond_turn": {
+        "ru": "Условие направления #{id}",
+        "en": "Direction condition #{id}",
+    },
+    "map_cond_area": {
+        "ru": "Область #{id}",
+        "en": "Area #{id}",
+    },
     "map_zoom": {"ru": "Масштаб:", "en": "Zoom:"},
     "map_none": {
         "ru": "Выберите карту слева",
@@ -1159,12 +1270,16 @@ _STRINGS = {
         "en": "Player current map: #{map_id} ({x}, {y})",
     },
     "map_ctx_teleport": {
-        "ru": "Телепорт сюда",
-        "en": "Teleport here",
+        "ru": "Переместить игрока сюда",
+        "en": "Move player here",
     },
     "map_ctx_teleport_here": {
-        "ru": "Телепорт сюда",
-        "en": "Teleport here",
+        "ru": "Переместить игрока сюда",
+        "en": "Move player here",
+    },
+    "map_cell_selected": {
+        "ru": "Выбрана клетка ({x}, {y})",
+        "en": "Selected cell ({x}, {y})",
     },
     "map_tp_done": {
         "ru": "Телепорт: карта #{map_id} ({x}, {y}) — выполнено",
@@ -1184,54 +1299,197 @@ _STRINGS = {
         "en": "Game not connected — re-enter the map in game",
     },
     "ev_mode_simple": {
-        "ru": "Простое",
-        "en": "Simple",
+        "ru": "Быстрый просмотр",
+        "en": "Quick view",
     },
+    "ev_close": {"ru": "Закрыть", "en": "Close"},
     "ev_mode_expanded": {
-        "ru": "Расширенное",
-        "en": "Advanced",
+        "ru": "Полный редактор",
+        "en": "Full editor",
     },
     "ev_make_visible": {
-        "ru": "Сделать видимым в игре",
-        "en": "Make visible in game",
+        "ru": "Подготовить условия",
+        "en": "Prepare conditions",
+    },
+    "ev_live_run": {
+        "ru": "Запустить сценарий сейчас",
+        "en": "Run scenario now",
+    },
+    "ev_live_title": {
+        "ru": "Состояние в запущенной игре",
+        "en": "State in the running game",
+    },
+    "ev_live_current_map": {
+        "ru": "Карта игрока: #{id}",
+        "en": "Player map: #{id}",
+    },
+    "ev_live_map_unknown": {
+        "ru": "Состояние игры ещё не получено",
+        "en": "Game state has not been received yet",
+    },
+    "ev_live_switch": {
+        "ru": "Переключатель #{id}{name}",
+        "en": "Switch #{id}{name}",
+    },
+    "ev_live_variable": {
+        "ru": "Переменная #{id} {op} {value}",
+        "en": "Variable #{id} {op} {value}",
+    },
+    "ev_live_self": {
+        "ru": "Переключатель события {id}",
+        "en": "Event switch {id}",
+    },
+    "ev_live_item": {
+        "ru": "Нужен предмет #{id}",
+        "en": "Required item #{id}",
+    },
+    "ev_live_item_named": {
+        "ru": "Нужен предмет: {name} (#{id})",
+        "en": "Required item: {name} (#{id})",
+    },
+    "ev_live_give_item": {
+        "ru": "Выдать 1",
+        "en": "Give 1",
+    },
+    "ev_live_actor": {
+        "ru": "Нужен герой #{id}",
+        "en": "Required actor #{id}",
+    },
+    "ev_live_actor_named": {
+        "ru": "Нужен герой: {name} (#{id})",
+        "en": "Required actor: {name} (#{id})",
+    },
+    "ev_live_join_actor": {
+        "ru": "Добавить в группу",
+        "en": "Add to party",
+    },
+    "ev_live_set_value": {
+        "ru": "Установить",
+        "en": "Set",
+    },
+    "ev_live_now": {
+        "ru": "Сейчас: {value}",
+        "en": "Now: {value}",
+    },
+    "ev_live_on": {"ru": "ВКЛ", "en": "ON"},
+    "ev_live_off": {"ru": "ВЫКЛ", "en": "OFF"},
+    "ev_live_yes": {"ru": "ДА", "en": "YES"},
+    "ev_live_no": {"ru": "НЕТ", "en": "NO"},
+    "ev_live_no_supported": {
+        "ru": "Для этой страницы нет условий, которые можно подготовить.",
+        "en": "This page has no conditions that can be prepared.",
+    },
+    "ev_live_bypass": {
+        "ru": "Условие можно обойти кнопкой «Запустить сценарий сейчас».",
+        "en": "You can bypass the condition with “Run scenario now”.",
     },
     "ev_visible_sent": {
-        "ru": "Команды отправлены — смотрите игру",
-        "en": "Commands sent — check the game",
+        "ru": "Условия отправлены в игру",
+        "en": "Conditions sent to the game",
+    },
+    "ev_live_prepared": {
+        "ru": "Условия выполнены",
+        "en": "Conditions prepared",
+    },
+    "ev_live_run_started": {
+        "ru": "Сценарий события запущен",
+        "en": "Event scenario started",
+    },
+    "ev_live_run_attached": {
+        "ru": "Сценарий добавлен после текущего события",
+        "en": "Scenario queued after the current event",
+    },
+    "ev_live_battle": {
+        "ru": "Сначала закончите текущий бой",
+        "en": "Finish the current battle first",
+    },
+    "ev_live_not_map": {
+        "ru": "Вернитесь на экран карты, затем запустите сценарий",
+        "en": "Return to the map screen before running the scenario",
+    },
+    "ev_live_page_missing": {
+        "ru": "Выбранная страница события не найдена в игре",
+        "en": "The selected event page was not found in the game",
+    },
+    "ev_live_event_missing": {
+        "ru": "Событие не найдено в загруженной карте",
+        "en": "The event was not found in the loaded map",
+    },
+    "ev_live_run_inactive": {
+        "ru": "Игрок находится на другой карте. Сначала переместите его сюда.",
+        "en": "The player is on another map. Move the player here first.",
+    },
+    "ev_live_run_busy": {
+        "ru": "Это событие уже выполняется",
+        "en": "This event is already running",
+    },
+    "ev_live_run_empty": {
+        "ru": "У выбранной страницы нет команд",
+        "en": "The selected page has no commands",
+    },
+    "ev_live_interpreter_unsupported": {
+        "ru": "Эта версия RPG Maker не поддерживает такой запуск события",
+        "en": "This RPG Maker version cannot run the event this way",
+    },
+    "ev_live_interpreter_busy": {
+        "ru": "Слишком глубокая цепочка событий; повторите после завершения",
+        "en": "The event chain is too deep; try again after it finishes",
+    },
+    "ev_live_interpreter_failed": {
+        "ru": "Не удалось настроить интерпретатор события",
+        "en": "Failed to prepare the event interpreter",
+    },
+    "ev_live_run_failed": {
+        "ru": "Не удалось запустить сценарий: {error}",
+        "en": "Failed to run the scenario: {error}",
+    },
+    "ev_run_warn": {
+        "ru": "Сценарий может сразу начать другую сцену, перенести игрока "
+              "или открыть меню. Запустить?",
+        "en": "The scenario may immediately start another scene, transfer "
+              "the player, or open a menu. Run it?",
     },
     "ev_undo": {
-        "ru": "Вернуть как было",
-        "en": "Undo",
+        "ru": "Вернуть исходные значения",
+        "en": "Restore original values",
     },
     "ev_undone": {
-        "ru": "Вернули: свитчи погашены",
-        "en": "Reverted: switches off",
+        "ru": "Исходные значения восстановлены",
+        "en": "Original values restored",
+    },
+    "ev_nothing_to_restore": {
+        "ru": "В этом диалоге ещё нечего восстанавливать",
+        "en": "There are no original values to restore yet",
     },
     "ev_autorun_warn": {
-        "ru": "Страница с автозапуском: включение условий сразу стартует "
-              "событие (затемнение, перенос, зависание). Продолжить?",
-        "en": "Auto-start page: enabling conditions runs the event at once "
-              "(fade, transfer, freeze). Continue?",
+        "ru": "Условие может сразу запустить сценарий. Продолжить?",
+        "en": "This condition may start the scenario immediately. Continue?",
     },
     "ev_live_no_channel": {
-        "ru": "Запустите игру через приложение — тогда здесь появятся кнопки",
-        "en": "Launch the game via the app to enable these buttons",
+        "ru": "Запустите игру через приложение, чтобы применять изменения сразу.",
+        "en": "Launch the game via the app to apply changes immediately.",
     },
     "ev_live_no_cond": {
-        "ru": "У страницы нет условий — видна всегда",
-        "en": "Page has no conditions — always visible",
+        "ru": "Событие видно всегда",
+        "en": "The event is always visible",
     },
     "ev_live_ok": {
-        "ru": "Выполнено: {cmd}",
-        "en": "Done: {cmd}",
+        "ru": "Изменение применено",
+        "en": "Change applied",
     },
     "ev_live_err": {
         "ru": "Ошибка: {error}",
         "en": "Error: {error}",
     },
+    "ev_live_ack_timeout": {
+        "ru": "Игра не подтвердила команду за 15 с — блокировка снята, "
+              "повторите или перезапустите игру",
+        "en": "The game did not acknowledge the command within 15 s — "
+              "lock released, retry or relaunch the game",
+    },
     "map_ctx_edit": {
-        "ru": "Редактировать событие",
-        "en": "Edit event",
+        "ru": "Открыть событие",
+        "en": "Open event",
     },
     "map_ctx_toggle_sw": {
         "ru": "Включить переключатель #{id}",
@@ -1368,6 +1626,15 @@ _STRINGS = {
     "res_filter_img": {"ru": "Картинки", "en": "Images"},
     "res_filter_audio": {"ru": "Аудио", "en": "Audio"},
     "res_filter_video": {"ru": "Видео", "en": "Videos"},
+    "res_filter_animated": {"ru": "GIF", "en": "GIF"},
+    "res_refresh": {"ru": "Обновить список", "en": "Refresh list"},
+    "res_loading": {"ru": "Загрузка…", "en": "Loading…"},
+    "res_found": {"ru": "Показано: {count} из {total}", "en": "Showing: {count} of {total}"},
+    "res_fit": {"ru": "Вписать", "en": "Fit"},
+    "res_scan_fail": {"ru": "Не удалось просканировать ресурсы", "en": "Failed to scan resources"},
+    "res_read_fail": {"ru": "не удалось прочитать файл", "en": "failed to read file"},
+    "res_ctx_save_resource": {"ru": "Сохранить ресурс…", "en": "Save resource…"},
+    "res_saved": {"ru": "Сохранено: {path}", "en": "Saved: {path}"},
     "res_back": {"ru": "Назад к папкам", "en": "Back to folders"},
     "res_font": {
         "ru": "Установить шрифт с кириллицей…",
@@ -1446,12 +1713,12 @@ _STRINGS = {
     "rpy_var_name": {"ru": "Переменная", "en": "Variable"},
     "rpy_var_value": {"ru": "Значение", "en": "Value"},
     "rpy_vars_hint": {
-        "ru": "Изменения применяются сразу: числа и строки — по вводу, "
-              "триггеры (да/нет) — по галочке. Список обновляется из "
-              "запущенной игры.",
-        "en": "Changes apply instantly: numbers/strings on typing, "
-              "triggers (yes/no) on toggle. The list refreshes from "
-              "the running game.",
+        "ru": "Правка применяется по Enter (или когда уводите курсор), "
+              "Escape — отмена. Галочки и заморозка ❄ применяются сразу. "
+              "Список обновляется из запущенной игры.",
+        "en": "Press Enter (or move focus away) to apply an edit, Escape "
+              "cancels. Checkboxes and ❄ freeze apply instantly. "
+              "The list refreshes from the running game.",
     },
     "rpy_freeze": {"ru": "Заморозка", "en": "Freeze"},
     "rpy_frozen": {

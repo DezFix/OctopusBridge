@@ -26,7 +26,8 @@ _RES_DIRS = ("audio", "img", "movies",
 # MV меняет расширение (.rpgmvp/.rpgmvo)
 _ENC_SUFFIXES = (".png_", ".ogg_", ".m4a_",
                  ".rpgmvp", ".rpgmvo", ".rpgmvm")
-_MV_ENC_EXT = {".png": ".rpgmvp", ".ogg": ".rpgmvo", ".m4a": ".rpgmvm"}
+_MV_ENC_EXT = {".png": ".rpgmvp", ".ogg": ".rpgmvo", ".m4a": ".rpgmvo",
+              ".webm": ".rpgmvm", ".mp4": ".rpgmvm"}
 
 _cache: dict[str, set[str]] = {}
 

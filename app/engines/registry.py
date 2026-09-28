@@ -15,12 +15,22 @@ MODULES: list[type[EngineModule]] = [
     AjinModule, RpgMakerModule, RenPyModule, TwineModule, TyranoModule,
     WolfModule, UnityModule]
 
+#: Отложенные движки: код и тесты на месте, но детект и интерфейс
+#: их не видят — фокус на RPG Maker и Ren'Py. Вернуть движок =
+#: убрать его ключ отсюда (ничего больше трогать не нужно).
+DISABLED_ENGINES = frozenset({"ajin", "twine", "tyrano", "wolf", "unity"})
+
+
+def enabled_modules() -> list[type[EngineModule]]:
+    """Модули, видимые детекту и интерфейсу."""
+    return [cls for cls in MODULES if cls.key not in DISABLED_ENGINES]
+
 
 def detect_engine(game_dir: str) -> EngineModule | None:
     """Определяет движок игры и возвращает его модуль (или None)."""
     best_cls = None
     best_weight = 0
-    for cls in MODULES:
+    for cls in enabled_modules():
         weight = cls.detect(game_dir)
         if weight > best_weight:
             best_cls, best_weight = cls, weight

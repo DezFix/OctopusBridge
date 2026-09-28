@@ -21,7 +21,8 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
+
+from app.core.io import atomic_write_bytes, atomic_write_text
 
 MZ_BACKUP_SUFFIX = ".ob_backup"
 MANIFEST_NAME = "ob_font.json"
@@ -83,8 +84,10 @@ def _load_manifest(fonts_dir: str) -> dict:
 
 
 def _save_manifest(fonts_dir: str, data: dict):
-    with open(_manifest_path(fonts_dir), "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=1)
+    atomic_write_text(
+        _manifest_path(fonts_dir),
+        json.dumps(data, ensure_ascii=False, indent=1),
+        encoding="utf-8")
 
 
 def _current_game_font(game_dir: str, engine: str) -> str | None:
@@ -125,7 +128,8 @@ def _is_same_font(a: str, b: str) -> bool:
 
 def _copy_backup(path: str):
     if os.path.isfile(path) and not os.path.isfile(path + MZ_BACKUP_SUFFIX):
-        shutil.copy2(path, path + MZ_BACKUP_SUFFIX)
+        with open(path, "rb") as f:
+            atomic_write_bytes(path + MZ_BACKUP_SUFFIX, f.read())
 
 
 def _patch(game_dir: str, engine: str, font_path: str | None) -> dict:
@@ -146,7 +150,8 @@ def _patch(game_dir: str, engine: str, font_path: str | None) -> dict:
     font_name = os.path.basename(src)
     dst_font = os.path.join(fonts_dir, font_name)
     if not os.path.isfile(dst_font):
-        shutil.copy2(src, dst_font)
+        with open(src, "rb") as f:
+            atomic_write_bytes(dst_font, f.read())
 
     manifest = _load_manifest(fonts_dir)
     manifest.setdefault("engine", engine)
@@ -158,11 +163,13 @@ def _patch(game_dir: str, engine: str, font_path: str | None) -> dict:
     if engine == "mv":
         css_path = os.path.join(fonts_dir, "gamefont.css")
         _copy_backup(css_path)
-        with open(css_path, "w", encoding="utf-8") as f:
-            f.write("@font-face {\n"
-                    "    font-family: GameFont;\n"
-                    f"    src: url(\"{font_name}\") format(\"truetype\");\n"
-                    "}\n")
+        atomic_write_text(
+            css_path,
+            "@font-face {\n"
+            "    font-family: GameFont;\n"
+            f"    src: url(\"{font_name}\") format(\"truetype\");\n"
+            "}\n",
+            encoding="utf-8")
         rel = os.path.relpath(css_path, game_dir).replace(os.sep, "/")
         if rel + MZ_BACKUP_SUFFIX not in backups:
             backups.append(rel + MZ_BACKUP_SUFFIX)
@@ -178,8 +185,10 @@ def _patch(game_dir: str, engine: str, font_path: str | None) -> dict:
         advanced = data.setdefault("advanced", {})
         advanced["mainFontFilename"] = font_name
         advanced["numberFontFilename"] = font_name
-        with open(system_json, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        atomic_write_text(
+            system_json,
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8")
         rel = "data/System.json"
         if rel + MZ_BACKUP_SUFFIX not in backups:
             backups.append(rel + MZ_BACKUP_SUFFIX)
@@ -229,7 +238,8 @@ def restore_font(game_dir: str, engine: str) -> bool:
             else bak
         try:
             if os.path.isfile(bak):
-                shutil.copy2(bak, dst)
+                with open(bak, "rb") as f:
+                    atomic_write_bytes(dst, f.read())
                 os.remove(bak)
                 changed = True
         except OSError:

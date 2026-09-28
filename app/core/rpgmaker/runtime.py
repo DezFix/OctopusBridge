@@ -27,6 +27,7 @@ import json
 import os
 import re
 
+from app.core.io import atomic_write_bytes, atomic_write_text
 from app.core.rpgmaker import variant as rpgm_variant
 
 RUNTIME_PLUGIN_NAME = "ob_runtime"
@@ -134,7 +135,7 @@ def build_runtime_source(tr_dict: dict, target_lang: str = "ru",
             .replace("{{COUNT}}", str(len(tr_dict))))
 
 
-def _backup_once(game_dir: str, rel: str, original_text: bytes | None = None) -> None:
+def _backup_once(game_dir: str, rel: str, original_text: bytes | None = None) -> bool:
     """Бэкап оригинала списка плагинов рядом с файлом (один раз).
 
     Храним как ``<plugins.js>.ob_backup`` — НЕ в ``backup/<rel>``:
@@ -147,14 +148,20 @@ def _backup_once(game_dir: str, rel: str, original_text: bytes | None = None) ->
         orig_path = os.path.join(game_dir, rel.replace("/", os.sep))
         bak = orig_path + ".ob_backup"
         if os.path.exists(bak):
-            return
+            return True
         if original_text is None:
-            with open(orig_path, "rb") as f:
-                original_text = f.read()
-        with open(bak, "wb") as f:
-            f.write(original_text)
+            try:
+                with open(orig_path, "rb") as f:
+                    original_text = f.read()
+            except OSError:
+                return False
+        try:
+            atomic_write_bytes(bak, original_text)
+            return True
+        except OSError:
+            return False
     except OSError:
-        pass
+        return False
 
 
 def _validate_plugins_list_text(text: str, is_json: bool) -> bool:
@@ -181,11 +188,23 @@ def _ensure_plugins_entry(game_dir: str, plugin_name: str = RUNTIME_PLUGIN_NAME)
             text = f.read()
     except OSError:
         return False
-    if f'"{plugin_name}"' in text or f"'{plugin_name}'" in text:
+    is_json = text.lstrip().startswith("[")
+    if is_json:
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return False
+        if (isinstance(data, list)
+                and any(isinstance(p, dict)
+                        and p.get("name") == plugin_name
+                        for p in data)):
+            return True
+    elif re.search(
+            r"[\"']name[\"']\s*:\s*[\"']"
+            + re.escape(plugin_name) + r"[\"']", text):
         return True
     entry = (f'{{"name":"{plugin_name}","status":true,'
              f'"description":"OctopusBridge runtime translation","parameters":{{}}}}')
-    is_json = text.lstrip().startswith("[")
     if is_json:
         try:
             data = json.loads(text)
@@ -215,9 +234,9 @@ def _ensure_plugins_entry(game_dir: str, plugin_name: str = RUNTIME_PLUGIN_NAME)
     except OSError:
         _orig = None
     try:
-        with open(path, "w", encoding="utf-8", newline="\n") as f:
-            f.write(new_text)
-        _backup_once(game_dir, rel, _orig)
+        if not _backup_once(game_dir, rel, _orig):
+            return False
+        atomic_write_text(path, new_text, encoding="utf-8")
         return True
     except OSError:
         return False
@@ -239,12 +258,15 @@ def _remove_plugins_entry(game_dir: str, plugin_name: str = RUNTIME_PLUGIN_NAME)
     if text.lstrip().startswith("["):
         try:
             data = json.loads(text)
-            new_data = [p for p in data if p.get("name") != plugin_name]
+            if not isinstance(data, list):
+                return False
+            new_data = [p for p in data
+                        if not isinstance(p, dict)
+                        or p.get("name") != plugin_name]
             if len(new_data) == len(data):
                 return False
             new_text = json.dumps(new_data, ensure_ascii=False, indent=1)
-            with open(path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(new_text)
+            atomic_write_text(path, new_text, encoding="utf-8")
             return True
         except ValueError:
             pass
@@ -255,8 +277,7 @@ def _remove_plugins_entry(game_dir: str, plugin_name: str = RUNTIME_PLUGIN_NAME)
     if not _validate_plugins_list_text(new_text, False):
         return False
     try:
-        with open(path, "w", encoding="utf-8", newline="\n") as f:
-            f.write(new_text)
+        atomic_write_text(path, new_text, encoding="utf-8")
         return True
     except OSError:
         return False
@@ -297,8 +318,9 @@ def install_runtime(game_dir: str, entries, target_lang: str = "ru") -> dict:
         "count": len(tr_dict),
         "dict": tr_dict,
     }
-    with open(overlay_abs, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    atomic_write_text(
+        overlay_abs, json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8")
 
     # 2. рантайм-плагин (для обычных игр, не asar)
     # asar/Electron: архив не патчим — live через CDP/мост
@@ -318,15 +340,22 @@ def install_runtime(game_dir: str, entries, target_lang: str = "ru") -> dict:
     # (плагин делает tries[] с www/ префиксом)
     rel_for_plugin = f"{RUNTIME_DIRNAME}/{target_lang}.json"
     src = build_runtime_source(tr_dict, target_lang, rel_for_plugin)
-    with open(plugin_abs, "w", encoding="utf-8", newline="\n") as f:
-        f.write(src)
-    _ensure_plugins_entry(game_dir, RUNTIME_PLUGIN_NAME)
+    atomic_write_text(plugin_abs, src, encoding="utf-8")
+    if _plugins_list_rel_for_runtime(game_dir) is None:
+        # plugins.js нет вообще: его генерирует сам RPG Maker даже
+        # для пустого списка плагинов — игра уже сломана до нас.
+        raise RuntimeError(
+            "нет списка плагинов (js/plugins.js): игра повреждена — "
+            "рантайм-перевод некуда регистрировать")
+    if not _ensure_plugins_entry(game_dir, RUNTIME_PLUGIN_NAME):
+        raise RuntimeError("не удалось зарегистрировать runtime-плагин")
     return {"files": 1, "strings": len(tr_dict),
             "runtime": True, "overlay": overlay_rel,
             "plugin": _runtime_plugin_rel(game_dir)}
 
 
-def uninstall_runtime(game_dir: str, target_lang: str = "ru") -> dict:
+def uninstall_runtime(game_dir: str, target_lang: str = "ru",
+                      restore_legacy: bool = True) -> dict:
     """Удалить рантайм-плагин и оверлей. + откат legacy file-патча если был."""
     removed = 0
     # плагин
@@ -374,7 +403,7 @@ def uninstall_runtime(game_dir: str, target_lang: str = "ru") -> dict:
     # legacy: если раньше был file-патч (backup/), откатываем его разово
     legacy_restored = 0
     backup_root = os.path.join(game_dir, "backup")
-    if os.path.isdir(backup_root):
+    if restore_legacy and os.path.isdir(backup_root):
         try:
             from app.core.rpgmaker import parser as parser_mod
             # parser.restore_original уже идемпотентен

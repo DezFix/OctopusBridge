@@ -123,6 +123,21 @@ def _check_generated_dict(path: str) -> str | None:
     return None
 
 
+def _check_js_source(path: str) -> str | None:
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            src = f.read()
+    except (OSError, UnicodeDecodeError) as e:
+        return f"{path}: cannot read ({e})"
+    if "\x00" in src:
+        return f"{path}: NUL in JavaScript source"
+    if "\u2028" in src or "\u2029" in src:
+        return f"{path}: raw U+2028/U+2029 in JavaScript source"
+    if re.search(r"</script|<!--", src, re.IGNORECASE):
+        return f"{path}: unsafe HTML token in JavaScript source"
+    return None
+
+
 def _tolerant_plugins_array(text: str):
     """Список плагинов из JSON-массива или JS var $plugins (или None)."""
     try:
@@ -163,6 +178,7 @@ def verify_resource_refs(game_dir: str) -> list[str]:
     Внешний plugins.js при этом валиден, обычный verify это не видит.
     """
     from app.core.rpgmaker import resrefs
+    resrefs.clear_index(game_dir)
     problems: list[str] = []
     idx = resrefs.build_index(game_dir)
     if not idx:
@@ -171,6 +187,8 @@ def verify_resource_refs(game_dir: str) -> list[str]:
                 "data/plugins.js", "www/data/plugins.js"):
         cur_p = os.path.join(game_dir, rel.replace("/", os.sep))
         bak_p = os.path.join(game_dir, "backup", *rel.split("/"))
+        if not os.path.isfile(bak_p):
+            bak_p = cur_p + ".ob_backup"
         if not (os.path.isfile(cur_p) and os.path.isfile(bak_p)):
             continue
         try:
@@ -193,7 +211,10 @@ def verify_resource_refs(game_dir: str) -> list[str]:
             old_leaves = _param_leaves(old_pl.get("parameters"))
             new_leaves = _param_leaves(new_pl.get("parameters"))
             if len(old_leaves) != len(new_leaves):
-                continue  # структура уехала — не наш случай, молчим
+                problems.append(
+                    f"{rel}: структура параметров плагина {name} "
+                    "изменилась — apply отменён")
+                continue
             for (key, old_v), (_, new_v) in zip(old_leaves, new_leaves):
                 if old_v == new_v:
                     continue
@@ -206,7 +227,7 @@ def verify_resource_refs(game_dir: str) -> list[str]:
     return problems
 
 
-def verify_boot_files(game_dir: str) -> list[str]:
+def verify_boot_files(game_dir: str, check_plugin_js: bool = False) -> list[str]:
     """Проверяет всё, что RPG Maker читает при старте. [] = чисто."""
     problems: list[str] = []
     # 1) data/*.json (+ www-деплой): строгий парсинг глазами V8
@@ -267,6 +288,21 @@ def verify_boot_files(game_dir: str) -> list[str]:
             err = _check_generated_dict(p)
             if err:
                 problems.append(err)
+            err = _check_js_source(p)
+            if err:
+                problems.append(err)
+    if check_plugin_js:
+        for rel_dir in ("js/plugins", "www/js/plugins"):
+            full_dir = os.path.join(game_dir, *rel_dir.split("/"))
+            if not os.path.isdir(full_dir):
+                continue
+            for fn in sorted(os.listdir(full_dir)):
+                if not fn.lower().endswith(".js"):
+                    continue
+                p = os.path.join(full_dir, fn)
+                err = _check_js_source(p)
+                if err:
+                    problems.append(err)
     # 4) ссылки на ресурсы в параметрах плагинов (backup vs текущий)
     problems.extend(verify_resource_refs(game_dir))
     # 5) манифест NW.js: битый package.json = игра не стартует вообще

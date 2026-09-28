@@ -90,6 +90,10 @@ def _decompress(length: int, reset_value: int, get_next_value) -> str | None:
             entry = w + w[0]
         else:
             return None
+        if not entry:
+            # Битые данные сейва: пустая словарная запись вместо краша
+            # IndexError отдаём None (caller трактует как «не распаковалось»).
+            return None
         result.append(entry)
         dictionary.append(w + entry[0])
         dict_size += 1

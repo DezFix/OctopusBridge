@@ -1,30 +1,20 @@
 # -*- coding: utf-8 -*-
-"""Диалог настроек: три вкладки — Основные, Файлы, AI-корректор."""
+"""Диалог настроек: три вкладки — Основные, Файлы, Система."""
 from __future__ import annotations
 
 from PySide6.QtCore import QThread, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QCheckBox, QDialog, QFormLayout,
-                                QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-                                QPushButton, QSpinBox,
-                                QVBoxLayout, QWidget)
+                               QGroupBox, QHBoxLayout, QLabel, QLineEdit,
+                               QPushButton, QSpinBox,
+                               QVBoxLayout, QWidget)
 
 from app.core import cache as app_cache
-from app.core.translate.engines import (PROVIDERS, AI_PROVIDERS,
-                                         SOURCE_LANGS, TARGET_LANGS,
-                                         LIBRETRANSLATE_DEFAULT_URL)
-from app.ui.i18n import TR, provider_name
+from app.core.translate.engines import TARGET_LANGS
+from app.ui.i18n import TR
 from app.ui.icons import icon
 from app.ui.loading_overlay import BusyLabel
 from app.ui.theme import AnimatedComboBox, AnimatedTabWidget
-
-PRESETS = {
-    "OpenRouter": "https://openrouter.ai/api/v1",
-    "OpenAI": "https://api.openai.com/v1",
-    "NanoGPT": "https://nano-gpt.com/api/v1",
-    "LM Studio": "http://localhost:1234/v1",
-    "Ollama": "http://localhost:11434/v1",
-}
 
 
 class PingWorker(QThread):
@@ -59,7 +49,6 @@ class SettingsDialog(QDialog):
         self.tabs = tabs
         tabs.addTab(self._build_general_tab(s), TR("settings_general"))
         tabs.addTab(self._build_files_tab(s), TR("settings_files"))
-        tabs.addTab(self._build_ai_tab(s), TR("settings_corr_tab"))
         tabs.addTab(self._build_system_tab(s), TR("settings_system_tab"))
         lay.addWidget(tabs, 1)
 
@@ -74,50 +63,21 @@ class SettingsDialog(QDialog):
         bottom.addWidget(btn_save)
         lay.addLayout(bottom)
 
-        self._on_files_provider_changed()
-        self._on_corrector_provider_changed()
-
     # ── Helper: build engine settings group ──
-    def _build_engine_group(self, s, engine_key, prefix,
-                            title: str | None = None,
-                            providers: dict | None = None) -> QGroupBox:
+    def _build_engine_group(self, s,
+                            title: str | None = None) -> QGroupBox:
+        # Движок один (rotate-пул), выбора нет — только подпись,
+        # что крутится внутри, плюс опции резервных провайдеров.
         box = QGroupBox(title or TR("settings_provider"))
         form = QFormLayout(box)
 
-        combo = AnimatedComboBox()
-        provs = providers or PROVIDERS
-        for key in provs:
-            combo.addItem(provider_name(key), key)
-        idx = combo.findData(s.value(engine_key, "rotate"))
-        combo.setCurrentIndex(max(idx, 0))
-        form.addRow(TR("settings_provider_lbl"), combo)
+        info = QLabel(TR("settings_provider_fixed"))
+        info.setWordWrap(True)
+        form.addRow(info)
 
-        # ── AI preset row ──
-        preset_row = QWidget()
-        preset_lay = QHBoxLayout(preset_row)
-        preset_lay.setContentsMargins(0, 0, 0, 0)
-        preset_lay.addWidget(QLabel(TR("settings_preset")))
-        preset_buttons: dict[str, QPushButton] = {}
-        for name in PRESETS:
-            btn = QPushButton(name)
-            btn.setCheckable(True)
-            preset_lay.addWidget(btn)
-            preset_buttons[name] = btn
-        preset_lay.addStretch(1)
-        form.addRow(preset_row)
-
-        base_url = QLineEdit(s.value(f"base_url_{prefix}",
-                                     PRESETS["OpenRouter"]))
-        form.addRow(TR("settings_base_url"), base_url)
-
-        api_key = QLineEdit()
-        api_key.setEchoMode(QLineEdit.Password)
-        api_key.setPlaceholderText(TR("settings_api_key_ph"))
-        form.addRow(TR("settings_api_key"), api_key)
-
-        model = QLineEdit(s.value("model", "qwen2.5:7b"))
-        model.setPlaceholderText("gpt-4o-mini, qwen2.5:7b, …")
-        form.addRow(TR("settings_model"), model)
+        email = QLineEdit(s.value("mymemory_email", ""))
+        email.setPlaceholderText(TR("settings_mymemory_email_ph"))
+        form.addRow(TR("settings_mymemory_email"), email)
 
         btn_row = QHBoxLayout()
         btn_ping = QPushButton(TR("settings_check"))
@@ -132,8 +92,7 @@ class SettingsDialog(QDialog):
         form.addRow(TR("settings_status"), lbl_status)
 
         box._eng = {
-            "engine": combo, "base_url": base_url, "api_key": api_key, "model": model,
-            "preset_row": preset_row, "preset_buttons": preset_buttons,
+            "engine": "rotate", "email": email,
             "btn_ping": btn_ping, "busy": busy,
             "lbl_status": lbl_status, "form": form,
         }
@@ -147,12 +106,13 @@ class SettingsDialog(QDialog):
         box = QGroupBox(TR("settings_languages"))
         form = QFormLayout(box)
 
-        self.source_lang = AnimatedComboBox()
-        for code in SOURCE_LANGS:
-            self.source_lang.addItem(TR("lang_" + code), code)
-        idx = self.source_lang.findData(s.value("source_lang", "auto"))
-        self.source_lang.setCurrentIndex(max(idx, 0))
-        form.addRow(TR("settings_src_lang"), self.source_lang)
+        # Исходный язык не выбирается: он всегда определяется по каждой
+        # строке автоматически (detect_lang). В смешанных играх часть
+        # текста японская, часть английская — одна галочка тут только
+        # мешала. Оставляем единственный целевой язык на выбор.
+        self.source_lang = None
+        form.addRow(TR("settings_src_lang_auto"),
+                    QLabel(TR("settings_src_lang_auto_note")))
 
         self.target_lang = AnimatedComboBox()
         for code in TARGET_LANGS:
@@ -160,6 +120,11 @@ class SettingsDialog(QDialog):
         idx = self.target_lang.findData(s.value("target_lang", "ru"))
         self.target_lang.setCurrentIndex(max(idx, 0))
         form.addRow(TR("settings_tgt_lang"), self.target_lang)
+
+        self.tr_autoresume = QCheckBox(TR("tr_autoresume"))
+        self.tr_autoresume.setChecked(
+            s.value("tr_autoresume", True, type=bool))
+        form.addRow("", self.tr_autoresume)
 
         lay.addWidget(box)
 
@@ -187,22 +152,11 @@ class SettingsDialog(QDialog):
         lay = QVBoxLayout(w)
 
         self.files_engine_box = self._build_engine_group(
-            s, "engine_files", "files", TR("settings_files_provider"))
+            s, TR("settings_files_provider"))
         self.files_eng = self.files_engine_box._eng
-        self.files_eng["engine"].currentIndexChanged.connect(
-            self._on_files_provider_changed)
         self.files_eng["btn_ping"].clicked.connect(
             lambda: self._ping("files"))
         lay.addWidget(self.files_engine_box)
-
-        self.corrector_engine_box = self._build_engine_group(
-            s, "engine_corrector", "corrector", TR("settings_corr_provider"),
-            providers=AI_PROVIDERS)
-        self.corr_eng = self.corrector_engine_box._eng
-        self.corr_eng["engine"].currentIndexChanged.connect(
-            self._on_corrector_provider_changed)
-        self.corr_eng["btn_ping"].clicked.connect(
-            lambda: self._ping("corrector"))
 
         opt_box = QGroupBox(TR("settings_files"))
         opt_form = QFormLayout(opt_box)
@@ -225,28 +179,7 @@ class SettingsDialog(QDialog):
         lay.addStretch(1)
         return w
 
-    # ── Tab 4: AI Corrector (corrector + AI glossary) ──
-    def _build_ai_tab(self, s) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
-
-        lay.addWidget(self.corrector_engine_box)
-
-        gloss_box = QGroupBox(TR("settings_glossary_box"))
-        gloss_form = QFormLayout(gloss_box)
-        self.glossary_use_ai = QCheckBox(TR("settings_glossary_ai"))
-        self.glossary_use_ai.setChecked(
-            s.value("glossary_use_ai", True, type=bool))
-        gloss_form.addRow(self.glossary_use_ai)
-        info = QLabel(TR("settings_glossary_info"))
-        info.setWordWrap(True)
-        gloss_form.addRow(info)
-        lay.addWidget(gloss_box)
-
-        lay.addStretch(1)
-        return w
-
-    # ── Tab 5: System (cache size + auto-clean) ──
+    # ── Tab 3: System (cache size + auto-clean) ──
     def _build_system_tab(self, s) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
@@ -326,72 +259,9 @@ class SettingsDialog(QDialog):
     def _open_cache_dir(self):
         QDesktopServices.openUrl(QUrl.fromLocalFile(app_cache.temp_dir()))
 
-    # ── Provider visibility ──
-    def _update_provider_visibility(self, eng: dict):
-        key = eng["engine"].currentData()
-        is_ai = key == "ai"
-        need_url = key in ("ai", "libretranslate")
-
-        eng["base_url"].setVisible(need_url)
-        eng["api_key"].setVisible(need_url)
-        eng["model"].setVisible(is_ai)
-        eng["preset_row"].setVisible(is_ai)
-
-        form = eng["form"]
-        for w in (eng["base_url"], eng["api_key"],
-                  eng["model"], eng["preset_row"]):
-            label = form.labelForField(w)
-            if label:
-                label.setVisible(w.isVisible())
-
-        if key == "libretranslate":
-            cur = eng["base_url"].text().strip()
-            if not cur or cur in PRESETS.values():
-                eng["base_url"].setText(LIBRETRANSLATE_DEFAULT_URL)
-            eng["api_key"].setPlaceholderText(
-                TR("settings_api_key_lt_ph"))
-        elif is_ai:
-            eng["api_key"].setPlaceholderText(TR("settings_api_key_ph"))
-        if self.isVisible():
-            self.adjustSize()
-
-    # ── Tab 3: AI Corrector (corrector + AI glossary) ──
-
-    def _on_files_provider_changed(self):
-        self._update_provider_visibility(self.files_eng)
-        self._select_preset_for(self.files_eng, "files")
-
-    def _on_corrector_provider_changed(self):
-        self._update_provider_visibility(self.corr_eng)
-        self._select_preset_for(self.corr_eng, "corrector")
-
-    def _select_preset_for(self, eng: dict, prefix: str):
-        s = self.main.settings
-        saved_url = s.value(f"base_url_{prefix}", "")
-        saved_key = s.value(f"api_key_{prefix}", "")
-        if saved_url:
-            eng["base_url"].setText(saved_url)
-        if saved_key:
-            eng["api_key"].setText(saved_key)
-        for name, btn in eng["preset_buttons"].items():
-            btn.setChecked(PRESETS.get(name, "") == eng["base_url"].text())
-            btn.clicked.connect(
-                lambda _=False, n=name, e=eng, p=prefix:
-                    self._apply_preset(e, p, n))
-
-    def _apply_preset(self, eng: dict, prefix: str, preset_name: str):
-        s = self.main.settings
-        url = PRESETS.get(preset_name, "")
-        eng["base_url"].setText(s.value(f"base_url_{prefix}_{preset_name}",
-                                        url))
-        eng["api_key"].setText(s.value(f"api_key_{prefix}_{preset_name}", ""))
-        for n, btn in eng["preset_buttons"].items():
-            btn.setChecked(n == preset_name)
-
     # ── Ping ──
     def _ping(self, prefix: str):
-        eng = {"files": self.files_eng,
-               "corrector": self.corr_eng}.get(prefix, self.files_eng)
+        eng = self.files_eng
         w = self._ping_workers.get(prefix)
         if w and w.isRunning():
             return
@@ -430,24 +300,20 @@ class SettingsDialog(QDialog):
                                     TR("settings_restart_hint"))
 
     # ── Save & close ──
-    def _save_engine(self, eng: dict, engine_key: str, prefix: str):
+    def _save_engine(self, eng: dict):
         s = self.main.settings
-        name = eng["engine"].currentData()
-        s.setValue(engine_key, name)
-        s.setValue(f"base_url_{prefix}", eng["base_url"].text())
-        s.setValue(f"api_key_{prefix}", eng["api_key"].text())
-        s.setValue("model", eng["model"].text())
+        s.setValue("engine_files", "rotate")
+        s.setValue("mymemory_email", eng["email"].text().strip())
 
     def _save_and_close(self):
         s = self.main.settings
-        self._save_engine(self.files_eng, "engine_files", "files")
-        self._save_engine(self.corr_eng, "engine_corrector", "corrector")
-        s.setValue("source_lang", self.source_lang.currentData())
+        self._save_engine(self.files_eng)
+        s.setValue("source_lang", "auto")
         s.setValue("target_lang", self.target_lang.currentData())
+        s.setValue("tr_autoresume", self.tr_autoresume.isChecked())
         s.setValue("auto_launch", self.auto_launch.isChecked())
         s.setValue("file_overwrite_mode", self.overwrite_mode.currentIndex())
         s.setValue("auto_backup", self.auto_backup.isChecked())
-        s.setValue("glossary_use_ai", self.glossary_use_ai.isChecked())
         s.setValue("cache_auto_clean", self.auto_clean.isChecked())
         s.setValue("cache_auto_clean_mb", self.cache_limit_spin.value())
         old_lang = s.value("ui_lang", "ru")

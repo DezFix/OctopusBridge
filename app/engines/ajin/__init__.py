@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 from app.engines.base import EngineModule
-from app.ui.i18n import TR
 
 
 class AjinModule(EngineModule):
@@ -17,6 +16,7 @@ class AjinModule(EngineModule):
     title = "AjinSyoujyo (Electron Tyrano)"
     variant = "electron-tyrano"
     features = {"files", "cheats"}
+    maturity = "frozen"  # фокус — RPG-семья; только критические фиксы
 
     @classmethod
     def detect(cls, game_dir: str) -> int:
@@ -64,15 +64,3 @@ class AjinModule(EngineModule):
                 return []
 
         return _Adapter()
-
-    def ui_tabs(self, main_window) -> list[tuple]:
-        from app.ui.ajin_cheat_tab import AjinTriggersTab, AjinVariablesTab
-        translate = main_window.translate_tab
-        var_tab = AjinVariablesTab(main_window)
-        trg_tab = AjinTriggersTab(main_window)
-        main_window.cheat_tab = var_tab
-        return [
-            (translate, TR("tab_translate"), "translate"),
-            (var_tab, TR("tab_cheats"), "cheats"),
-            (trg_tab, TR("tab_triggers"), "triggers"),
-        ]

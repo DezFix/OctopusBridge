@@ -101,6 +101,14 @@ _HELPER_EXE = ("notification_helper", "crashpad", "crash_reporter",
                "uninstall", "unins", "setup", "nwjc", "update")
 
 
+def _is_helper_exe(name: str) -> bool:
+    stem = os.path.splitext(name)[0].lower()
+    return any(stem == helper or stem.startswith(helper + "_")
+               or stem.endswith("_" + helper)
+               or ("_" + helper + "_") in stem
+               for helper in _HELPER_EXE)
+
+
 def find_game_exe(game_dir: str) -> str | None:
     """Полный путь к запускаемому exe игры в папке (любое имя).
 
@@ -123,8 +131,7 @@ def find_game_exe(game_dir: str) -> str | None:
         for name in os.listdir(game_dir):
             if not name.lower().endswith(".exe"):
                 continue
-            low = name.lower()
-            if any(h in low for h in _HELPER_EXE):
+            if _is_helper_exe(name):
                 continue
             full = os.path.join(game_dir, name)
             try:

@@ -128,6 +128,11 @@ class RpaArchive:
     def files(self) -> list[str]:
         return sorted(self._index.keys())
 
+    def size(self, path: str) -> int:
+        if path not in self._index:
+            raise KeyError(f"File not found in archive: {path}")
+        return self._index[path][1]
+
     def read(self, path: str) -> bytes:
         if path not in self._index:
             raise KeyError(f"File not found in archive: {path}")
@@ -138,7 +143,9 @@ class RpaArchive:
 
     def extract_to(self, path: str, dest: str):
         data = self.read(path)
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        parent = os.path.dirname(dest)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         with open(dest, "wb") as f:
             f.write(data)
 

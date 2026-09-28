@@ -22,11 +22,10 @@ from __future__ import annotations
 import os
 import re
 from collections import Counter
-from datetime import datetime
 
+from app.core.io import atomic_write_bytes
 from app.core.rpgmaker.fileview import AsarFileView, DiskFileView, FileView
 from app.engines.base import EngineModule
-from app.ui.i18n import TR
 
 _FEATURES = {"files", "cheats", "resources", "maps"}
 _FEATURES_FONT = {"files", "cheats", "resources", "font", "maps"}
@@ -57,6 +56,7 @@ def _bucket_skip(reason: object) -> str:
 class RpgMakerModule(EngineModule):
     key = "rpgmaker"
     title = "RPG Maker"
+    maturity = "stable"
 
     @property
     def features(self) -> set[str]:
@@ -122,6 +122,16 @@ class RpgMakerModule(EngineModule):
             return parser.extract(proj, variant=self.variant)
 
     def apply(self, game_dir: str, entries: list, **kwargs) -> dict:
+        try:
+            return self._apply_impl(game_dir, entries, **kwargs)
+        except Exception:
+            try:
+                self.restore_original(game_dir)
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+
+    def _apply_impl(self, game_dir: str, entries: list, **kwargs) -> dict:
         """Гибридный механизм: runtime-overlay для данных + live + точечный file-patch.
 
         - `data/*.json`, `Map*.json` (включая .rpgmvm) — только runtime-overlay
@@ -159,7 +169,7 @@ class RpgMakerModule(EngineModule):
         try:
             from app.core.rpgmaker import parser as parser_mod
             bak = os.path.join(game_dir, "backup")
-            if os.path.isdir(bak):
+            if not self._asar and os.path.isdir(bak):
                 # есть бэкапы data/*.json — откатываем их
                 parser_mod.restore_original(game_dir)
         except Exception:  # noqa: BLE001
@@ -173,6 +183,7 @@ class RpgMakerModule(EngineModule):
         # поэтому такие записи не идут ни в file-patch, ни в словарь.
         try:
             from app.core.rpgmaker import resrefs
+            resrefs.clear_index(game_dir)
             res = resrefs.build_index(game_dir)
         except Exception:  # noqa: BLE001
             res = None
@@ -266,18 +277,16 @@ class RpgMakerModule(EngineModule):
                 # ушли в runtime выше), на всякий случай — no-op.
                 pass
             else:
-                try:
-                    from . import parser
-                    p_stats = parser.apply(game_dir, file_entries, target_lang=target_lang, res=res,
-                                           on_skip=_on_skip)
-                    stats["files"] = stats.get("files", 0) + p_stats.get("files", 0)
-                    stats["strings"] = stats.get("strings", 0) + p_stats.get("strings", 0)
-                    if p_stats.get("backups"):
-                        stats["backups"] = stats.get("backups", []) + p_stats.get("backups", [])
-                    stats["plugin_files"] = p_stats.get("files", 0)
-                    stats["plugin_strings"] = p_stats.get("strings", 0)
-                except Exception:  # noqa: BLE001
-                    pass
+                from . import parser
+                p_stats = parser.apply(
+                    game_dir, file_entries, target_lang=target_lang, res=res,
+                    on_skip=_on_skip)
+                stats["files"] = stats.get("files", 0) + p_stats.get("files", 0)
+                stats["strings"] = stats.get("strings", 0) + p_stats.get("strings", 0)
+                if p_stats.get("backups"):
+                    stats["backups"] = stats.get("backups", []) + p_stats["backups"]
+                stats["plugin_files"] = p_stats.get("files", 0)
+                stats["plugin_strings"] = p_stats.get("strings", 0)
 
         if skip_counter:
             stats["skipped_total"] = sum(skip_counter.values())
@@ -302,37 +311,33 @@ class RpgMakerModule(EngineModule):
 
         # 3) MV: мост для читов/live (всегда, даже если нет переводов — нужен для читов)
         if self.variant == "mv":
-            try:
-                from app.core.rpgmaker import mv_bridge
-                # Из ядра (без Qt): tentacle тянет PySide6, а мост нужен
-                # и в headless-apply/тестах
-                from app.core.rpgmaker.payloads import PAYLOAD, _TRANSLATION_PAYLOAD
-                mv_bridge.ensure_bridge_registered(
-                    game_dir, PAYLOAD, _TRANSLATION_PAYLOAD)
-            except Exception:  # noqa: BLE001
-                pass
+            from app.core.rpgmaker import mv_bridge
+            from app.core.rpgmaker.payloads import (
+                PAYLOAD, _TRANSLATION_PAYLOAD)
+            if not mv_bridge.ensure_bridge_registered(
+                    game_dir, PAYLOAD, _TRANSLATION_PAYLOAD):
+                raise RuntimeError("не удалось зарегистрировать MV-мост")
+            live_entries = [e for e in runtime_entries
+                            if _is_translatable(e)]
+            if live_entries and not mv_bridge.update_tr_dict(
+                    game_dir, live_entries):
+                raise RuntimeError("не удалось записать словарь MV-моста")
 
         # 4) страховка: игра обязана стартовать. Проверяем все файлы,
         # которые движок читает через JSON.parse (data, список плагинов,
         # вшитые словари), строгим парсером глазами V8. При провале —
         # откатываем всё наше и возвращаем честную ошибку вместо «готово».
-        try:
-            from app.core.rpgmaker import verify as vrf
-            problems = vrf.verify_boot_files(game_dir)
-        except Exception:  # noqa: BLE001
-            problems = []
+        from app.core.rpgmaker import verify as vrf
+        problems = vrf.verify_boot_files(
+            game_dir, check_plugin_js=patch_plugin_js)
         if problems:
             try:
-                rt.uninstall_runtime(game_dir)
+                self.restore_original(game_dir)
             except Exception:  # noqa: BLE001
                 pass
             try:
-                from app.core.rpgmaker import parser as parser_mod
-                parser_mod.restore_original(game_dir)
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                still = vrf.verify_boot_files(game_dir)
+                still = vrf.verify_boot_files(
+                    game_dir, check_plugin_js=patch_plugin_js)
             except Exception:  # noqa: BLE001
                 still = list(problems)
             stats["verify_failed"] = problems
@@ -342,139 +347,104 @@ class RpgMakerModule(EngineModule):
 
     def restore_original(self, game_dir: str) -> dict:
         from app.core.rpgmaker import runtime as rt
-        stats = rt.uninstall_runtime(game_dir)
+        stats = rt.uninstall_runtime(game_dir, restore_legacy=False)
+        stats["errors"] = []
         # legacy откат на случай старых file-патчей (одноразово)
-        try:
-            from app.core.rpgmaker import parser as parser_mod
-            legacy = parser_mod.restore_original(game_dir)
-            if legacy.get("restored"):
-                stats["legacy_restored"] = legacy["restored"]
-        except Exception:  # noqa: BLE001
-            pass
+        if not self._asar:
+            try:
+                from app.core.rpgmaker import parser as parser_mod
+                legacy = parser_mod.restore_original(game_dir)
+                if legacy.get("restored"):
+                    stats["legacy_restored"] = legacy["restored"]
+            except Exception as exc:  # noqa: BLE001
+                stats["errors"].append(f"legacy restore: {exc}")
         # Electron: откат asar если был полный бэкап архива
         if self._asar:
             try:
                 asar_stats = self._restore_asar(game_dir)
                 if asar_stats.get("restored"):
                     stats["asar_restored"] = asar_stats["restored"]
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                stats["errors"].append(f"asar restore: {exc}")
         return stats
 
     def _restore_asar(self, game_dir: str) -> dict:
         """Восстанавливает asar из backup/ (самая ранняя папка) либо из
         <архив>.ob.bak, если архив пересобирался целиком."""
-        import shutil
         from . import asar as asarlib
         from app.core import asar as asarcore
         ar_path = asarlib.asar_path(game_dir)
         full_bak = ar_path + ".ob.bak"
         if os.path.isfile(full_bak):
-            shutil.copy2(full_bak, ar_path)
+            with open(full_bak, "rb") as f:
+                atomic_write_bytes(ar_path, f.read())
             return {"restored": 1}
         root = os.path.join(game_dir, "backup")
         if not os.path.isdir(root):
             return {"restored": 0}
+        ar = asarcore.AsarArchive(ar_path)
+
+        def read_tree(base: str) -> dict[str, bytes]:
+            values: dict[str, bytes] = {}
+            for current, _dirs, files in os.walk(base):
+                for name in files:
+                    if name.endswith(".ob.bak") or name.endswith(".ob.new"):
+                        continue
+                    src = os.path.join(current, name)
+                    try:
+                        with open(src, "rb") as fh:
+                            rel = os.path.relpath(src, base).replace(os.sep, "/")
+                            values[rel] = fh.read()
+                    except OSError:
+                        pass
+            return values
+
+        def resolve_rel(rel: str, prefer_project: bool) -> str | None:
+            candidates = (
+                (f"{asarlib.PROJECT_PREFIX}/{rel}", rel, f"www/{rel}")
+                if prefer_project else
+                (rel, f"{asarlib.PROJECT_PREFIX}/{rel}", f"www/{rel}")
+            )
+            for candidate in dict.fromkeys(candidates):
+                if ar.exists(candidate):
+                    return candidate
+            return None
+
         blobs: dict[str, bytes] = {}
         try:
             entries = sorted(os.listdir(root))
         except OSError:
             entries = []
-        for d in entries:
-            if not re.match(r"^\d{8}_\d{6}$", d):
+        for name in entries:
+            if not re.match(r"^\d{8}_\d{6}$", name):
                 continue
-            base = os.path.join(root, d)
+            base = os.path.join(root, name)
             if not os.path.isdir(base):
                 continue
             if blobs:
-                break  # самая ранняя папка = оригинал до переводов
-            for _r, _dirs, files in os.walk(base):
-                for f in files:
-                    if f.endswith(".ob.bak") or f.endswith(".ob.new"):
-                        continue
-                    src = os.path.join(_r, f)
-                    try:
-                        with open(src, "rb") as fh:
-                            blobs[os.path.relpath(src, base)
-                                  .replace(os.sep, "/")] = fh.read()
-                    except OSError:
-                        pass
-        if not blobs:
-            return {"restored": 0}
-        ar = asarcore.AsarArchive(ar_path)
-        # современный формат: бэкапы с полными rel-путями
+                break
+            blobs = read_tree(base)
+
         patches: dict[str, bytes] = {}
         for rel, blob in blobs.items():
-            ar_rel = f"{asarlib.PROJECT_PREFIX}/{rel}"
-            if ar.exists(ar_rel):
-                patches[ar_rel] = blob
-        if not patches:
-            # legacy: бэкапы только по имени файла
+            archive_rel = resolve_rel(rel, prefer_project=True)
+            if archive_rel is not None:
+                patches[archive_rel] = blob
+        if not patches and blobs:
             rel_by_base: dict[str, str] = {}
             for rel, _node in ar.iter_files():
                 rel_by_base.setdefault(os.path.basename(rel), rel)
-            patches = {rel_by_base[os.path.basename(b)]: blob
-                       for b, blob in blobs.items()
-                       if os.path.basename(b) in rel_by_base}
+            patches = {rel_by_base[os.path.basename(rel)]: blob
+                       for rel, blob in blobs.items()
+                       if os.path.basename(rel) in rel_by_base}
+
+        maps_root = os.path.join(root, "maps")
+        if os.path.isdir(maps_root):
+            for rel, blob in read_tree(maps_root).items():
+                archive_rel = resolve_rel(rel, prefer_project=False)
+                if archive_rel is not None and archive_rel not in patches:
+                    patches[archive_rel] = blob
         if not patches:
             return {"restored": 0}
         astats = asarcore.apply_patches(ar_path, patches)
         return {"restored": astats["files"]}
-
-    def _apply_asar(self, game_dir: str, entries: list, **kwargs) -> dict:
-        """Переводит data/*.json во временном проекте и правит asar."""
-        from .asar import _temp_project
-        from . import asar as asarlib
-        from . import parser
-        from app.core import asar as asarcore
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_root = os.path.join(game_dir, "backup", ts)
-        with _temp_project(game_dir) as proj:
-            stats = parser.apply(
-                proj, entries,
-                backup_root=backup_root,
-                target_lang=kwargs.get("target_lang", "ru"))
-            # какие файлы реально изменились — только их и правим в архиве
-            ar = asarcore.AsarArchive(asarlib.asar_path(game_dir))
-            patches: dict[str, bytes] = {}
-            roots = [os.path.join(proj, "data")]
-            plugins_dir = os.path.join(proj, "js", "plugins")
-            if os.path.isdir(plugins_dir):
-                roots.append(plugins_dir)
-            for root in roots:
-                for _r, _dirs, files in os.walk(root):
-                    for fn in files:
-                        path = os.path.join(_r, fn)
-                        rel = os.path.relpath(path, proj) \
-                            .replace(os.sep, "/")
-                        with open(path, "rb") as f:
-                            blob = f.read()
-                        old = ar.read_file(
-                            f"{asarlib.PROJECT_PREFIX}/{rel}")
-                        if old is not None and blob != old:
-                            patches[
-                                f"{asarlib.PROJECT_PREFIX}/{rel}"] = blob
-        if patches:
-            astats = asarcore.apply_patches(
-                asarlib.asar_path(game_dir), patches, backup_dir=backup_root)
-            stats["files"] = astats["files"]
-            stats["backups"] = stats.get("backups", []) + astats["backups"]
-            if astats["repacked"]:
-                stats["repacked"] = True
-        return stats
-
-    def ui_tabs(self, main_window) -> list[tuple]:
-        from app.ui.cheat_tab import CheatTab
-        from app.ui.map_tab import MapTab
-        from app.ui.resource_tab import ResourceTab
-        translate = main_window.translate_tab
-        cheats = CheatTab(main_window)
-        maps = MapTab(main_window)
-        resources = ResourceTab(main_window)
-        main_window.cheat_tab = cheats
-        return [
-            (translate, TR("tab_translate"), "translate"),
-            (cheats, TR("tab_cheats"), "cheats"),
-            (maps, TR("tab_maps"), "module"),
-            (resources, TR("tab_resources"), "module"),
-        ]

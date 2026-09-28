@@ -15,11 +15,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
-import shutil
 
+from app.core.io import atomic_write_bytes, atomic_write_text
 from app.core.models import TranslationEntry
+
+log = logging.getLogger(__name__)
 
 # ── Коды команд событий ──
 CMD_DIALOG = 401
@@ -47,7 +50,7 @@ CMD_SCRIPT_CONT = 655
 CMD_NONTEXT_CODES = frozenset({
     111, 118, 119, 122, 132, 133, 139, 140, 205, 505, 222,
     231, 232, 233, 234, 235,
-    241, 242, 245, 246, 247, 248, 249, 250, 251,
+    241, 242, 243, 244, 245, 246, 247, 248, 249, 250,
     283, 284, 322, 323,
 })
 
@@ -205,6 +208,9 @@ _CMP_TAIL_RE = re.compile(r"(===|!==|==|!=)\s*$")
 _CASE_TAIL_RE = re.compile(r"\bcase$")
 _PROP_ACCESS_RE = re.compile(r"[A-Za-z_$][\w$]*\s*\[$")
 _OBJKEY_HEAD_RE = re.compile(r"^\s*:")
+_CODE_CALL_TAIL_RE = re.compile(
+    r"(?:hasOwnProperty|getParam|indexOf|includes)\s*\([^)]*$")
+_IN_TAIL_RE = re.compile(r"\bin\s*$")
 
 
 def _is_code_literal(code: str, start: int, end: int) -> bool:
@@ -230,6 +236,8 @@ def _is_code_literal(code: str, start: int, end: int) -> bool:
         if stripped.endswith("{") or stripped.endswith(","):
             return True
     if right.lstrip().startswith("]") and _PROP_ACCESS_RE.search(left):
+        return True
+    if _CODE_CALL_TAIL_RE.search(left) or _IN_TAIL_RE.search(left):
         return True
     return False
 
@@ -272,13 +280,13 @@ def js_text_candidate(s: str) -> bool:
         return False
     if not re.search(r"[^\W\d_]", s):          # без букв
         return False
-    if _JS_CJK_RE.search(s):
-        return True                            # CJK — почти наверняка текст
-    if not re.search(r"\s", s):                # латиница без пробела — ключ
-        return False
     if re.search(r"[\\/]", s):                 # пути, коды
         return False
     if s.startswith(("http", "www.", "=", ":", "<")):
+        return False
+    if _JS_CJK_RE.search(s):
+        return True
+    if not re.search(r"\s", s):                # латиница без пробела — ключ
         return False
     return True
 
@@ -330,8 +338,7 @@ def _read_plugins(path: str, variant: str = "") -> list | None:
     (страховка для нестандартных деплоев).
     """
     try:
-        with open(path, encoding="utf-8-sig") as f:
-            text = f.read()
+        text = _read_text(path)
     except (OSError, UnicodeDecodeError):
         return None
     from .variant import is_mv
@@ -407,10 +414,8 @@ def extract_plugins(game_dir: str, data_dir: str, on_skip=None,
         js_name = _base_js
         code = None
         try:
-            with open(os.path.join(game_dir, js_dir, "plugins",
-                                   js_name + ".js"),
-                      encoding="utf-8") as f:
-                code = f.read()
+            code = _read_text(os.path.join(
+                game_dir, js_dir, "plugins", js_name + ".js"))
         except (OSError, UnicodeDecodeError) as e:
             if on_skip:
                 on_skip(name, e)
@@ -648,6 +653,8 @@ class _Extractor:
             self.add(file, path, f"{context} / plugin", v)
 
     def db_file(self, file: str, data: list, fields: list[str]):
+        if not isinstance(data, list):
+            return
         for idx, obj in enumerate(data):
             if not isinstance(obj, dict):
                 continue
@@ -658,6 +665,8 @@ class _Extractor:
                              f"{file[:-5]} '{name}'", obj[field])
 
     def map_file(self, file: str, data: dict):
+        if not isinstance(data, dict):
+            return
         if data.get("displayName"):
             self.add(file, "displayName", "map name", data["displayName"])
         for ei, ev in enumerate(data.get("events") or []):
@@ -676,6 +685,8 @@ class _Extractor:
                     page.get("list") or [], ctx)
 
     def common_events(self, file: str, data: list):
+        if not isinstance(data, list):
+            return
         for idx, ev in enumerate(data):
             if not isinstance(ev, dict):
                 continue
@@ -686,6 +697,8 @@ class _Extractor:
                 f"common event '{ev.get('name', idx)}'")
 
     def troops(self, file: str, data: list):
+        if not isinstance(data, list):
+            return
         for idx, tr in enumerate(data):
             if not isinstance(tr, dict):
                 continue
@@ -700,6 +713,8 @@ class _Extractor:
                     f"battle '{tr.get('name', idx)}' p.{pi + 1}")
 
     def system(self, file: str, data: dict):
+        if not isinstance(data, dict):
+            return
         self.add(file, "gameTitle", "game title",
                  data.get("gameTitle", ""))
         self.add(file, "currencyUnit", "currency",
@@ -723,6 +738,8 @@ class _Extractor:
                      "system message", v)
 
     def map_infos(self, file: str, data: list):
+        if not isinstance(data, list):
+            return
         for idx, obj in enumerate(data):
             if isinstance(obj, dict) and obj.get("name"):
                 self.add(file, f"[{idx}].name",
@@ -826,9 +843,17 @@ class _Extractor:
                     file, f"[{idx}].{k}",
                     f"{file[:-5]} '{obj.get('name') or idx}' / {k}", v)
 
+def _read_text(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            return f.read()
+    except UnicodeDecodeError:
+        with open(path, encoding="cp932") as f:
+            return f.read()
+
+
 def _read_json(path: str):
-    with open(path, encoding="utf-8-sig") as f:
-        return json.load(f)
+    return json.loads(_read_text(path))
 
 
 def _read_rpgm_map(game_dir: str, path: str) -> dict | None:
@@ -867,10 +892,17 @@ def extract(game_dir: str, data_dir: str | None = None,
     if variant is None:
         from .variant import detect_variant
         variant = detect_variant(game_dir)
-    from .resrefs import build_index
+    from .resrefs import build_index, clear_index
+    clear_index(game_dir)
     ex = _Extractor(build_index(game_dir))
-    root = os.path.join(game_dir, data_dir)
-    for fname in sorted(os.listdir(root)):
+    root = os.path.join(game_dir, *data_dir.split("/"))
+    try:
+        names = sorted(os.listdir(root))
+    except OSError as e:
+        if on_skip:
+            on_skip(data_dir, e)
+        names = []
+    for fname in names:
         rel = f"{data_dir}/{fname}"
         if fname.endswith(".json"):
             try:
@@ -879,7 +911,7 @@ def extract(game_dir: str, data_dir: str | None = None,
                 if on_skip:
                     on_skip(fname, e)
                 else:
-                    print(f"[parser] skipped {fname}: {e}")
+                    log.warning("skipped %s: %s", fname, e)
                 continue
             if fname in DB_FIELDS:
                 ex.db_file(rel, data, DB_FIELDS[fname])
@@ -905,18 +937,26 @@ def extract(game_dir: str, data_dir: str | None = None,
                 if on_skip:
                     on_skip(fname, "cannot decrypt MV map")
                 else:
-                    print(f"[parser] skipped {fname}: cannot decrypt")
+                    log.warning("skipped %s: cannot decrypt", fname)
                 continue
             ex.map_file(rel, data)
     # кастомные каталоги данных (dataEx/TRP skit DB и подобные): тексты,
     # добавленные разработчиком/плагинами вне data/, тоже переводим —
     # неизвестные JSON идут общим generic-путём (только текст, без кода)
-    ex_dir = os.path.join(game_dir, "dataEx")
-    if os.path.isdir(ex_dir):
-        for fname in sorted(os.listdir(ex_dir)):
+    for ex_rel in ("dataEx", "www/dataEx"):
+        ex_dir = os.path.join(game_dir, *ex_rel.split("/"))
+        if not os.path.isdir(ex_dir):
+            continue
+        try:
+            ex_names = sorted(os.listdir(ex_dir))
+        except OSError as e:
+            if on_skip:
+                on_skip(ex_rel, e)
+            continue
+        for fname in ex_names:
             if not fname.endswith(".json"):
                 continue
-            rel = f"dataEx/{fname}"
+            rel = f"{ex_rel}/{fname}"
             try:
                 data = _read_json(os.path.join(ex_dir, fname))
             except (json.JSONDecodeError, UnicodeDecodeError) as e:
@@ -961,21 +1001,18 @@ def _title_text(s) -> str | None:
 def _extract_window_title(game_dir: str, ex, on_skip=None) -> None:
     """Заголовок окна игры: package.json window.title + index.html <title>."""
     try:
-        with open(os.path.join(game_dir, "package.json"),
-                  encoding="utf-8-sig") as f:
-            manifest = json.load(f)
+        manifest = json.loads(_read_text(os.path.join(game_dir,
+                                                        "package.json")))
         title = (manifest.get("window") or {}).get("title")
         t = _title_text(title)
         if t:
             ex.add("package.json", "window.title", "window title", t)
-    except (OSError, ValueError, AttributeError) as e:
+    except (OSError, ValueError, AttributeError, UnicodeDecodeError) as e:
         if on_skip:
             on_skip("package.json", e)
     try:
-        with open(os.path.join(game_dir, "index.html"),
-                  encoding="utf-8-sig") as f:
-            html_text = f.read()
-    except OSError:
+        html_text = _read_text(os.path.join(game_dir, "index.html"))
+    except (OSError, UnicodeDecodeError):
         return
     m = re.search(r"<title[^>]*>(.*?)</title>", html_text,
                   re.IGNORECASE | re.DOTALL)
@@ -990,8 +1027,10 @@ def _extract_window_title(game_dir: str, ex, on_skip=None) -> None:
 # ── Внедрение ──
 
 def _detect_indent(path: str) -> int | None:
-    with open(path, encoding="utf-8-sig") as f:
-        head = f.read(64)
+    try:
+        head = _read_text(path)[:64]
+    except (OSError, UnicodeDecodeError):
+        return None
     return 2 if head.startswith("{\n") or head.startswith("[\n") else None
 
 
@@ -1323,8 +1362,7 @@ def _apply_plugin_params_file(abs_path: str, items: list,
                 on_skip(e, "plugins list validation failed, not written")
         return False, 0
     try:
-        with open(abs_path, "w", encoding="utf-8") as f:
-            f.write(new_text)
+        atomic_write_text(abs_path, new_text, encoding="utf-8")
     except OSError:
         return False, 0
     return True, written
@@ -1348,10 +1386,30 @@ def apply(game_dir: str, entries: list[TranslationEntry],
             res = build_index(game_dir)
         except Exception:  # noqa: BLE001
             res = None
-    by_file: dict[str, list[TranslationEntry]] = {}
+    # Записи могут быть dict'ами (путь через engines/rpgmaker) — приводим
+    # к виду с атрибутами, иначе первый же e.translation роняет apply
+    # посреди операции с частично перезаписанными файлами.
+    class _EntryView:
+        __slots__ = ("translation", "status", "file", "json_path",
+                     "original")
+
+        def __init__(self, e):
+            if isinstance(e, dict):
+                g = e.get
+            else:
+                def g(k, d=""):
+                    return getattr(e, k, d)
+            self.translation = g("translation", "") or ""
+            self.status = g("status", "") or ""
+            self.file = g("file", "") or ""
+            self.json_path = g("json_path", "") or ""
+            self.original = g("original", "") or ""
+
+    by_file: dict[str, list] = {}
     for e in entries:
-        if e.translation.strip() and e.status != "skip":
-            by_file.setdefault(e.file, []).append(e)
+        v = e if isinstance(e, _EntryView) else _EntryView(e)
+        if v.translation.strip() and v.status != "skip" and v.file:
+            by_file.setdefault(v.file, []).append(v)
 
     if backup_root is None:
         backup_root = os.path.join(game_dir, "backup")
@@ -1364,7 +1422,9 @@ def apply(game_dir: str, entries: list[TranslationEntry],
         backup_path = os.path.join(backup_root, rel)
         os.makedirs(os.path.dirname(backup_path), exist_ok=True)
         if not os.path.exists(backup_path):
-            shutil.copy2(abs_path, backup_path)
+            with open(abs_path, "rb") as f:
+                original_blob = f.read()
+            atomic_write_bytes(backup_path, original_blob)
             stats["backups"].append(backup_path)
 
         if rel.lower().endswith(".rpgmvm"):
@@ -1373,6 +1433,8 @@ def apply(game_dir: str, entries: list[TranslationEntry],
             from app.core.rpgmaker import crypto
             key = crypto.get_key_mv(game_dir)
             if not key:
+                if on_skip:
+                    on_skip(e, "missing MV encryption key")
                 continue
             try:
                 with open(abs_path, "rb") as f:
@@ -1409,8 +1471,7 @@ def apply(game_dir: str, entries: list[TranslationEntry],
             try:
                 new_body = crypto.encrypt_bytes(
                     json.dumps(data, ensure_ascii=False).encode("utf-8"), key)
-                with open(abs_path, "wb") as f:
-                    f.write(new_body)
+                atomic_write_bytes(abs_path, new_body)
             except OSError:
                 continue
             stats["files"] += 1
@@ -1448,8 +1509,7 @@ def apply(game_dir: str, entries: list[TranslationEntry],
                 continue
             # js-плагин: заменяем литералы по содержимому
             try:
-                with open(abs_path, encoding="utf-8-sig") as f:
-                    code = f.read()
+                code = _read_text(abs_path)
             except (OSError, UnicodeDecodeError):
                 continue
             new_code = code
@@ -1462,13 +1522,24 @@ def apply(game_dir: str, entries: list[TranslationEntry],
                     new_code = replaced
                     stats["strings"] += 1
             if new_code != code:
-                with open(abs_path, "w", encoding="utf-8") as f:
-                    f.write(new_code)
+                try:
+                    atomic_write_text(abs_path, new_code, encoding="utf-8")
+                except OSError:
+                    continue
                 stats["files"] += 1
             continue
 
-        data = _read_json(abs_path)
-        indent = _detect_indent(abs_path)
+        # Битый/полуперезаписанный data/*.json: пропускаем файл целиком,
+        # а не валим весь apply с частично перезаписанной игрой.
+        try:
+            data = _read_json(abs_path)
+            indent = _detect_indent(abs_path)
+        except (OSError, ValueError) as exc:
+            if on_skip:
+                for e in items:
+                    on_skip(e, f"cannot read json: {exc}")
+                    break
+            continue
         written = 0
         for e in items:
             if _SCRIPT_MARK in e.json_path:
@@ -1481,8 +1552,8 @@ def apply(game_dir: str, entries: list[TranslationEntry],
                     if on_skip:
                         on_skip(e, f"path not found: {exc}")
                     else:
-                        print(f"[parser] {rel}: path {path} "
-                              f"not found ({exc})")
+                        log.warning("%s: path %s not found (%s)",
+                                    rel, path, exc)
                     continue
                 if not isinstance(script, str):
                     continue
@@ -1495,12 +1566,12 @@ def apply(game_dir: str, entries: list[TranslationEntry],
             try:
                 current = get_by_path(data, e.json_path)
             except (KeyError, IndexError, TypeError) as exc:
-                if on_skip:
-                    on_skip(e, f"path not found: {exc}")
-                else:
-                    print(f"[parser] {rel}: path {e.json_path} "
-                          f"not found ({exc})")
-                continue
+                    if on_skip:
+                        on_skip(e, f"path not found: {exc}")
+                    else:
+                        log.warning("%s: path %s not found (%s)",
+                                    rel, e.json_path, exc)
+                    continue
             if isinstance(current, str):
                 new_val = _apply_event_slot(
                     data, e.json_path, current, e.original, e.translation)
@@ -1515,12 +1586,16 @@ def apply(game_dir: str, entries: list[TranslationEntry],
                     if on_skip:
                         on_skip(e, f"cannot write: {exc}")
                     else:
-                        print(f"[parser] {rel}: cannot write "
-                              f"{e.json_path} ({exc})")
+                        log.warning("%s: cannot write %s (%s)",
+                                    rel, e.json_path, exc)
             elif on_skip:
                 on_skip(e, "current value is not a string")
-        with open(abs_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=indent)
+        try:
+            atomic_write_text(
+                abs_path, json.dumps(data, ensure_ascii=False, indent=indent),
+                encoding="utf-8")
+        except OSError:
+            continue
         stats["files"] += 1
         stats["strings"] += written
     return stats
@@ -1572,8 +1647,7 @@ def _apply_html_title(abs_path: str, original: str,
     if new_text == text:
         return False
     try:
-        with open(abs_path, "w", encoding="utf-8") as f:
-            f.write(new_text)
+        atomic_write_text(abs_path, new_text, encoding="utf-8")
     except OSError:
         return False
     return True
@@ -1603,7 +1677,8 @@ def restore_original(game_dir: str) -> dict:
             dst = os.path.join(game_dir, *rel.split("/"))
             try:
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
-                shutil.copy2(src, dst)
+                with open(src, "rb") as f:
+                    atomic_write_bytes(dst, f.read())
                 done.add(rel)
                 restored += 1
             except OSError:
@@ -1627,7 +1702,8 @@ def restore_original(game_dir: str) -> dict:
                 dst = os.path.join(game_dir, *rel.split("/"))
                 try:
                     os.makedirs(os.path.dirname(dst), exist_ok=True)
-                    shutil.copy2(src, dst)
+                    with open(src, "rb") as f:
+                        atomic_write_bytes(dst, f.read())
                     done.add(rel)
                     restored += 1
                 except OSError:

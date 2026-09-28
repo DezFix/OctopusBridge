@@ -11,5 +11,5 @@ from app.core.rpgmaker.parser import (  # noqa: F401
     DB_FIELDS, SYSTEM_LIST_FIELDS, TERMS_LIST_FIELDS, TranslationEntry,
     annotations, apply, detect_engine, extract, find_data_dir, get_by_path,
     iter_js_strings, js_text_candidate, json, os, parse_path, re,
-    restore_original, set_by_path, shutil,
+    restore_original, set_by_path,
 )

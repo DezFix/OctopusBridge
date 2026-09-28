@@ -19,7 +19,7 @@ import time
 
 from app.core import process as proc
 from app.transport.cdp import browser
-from app.core.tentacles.cdp_base import (
+from app.live.cdp_base import (
     CDPTentacle, DEFAULT_SCAN_PORTS, bruteforce_port,
     cdp_page_is_game,
     probe_game_port as _base_probe,
@@ -105,16 +105,24 @@ def _is_stale_version(value) -> bool:
 
 
 def _has_stale_profile(profile_dir: str) -> bool:
-    """True, если в профиле есть Local State от более новой версии NW.js."""
+    """True, если профиль «протухший»: маркер версии в Local State
+    от более новой NW.js ИЛИ реально использованный профиль
+    (Web Data/Preferences) — именно там, по опыту сообщества
+    RPG Maker, зашита версия, из-за которой старая NW.js
+    показывает «профиль от более новой версии»."""
     ls = os.path.join(profile_dir, "Local State")
-    if not os.path.isfile(ls):
-        return False
-    try:
-        with open(ls, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return False
-    return _is_stale_version(data.get("user_data_version"))
+    if os.path.isfile(ls):
+        try:
+            with open(ls, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            data = {}
+        if _is_stale_version(data.get("user_data_version")):
+            return True
+    default_dir = os.path.join(profile_dir, "Default")
+    return any(os.path.isfile(os.path.join(default_dir, name))
+               for name in ("Web Data", "Web Data-journal",
+                            "Preferences", "Secure Preferences"))
 
 
 def _rename_if_exists(path: str) -> bool:
@@ -164,14 +172,7 @@ def clean_nwjs_profile(game_dir: str) -> list[str]:
         # использованный профиль (Web Data/Preferences) — именно там, по
         # опыту сообщества RPG Maker, зашита версия, из-за которой
         # старая NW.js показывает «профиль от более новой версии»
-        dirty = (_has_stale_profile(d)
-                 or os.path.isfile(os.path.join(default_dir, "Web Data"))
-                 or os.path.isfile(
-                     os.path.join(default_dir, "Web Data-journal"))
-                 or os.path.isfile(
-                     os.path.join(default_dir, "Preferences"))
-                 or os.path.isfile(
-                     os.path.join(default_dir, "Secure Preferences")))
+        dirty = _has_stale_profile(d)
         if not dirty:
             continue
         if _rename_if_exists(ls):
@@ -243,7 +244,9 @@ class RpgMakerTentacle(CDPTentacle):
                 if is_mv:
                     # MV: CDP недоступен, но мост мог подняться (плагин
                     # уже в игре) — подключаемся, ничего не закрывая
-                    bport = mv_bridge.find_bridge_port(wait=5.0)
+                    bport = mv_bridge.find_bridge_port(
+                        wait=5.0, expected_pid=pid,
+                        cancelled=lambda: self._detaching)
                     if bport:
                         self.log.emit(
                             f"Игра уже запущена с мостом (pid {pid}) — "
@@ -280,7 +283,7 @@ class RpgMakerTentacle(CDPTentacle):
                     "Не удалось закрыть уже запущенную игру. "
                     "Закройте её вручную и нажмите «Запустить» снова.")
                 return False
-            time.sleep(1.5)  # освободить порт и профиль NW.js
+            time.sleep(0.6)  # освободить порт и профиль NW.js
             break
 
         port = browser.free_port()
@@ -307,14 +310,14 @@ class RpgMakerTentacle(CDPTentacle):
         if is_mv:
             return self._launch_mv(port)
         self.log.emit(f"Отладка :{port}.")
-        if not self._connect_page(port, url_hint=".html", wait=30.0):
+        if not self._connect_page(port, url_hint=".html", wait=15.0):
             # NW.js мог поднять отладчик на другом порту (занятый
             # порт/инкремент) — ищем фактический до того, как сдаваться
             actual = probe_game_port(self._pid) if self._pid else 0
             if actual and actual != port:
                 self.log.emit(
                     f"Отладка поднялась на :{actual} — подключаюсь туда.")
-                if self._connect_page(actual, url_hint=".html", wait=10.0):
+                if self._connect_page(actual, url_hint=".html", wait=8.0):
                     return True
             # ВАЖНО: игру НЕ убиваем — перевод через ob_runtime.js
             # работает и без CDP, а убийство выглядит как
@@ -343,7 +346,9 @@ class RpgMakerTentacle(CDPTentacle):
         ни то, ни другое, игру НЕ закрываем: перевод работает через файлы.
         """
         self.log.emit("Жду мост MV (официальный рантайм без CDP)…")
-        bport = mv_bridge.find_bridge_port(wait=35.0)
+        bport = mv_bridge.find_bridge_port(
+            wait=20.0, expected_pid=self._pid,
+            cancelled=lambda: self._detaching)
         if bport:
             self._bridge_port = bport
             self.log.emit(
@@ -351,7 +356,7 @@ class RpgMakerTentacle(CDPTentacle):
             self._log_game_errors(bport)
             self.attached.emit()
             return True
-        if self._connect_page(port, url_hint=".html", wait=10.0):
+        if self._connect_page(port, url_hint=".html", wait=8.0):
             self.log.emit("Подключено через CDP (расширенная сборка).")
             return True
         # Честно: моста и CDP нет => читы недоступны, attached не эмитим.
@@ -365,7 +370,9 @@ class RpgMakerTentacle(CDPTentacle):
 
     def attach(self, pid: int) -> bool:
         # MV: мост может быть уже поднят (игра запущена с нашим плагином)
-        bport = mv_bridge.find_bridge_port(wait=3.0)
+        bport = mv_bridge.find_bridge_port(
+            wait=3.0, expected_pid=pid,
+            cancelled=lambda: self._detaching)
         if bport:
             self._pid = pid
             self._bridge_port = bport
@@ -576,6 +583,61 @@ class RpgMakerTentacle(CDPTentacle):
                     "var ev=$gameMap.event(eid);"
                     "if(!ev){throw new Error('события нет на этой карте');}"
                     "ev.start();return 'event_started';})()")
+        if cmd == "event_run":
+            mid = int(kwargs["mapId"])
+            eid = int(kwargs["eventId"])
+            pidx = int(kwargs.get("pageIndex", 0))
+            return (
+                "(function(){"
+                "'use strict';"
+                "var mapId=" + str(mid) + ",eventId=" + str(eid)
+                + ",pageIndex=" + str(pidx) + ";"
+                "if(typeof $gameMap==='undefined'||!$gameMap"
+                "||typeof $gameMap.mapId!=='function'"
+                "||typeof $gameMap.event!=='function'"
+                "||typeof Game_Interpreter==='undefined'){"
+                "return 'game_not_ready';}"
+                "if(typeof SceneManager!='undefined'&&typeof Scene_Map!='undefined'"
+                "&&SceneManager.scene&&!(SceneManager.scene instanceof Scene_Map)){"
+                "return 'not_map_scene';}"
+                "if($gameMap.mapId()!=mapId){return 'inactive_map';}"
+                "var ev=$gameMap.event(eventId);"
+                "if(!ev){return 'event_not_found';}"
+                "var dataEv=(typeof ev.event=='function'&&ev.event())||null;"
+                "if(!dataEv&&typeof $dataMap!='undefined'&&$dataMap"
+                "&&$dataMap.events){dataEv=$dataMap.events[eventId];}"
+                "var page=dataEv&&dataEv.pages&&dataEv.pages[pageIndex];"
+                "if(!page){return 'page_not_found';}"
+                "var list=page.list;"
+                "if(!list||!list.length){return 'empty_page';}"
+                "var interp=$gameMap._interpreter;"
+                "if(!interp){interp=new Game_Interpreter();"
+                "$gameMap._interpreter=interp;}"
+                "if(typeof interp.setup!='function'){"
+                "return 'interpreter_unsupported';}"
+                "var running=typeof interp.isRunning=='function'"
+                "?interp.isRunning():!!(interp._list&&interp._list.length);"
+                "var parent=interp,depth=0;"
+                "while(depth<100){"
+                "var child=parent._child||parent._childInterpreter;"
+                "if(!child){break;}parent=child;depth++;}"
+                "if(depth>=100){return 'interpreter_depth_limit';}"
+                "var target;"
+                "if(running){"
+                "if(typeof parent.setupChild!='function'){"
+                "return 'interpreter_unsupported';}"
+                "parent.setupChild(list,eventId);"
+                "target=parent._child||parent._childInterpreter;"
+                "}else{interp.setup(list,eventId);target=interp;}"
+                "if(!target){return 'interpreter_setup_failed';}"
+                "if(typeof target.setEventInfo=='function'){"
+                "var originalPage=typeof ev._pageIndex=='number'?ev._pageIndex:-1;"
+                "var eventInfo={eventType:'map_event',mapId:mapId,"
+                "mapEventId:eventId,page:pageIndex+1};"
+                "if(target.setEventInfo.length>=4){"
+                "target.setEventInfo(eventInfo,eventId,originalPage,pageIndex);"
+                "}else{target.setEventInfo(eventInfo);}}"
+                "return running?'event_run_attached':'event_run_started';})()")
         if cmd == "reload_map":
             # Без Decrypter/XHR-хитростей: перечитываем файл карты через
             # штатный XHR (plain JSON) с www/data-фолбэком, для шифрованных
@@ -676,6 +738,20 @@ class RpgMakerTentacle(CDPTentacle):
             return ("(function(){if(typeof SceneManager==='undefined'){"
                     "throw new Error('сцена недоступна');}"
                     "SceneManager.push(Scene_GameEnd);return 'gameend_opened';})()")
+        if cmd == "actor_join":
+            aid = int(kwargs["actorId"])
+            return ("(function(){var a=$gameActors.actor(" + str(aid) + ");"
+                    "if(!a){throw new Error('нет такого героя');}"
+                    "if($gameParty.members().indexOf(a)===-1){"
+                    "$gameParty.addActor(" + str(aid) + ");}"
+                    "return a.name();})()")
+        if cmd == "actor_leave":
+            aid = int(kwargs["actorId"])
+            return ("(function(){var a=$gameActors.actor(" + str(aid) + ");"
+                    "if(!a){throw new Error('нет такого героя');}"
+                    "if($gameParty.members().indexOf(a)!==-1){"
+                    "$gameParty.removeActor(" + str(aid) + ");}"
+                    "return a.name();})()")
         if cmd == "actor_set":
             field = str(kwargs["field"])
             fid = int(kwargs["actorId"])

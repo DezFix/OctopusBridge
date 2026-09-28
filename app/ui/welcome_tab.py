@@ -25,16 +25,37 @@ class _LaunchWorker(QThread):
     """Запуск игры в фоне: щупальце ждёт подключения до 60 с —
     GUI не должен замирать, оверлей с анимацией показывает статус."""
 
-    done = Signal(bool)
+    done = Signal(bool, int)
 
-    def __init__(self, main_window, game_dir: str, parent=None):
+    def __init__(self, main_window, game_dir: str, generation: int,
+                 tentacle, operation: int, parent=None):
         super().__init__(parent)
         self._main = main_window
         self._game_dir = game_dir
+        self._generation = generation
+        self.tentacle = tentacle
+        self.operation = operation
+        self.wait_timeout = 5000
+
+    def cancel(self):
+        self.requestInterruption()
+        if self.tentacle is not None:
+            try:
+                self.tentacle.detach()
+            except Exception:  # noqa: BLE001
+                pass
 
     def run(self):
-        ok = self._main.start_session(self._game_dir)
-        self.done.emit(bool(ok))
+        if self.isInterruptionRequested() or \
+                self._main._session_generation != self._generation:
+            self.done.emit(False, self._generation)
+            return
+        try:
+            ok = bool(self.tentacle is not None
+                      and self.tentacle.launch(self._game_dir))
+        except Exception:  # noqa: BLE001
+            ok = False
+        self.done.emit(ok, self._generation)
 
 
 class WelcomeTab(QWidget):
@@ -58,6 +79,7 @@ class WelcomeTab(QWidget):
         self._stack.addWidget(self._page_dashboard)
 
         self._root.addWidget(self._stack)
+        self._pending_font_size: int | None = None
 
         # session signals (для читов)
         main_window.bridge_client.connect(self._on_session_client)
@@ -209,6 +231,7 @@ class WelcomeTab(QWidget):
         info_form.addRow(TR("dash_encryption"), self.lbl_enc)
         info_form.addRow(TR("dash_saves"), self.lbl_saves)
         info_form.addRow(TR("dash_stats"), self.lbl_stats)
+        self._info_form = info_form
         lay.addWidget(info_box)
 
         # quick actions: извлечение, перевод, запуск игры для читов
@@ -369,7 +392,7 @@ class WelcomeTab(QWidget):
     def _live_tentacle(self):
         """Активное щупальце живой игры или None (без исключений)."""
         try:
-            return self.main.channel()
+            return self.main.ensure_channel()
         except Exception:  # noqa: BLE001
             return None
 
@@ -413,8 +436,11 @@ class WelcomeTab(QWidget):
         return False
 
     def _live_suffix(self, ok: bool) -> str:
-        return ("\n" + TR("dash_font_live_ok")) if ok else (
-            "\n" + TR("dash_font_need_restart"))
+        if ok:
+            return "\n" + TR("dash_font_live_ok")
+        if self.main.session.is_game_running():
+            return "\n" + TR("dash_font_live_failed")
+        return "\n" + TR("dash_font_need_restart")
 
     def _font_size_change(self, delta: int):
         p = self.main.project
@@ -437,8 +463,16 @@ class WelcomeTab(QWidget):
             QMessageBox.critical(self, TR("dash_font_size"), str(e))
             self._refresh_font_size()
             return
-        # живой размер без перезапуска (best-effort, без попапов при драге)
-        self._live_apply_size(new)
+        live = self._live_apply_size(new)
+        if self.main.session.is_game_running():
+            if live:
+                self._pending_font_size = None
+                self.lbl_session_status.setText(TR(
+                    "dash_font_size_live_ok"))
+            else:
+                self._pending_font_size = new
+                self.lbl_session_status.setText(TR(
+                    "dash_font_size_live_failed"))
 
     def _refresh_stats(self):
         p = self.main.project
@@ -479,13 +513,27 @@ class WelcomeTab(QWidget):
         self.lbl_saves.setText(str(n))
 
         total = len(p.entries)
-        done = sum(1 for e in p.entries if e.translation.strip())
+        done = sum(1 for e in p.entries if (e.translation or "").strip())
         if total:
             self.lbl_stats.setText(
                 TR("dash_stats_fmt", total=total,
                    done=done, left=total - done))
         else:
             self.lbl_stats.setText(TR("dash_no_extract"))
+        # Прячем строки без смысла для движка: «Шифрование» бывает
+        # только у RPG Maker (у остальных вечно «—»), «Сейвы» считает
+        # только папку save/ (Twine) — у остальных вечно «0».
+        engine_key = getattr(mod, "key", "") or ""
+        self._set_info_row_visible(self.lbl_enc, engine_key == "rpgmaker")
+        self._set_info_row_visible(self.lbl_saves, engine_key == "twine")
+
+    def _set_info_row_visible(self, field: QWidget, visible: bool):
+        """Показать/скрыть строку формы вместе с её подписью."""
+        field.setVisible(visible)
+        form = getattr(self, "_info_form", None)
+        label = form.labelForField(field) if form is not None else None
+        if label is not None:
+            label.setVisible(visible)
 
     # ===================================================================
     #  Quick actions
@@ -496,7 +544,10 @@ class WelcomeTab(QWidget):
             return
         self.btn_extract.setEnabled(False)
         self.lbl_status.setText(TR("tr_extracting"))
-        self.main.start_extraction(self._on_extracted)
+        if not self.main.start_extraction(self._on_extracted):
+            # воркер не стартовал — _on_extracted не придёт,
+            # кнопку разблокируем сами, иначе залипнет.
+            self.btn_extract.setEnabled(True)
 
     def _on_extracted(self, restored: int, error: str):
         self.btn_extract.setEnabled(True)
@@ -530,12 +581,57 @@ class WelcomeTab(QWidget):
         self.btn_launch.setEnabled(False)
         self.btn_launch.setText(TR("dash_launching"))
         self.lbl_session_status.setText(TR("dash_launching"))
-        self.main.loading.show_loading(TR("dash_launching"))
-        self._launch_worker = _LaunchWorker(self.main, game_dir, self)
-        self._launch_worker.done.connect(self._on_launch_done)
+        self.main.loading.show_loading(TR("dash_launching"),
+                                       TR("tr_cancel"), self._cancel_launch)
+        generation = self.main._session_generation
+        prepared = self.main.prepare_session(
+            game_dir, generation=generation)
+        if prepared is None:
+            self.main.loading.hide_loading()
+            self.btn_launch.setEnabled(True)
+            self.btn_launch.setText(TR("dash_launch"))
+            self.btn_launch.setIcon(icon("play"))
+            return
+        tentacle, operation = prepared
+        self._launch_worker = _LaunchWorker(
+            self.main, game_dir, generation, tentacle, operation, self)
+        self._launch_worker.done.connect(
+            lambda ok, gen, worker=self._launch_worker:
+            self._on_launch_done(ok, gen, worker))
         self._launch_worker.start()
 
-    def _on_launch_done(self, ok: bool):
+    def _cancel_launch(self):
+        """Отмена запуска из оверлея: просим воркер остановиться.
+
+        Состояние кнопки/оверлея доведёт _on_launch_done (done прилетит
+        следом); оверлей прячем сразу, чтобы не висеть на detach.
+        """
+        worker = getattr(self, "_launch_worker", None)
+        if worker is not None:
+            try:
+                worker.cancel()
+            except Exception:  # noqa: BLE001
+                pass
+        self.main.loading.hide_loading()
+
+    def _reset_launch_button(self):
+        self.btn_launch.setEnabled(True)
+        self.btn_launch.setText(TR("dash_launch"))
+        self.btn_launch.setIcon(icon("play"))
+        if self.lbl_session_status.text() == TR("dash_launching"):
+            self.lbl_session_status.setText(TR("dash_session_idle"))
+
+    def _on_launch_done(self, ok: bool, generation: int, worker):
+        if generation != self.main._session_generation:
+            self.main.finish_session(
+                worker.tentacle, ok, worker.operation, generation)
+            # Протухший запуск: раньше выходили без hide_loading —
+            # оверлей оставался висеть поверх всего окна навсегда.
+            self.main.loading.hide_loading()
+            self._reset_launch_button()
+            return
+        self.main.finish_session(
+            worker.tentacle, ok, worker.operation, generation)
         self.main.loading.hide_loading()
         # _on_session_client/_on_session_error покрывают успех/ошибку
         # с сигналом, но запуск без CDP (игра висит без attached) и
@@ -543,10 +639,15 @@ class WelcomeTab(QWidget):
         # («Запускаю…», disabled). Доводим состояние здесь.
         if not ok:
             self.btn_launch.setEnabled(True)
-            self.btn_launch.setText(TR("dash_launch"))
-            self.btn_launch.setIcon(icon("play"))
-            if self.lbl_session_status.text() == TR("dash_launching"):
-                self.lbl_session_status.setText(TR("dash_session_idle"))
+            if self.main.session.is_game_running():
+                self.btn_launch.setText(TR("dash_stop"))
+                self.btn_launch.setIcon(icon("stop"))
+                self.lbl_session_status.setText(TR("dash_session_nocdp"))
+            else:
+                self.btn_launch.setText(TR("dash_launch"))
+                self.btn_launch.setIcon(icon("play"))
+                if self.lbl_session_status.text() == TR("dash_launching"):
+                    self.lbl_session_status.setText(TR("dash_session_idle"))
             return
         if self.main.session.is_active():
             return  # _on_session_client уже выставил «Стоп»
@@ -571,8 +672,17 @@ class WelcomeTab(QWidget):
         self.btn_launch.setIcon(icon("play"))
         self.lbl_session_status.setText(TR("dash_session_idle"))
 
+    def _apply_pending_font_size(self):
+        size = self._pending_font_size
+        if size is None or not self.main.session.is_active():
+            return
+        if self._live_apply_size(size):
+            self._pending_font_size = None
+            self.lbl_session_status.setText(TR("dash_font_size_live_ok"))
+
     def _on_session_client(self, connected: bool):
         if connected:
+            self._apply_pending_font_size()
             self.lbl_session_status.setText(TR("dash_session_connected"))
             self.btn_launch.setText(TR("dash_stop"))
             self.btn_launch.setIcon(icon("stop"))
@@ -709,6 +819,13 @@ class WelcomeTab(QWidget):
     # ===================================================================
     def _go_welcome(self):
         self.main.stop_session()
+        try:
+            flush = getattr(getattr(self.main, "translate_tab", None),
+                            "flush_save", None)
+            if callable(flush):
+                flush()
+        except Exception:  # noqa: BLE001
+            pass
         self.main.project = None
         self.main.engine_module = None
         self.main._hide_work_tabs()
