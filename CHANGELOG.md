@@ -2,6 +2,12 @@
 
 All notable changes to the project. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: `X.Y` — `X` is the update number (new features), `Y` fixes for the last update (e.g. `154.6`).
 
+## [7.36] - 2026-10-10
+
+### Added
+- **Прямой перевод исходников Ren'Py (`translate_text`, `apply_sourced`).** Механизм `tl/` зависит от версии Ren'Py и на старых играх ломает загрузку (на SR24 мод-лоадер получал строку вместо словаря). Теперь перевод пишется прямо в `.rpy` игры: никаких `config.language`, `old`/`new` и глобальных подмен в коде игры.
+- Бэкап оригинала перед записью и атомарная запись — откатить одним удалением файла.
+
 ## [7.35] - 2026-10-10
 
 ### Fixed
