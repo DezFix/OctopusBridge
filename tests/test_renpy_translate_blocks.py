@@ -66,7 +66,9 @@ with tempfile.TemporaryDirectory() as td:
     assert text, files
     assert "translate russian start:" in text, text
     assert "translate russian screens:" in text, text
-    assert "translate russian strings:" in text, text
+    # БЛОКА strings: быть не должно: он подменяет python-строки в коде
+    # игры и ломает словари (SR24). См. test_renpy_no_strings_block.py
+    assert "translate russian strings:" not in text, text
     blocks = dict(re.findall(
         r"^translate russian ([^:\r\n]+):\r?\n((?:(?:    .*)?\r?\n)+)",
         text, re.M))
@@ -74,8 +76,6 @@ with tempfile.TemporaryDirectory() as td:
     assert "Settings" not in blocks.get("start", ""), \
         "текст экрана не должен попадать в блок метки"
     assert "Settings" in blocks.get("screens", ""), blocks
-    assert "Gold" in blocks.get("strings", ""), blocks
-    assert "Plain" in blocks.get("strings", ""), blocks
 print("   OK")
 
 print("4) метка не теряется при извлечении...")

@@ -62,7 +62,8 @@ with tempfile.TemporaryDirectory() as td:
     stats = renpy.apply(td, entries, "ru")
     out = os.path.join(stats["out_dir"], "ob_game__script.rpy")
     content = open(out, encoding="utf-8").read()
-    assert "translate russian strings:" in content
+    # БЛОКА strings: больше нет: он подменяет python-строки в коде
+# игр и ломал словари (SR24). См. test_renpy_no_strings_block.py
     assert 'old "Привет, я ведьма."' in content
     assert 'new "TR:Привет, я ведьма."' in content
     assert renpy.apply(td, entries, "ru")  # повторная генерация не падает
@@ -81,7 +82,9 @@ with tempfile.TemporaryDirectory() as td:
     make_renpy(td)
     entries = renpy.extract(td)
     entries.append(TranslationEntry(
-        999, "game/script.rpy", "", "",
+        999, "game/script.rpy",
+        "label:start|ctx:game/script.rpy:1:dialogue",
+        "game/script.rpy:1:dialogue",
         "Первая строка\nВторая строка",
         "Первый перевод\nВторой перевод", "translated"))
     stats = renpy.apply(td, entries, "ru")
@@ -273,13 +276,13 @@ with tempfile.TemporaryDirectory() as td:
     os.makedirs(os.path.join(td, "game", "tl"))
     for e in renpy.extract(td):
         e.translation = "TR:" + e.original
-    entries = [TranslationEntry(1, "game/script.rpy", "", "",
+    entries = [TranslationEntry(1, "game/script.rpy", "label:start|ctx:game/script.rpy:1:dialogue", "game/script.rpy:1:dialogue",
                                 "Общая реплика.", "TR:Общая реплика.",
                                 "translated"),
-               TranslationEntry(2, "game/other.rpy", "", "",
+               TranslationEntry(2, "game/other.rpy", "label:start|ctx:game/other.rpy:1:dialogue", "game/other.rpy:1:dialogue",
                                 "Общая реплика.", "TR:Общая реплика.",
                                 "translated"),
-               TranslationEntry(3, "game/other.rpy", "", "",
+               TranslationEntry(3, "game/other.rpy", "label:start|ctx:game/other.rpy:1:dialogue", "game/other.rpy:1:dialogue",
                                 "Уникальная реплика.",
                                 "TR:Уникальная реплика.", "translated")]
     stats = renpy.apply(td, entries, "ru")

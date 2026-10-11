@@ -14,7 +14,6 @@ Generation: official Ren'Py mechanism — game/tl/<lang>/*.rpy with blocks:
 from __future__ import annotations
 
 import ast
-import hashlib
 import io
 import os
 import pickle
@@ -1432,7 +1431,7 @@ def apply(game_dir: str, entries: list[TranslationEntry],
     tl_dir = os.path.join(game_dir, "game", "tl", lang)
     stats = {"files": 0, "strings": 0, "new_strings": 0, "out_dir": "",
              "unsafe_skipped": unsafe_count, "removed_orphans": 0,
-             "dup_skipped": 0}
+             "dup_skipped": 0, "strings_dropped": 0}
     written_paths: set[str] = set()
     # Ren'Py запрещает дубликаты old-строк в одном языке (падение
     # «A translation ... already exists»), поэтому одна и та же реплика
@@ -1468,7 +1467,7 @@ def apply(game_dir: str, entries: list[TranslationEntry],
         #   * метки нет   -> `strings:` (python-строки, скрипты).
         by_label: dict[str, list[TranslationEntry]] = {}
         screens: list[TranslationEntry] = []
-        plain: list[TranslationEntry] = []
+        dropped = 0
         for e in deduped:
             where = _entry_block(e)
             if where == "label":
@@ -1476,7 +1475,15 @@ def apply(game_dir: str, entries: list[TranslationEntry],
             elif where == "screens":
                 screens.append(e)
             else:
-                plain.append(e)
+                # `translate <lang> strings:` подменяет python-строки
+                # ПРЯМО В КОДЕ ИГРЫ. На SR24 это ломало игру насмерть:
+                # мод-лоадер строит словари из строк, и переводённый
+                # ключ приходит строкой вместо dict -> AttributeError
+                # 'unicode' object has no attribute 'get' на старте.
+                # Такие строки не пишем: их переводит runtime-хук
+                # Text.__init__, он трогает только отображаемый текст.
+                dropped += 1
+        stats["strings_dropped"] = dropped
         chunks = [f"# OctopusBridge translation ({rel})\n"]
         for label in sorted(by_label):
             chunks.append(f"translate {lang} {label}:\n\n")
@@ -1492,17 +1499,7 @@ def apply(game_dir: str, entries: list[TranslationEntry],
                     new_count += 1
                 chunks.append(f'    old "{_escape(e.original)}"\n')
                 chunks.append(f'    new "{_escape(e.translation)}"\n\n')
-        if plain:
-            chunks.append(f"translate {lang} strings:\n\n")
-            for e in plain:
-                if e.original not in existing_olds:
-                    new_count += 1
-                digest = hashlib.sha1(
-                    e.original.encode("utf-8")).hexdigest()[:12]
-                chunks.append(f"    # ob-sha1 {digest}\n")
-                chunks.append(f'    old "{_escape(e.original)}"\n')
-                chunks.append(f'    new "{_escape(e.translation)}"\n\n')
-        if not by_label and not screens and not plain:
+        if not by_label and not screens:
             continue
         try:
             _atomic_write(out_path, "".join(chunks), encoding="utf-8")

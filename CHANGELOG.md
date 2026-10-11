@@ -2,6 +2,20 @@
 
 All notable changes to the project. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: `X.Y` — `X` is the update number (new features), `Y` fixes for the last update (e.g. `154.6`).
 
+## [7.34] - 2026-10-10
+
+### Fixed
+- **Перевод ломал некоторые Ren'Py-игры (SR24 — игра не запускалась).**
+  Блок `translate <lang> strings:` подменяет python-строки **прямо в коде
+  игры**. У SR24 мод-лоадер на старте строит словари из строк, и
+  переведённый ключ приходил текстом вместо `dict`:
+  `AttributeError: 'unicode' object has no attribute 'get'`. Из 6562 строк
+  игры 3291 — именно python-строки, то есть ломалось больше половины.
+  Теперь такой блок **не пишется никогда**: остаются только
+  структурные `translate <lang> <метка>:` и `translate <lang> screens:`,
+  которые трогают отображаемый текст. Python-строки, как и раньше,
+  переводит runtime-хук `Text.__init__`.
+
 ## [7.33] - 2026-10-10
 
 ### Fixed
