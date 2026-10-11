@@ -1620,36 +1620,15 @@ def apply(game_dir: str, entries: list[TranslationEntry],
 #    через dir(store.style), а не по жёсткому списку — так patch покрывает
 #    и кастомные стили, которых разработчик игры мог насоздавать сколько
 #    угодно под свои экраны.
-_ACTIVATE_TEMPLATE = '''# OctopusBridge: activate {lang} translation + universal text/font hooks
+_ACTIVATE_TEMPLATE = '''# OctopusBridge: activate {lang} translation + font fallback
 init 1 python:
     config.language = "{lang}"
 
-init -999 python:
-    import json as _ob_json
-    try:
-        _ob_dict_path = renpy.loader.transfn("tl/{lang}/ob_dict.json")
-        with open(_ob_dict_path, "r", encoding="utf-8") as _ob_f:
-            _OB_DICT = _ob_json.load(_ob_f)
-    except Exception:
-        _OB_DICT = {{}}
-
-    if not hasattr(renpy.text.text.Text, "_ob_patched"):
-        _ob_orig_text_init = renpy.text.text.Text.__init__
-
-        def _ob_text_init(self, text, *args, **kwargs):
-            try:
-                if isinstance(text, str):
-                    text = _OB_DICT.get(text, text)
-                elif isinstance(text, list):
-                    text = [_OB_DICT.get(t, t) if isinstance(t, str) else t
-                            for t in text]
-            except Exception:
-                pass
-            return _ob_orig_text_init(self, text, *args, **kwargs)
-
-        renpy.text.text.Text.__init__ = _ob_text_init
-        renpy.text.text.Text._ob_patched = True
-
+# Глобальная подмена Text.__init__ УДАЛЕНА намеренно.
+# Она правила текст у КАЖДОГО узла игры, включая те, что игра держит как
+# данные (словари модов, ключи таблиц), и ломала загрузку: на SR24
+# мод-лоадер падал на старте. Штатные блоки перевода по меткам и экранам
+# переводят реплики и интерфейс сами и трогают только отображаемый текст.
 init 999 python:
     _ob_fallback_font = "ob_fonts/NotoSans-Regular.ttf"
 
