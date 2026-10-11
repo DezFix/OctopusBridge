@@ -287,10 +287,12 @@ with tempfile.TemporaryDirectory() as td:
         f.write("Start=0\nSoftModeFlag=0\nWindowModeFlag=1\n")
     with open(os.path.join(td, "Data", "BasicData.wolf"), "wb") as f:
         f.write(b"DX\x08\x00" + b"\x00" * 100)
-    from app.engines.registry import detect_engine
+    from app.engines.registry import DISABLED_ENGINES, detect_engine
     from app.engines.wolf import WolfModule
     assert parser.detect(td) == 105, parser.detect(td)
-    mod = detect_engine(td)
+    assert "wolf" in DISABLED_ENGINES
+    assert detect_engine(td) is None, "реестр должен скрывать wolf"
+    mod = WolfModule(td)
     assert isinstance(mod, WolfModule), type(mod)
     assert "files" in mod.features and "font" in mod.features
 print("   OK")

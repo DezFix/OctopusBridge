@@ -20,7 +20,7 @@ from app.live.session import GameSession
 from app.core.models import Project
 from app.core.translate.engines import GoogleFreeEngine
 from app.core.translate.glossary import Glossary
-from app.core.translate.memory import TranslationMemory
+
 from app.engines.registry import detect_engine
 from app.ui.i18n import TR, provider_short_name, set_language
 from app.ui.welcome_tab import WelcomeTab
@@ -147,7 +147,6 @@ class MainWindow(QMainWindow):
         _migrate_project_files()
         app_paths.migrate_appdata()
         self._dedup_recent()
-        self.tm = TranslationMemory(os.path.join(PROJECTS_DIR, "tm.sqlite"))
         self.glossary = Glossary(os.path.join(app_paths.glossary_dir(),
                                               "glossary.json"))
         self.project: Project | None = None
@@ -461,14 +460,6 @@ class MainWindow(QMainWindow):
                 else:
                     empty += 1
         self.status_bar.update_project_stats(done, draft, empty, total)
-        # Размер памяти переводов — рядом со сводкой («Память: {total}»).
-        # Битая tm2 не роняет статистику.
-        try:
-            tm = getattr(self, "tm", None)
-            if tm is not None:
-                self.status_bar.set_memory(tm.stats().get("total", 0))
-        except Exception:  # noqa: BLE001
-            pass
 
     # ---------- recent projects ----------
     def _dedup_recent(self):
@@ -705,7 +696,7 @@ class MainWindow(QMainWindow):
                 or getattr(translator, "engine", None).__class__ \
                 is not GoogleFreeEngine:
             from app.core.translate.service import Translator
-            translator = Translator(GoogleFreeEngine(), tm=self.tm,
+            translator = Translator(GoogleFreeEngine(),
                                     glossary=self.glossary)
             self._live_translator = translator
         return translator.translate_texts(list(texts),
@@ -720,7 +711,7 @@ class MainWindow(QMainWindow):
         tentacle.setParent(self)
         if port_hint and hasattr(tentacle, "set_port_hint"):
             tentacle.set_port_hint(port_hint)
-        if key == "twine":
+        if key in ("twine", "html"):
             tentacle.set_tr_callback(self._live_translate)
         return tentacle
 
@@ -806,6 +797,7 @@ class MainWindow(QMainWindow):
         if not t:
             return ""
         return {"rpgmaker": "CDP", "renpy": "Frida", "twine": "HTTP+WS",
+                "html": "HTTP+WS",
                 "tyrano": "CDP", "wolf": "EXE"}.get(t.key, t.key)
 
     def _on_sb_client(self, connected: bool):
@@ -871,5 +863,4 @@ class MainWindow(QMainWindow):
         self.stop_session(kill_game=True)
         self._stop_workers()
         self.save_project()
-        self.tm.close()
         super().closeEvent(event)

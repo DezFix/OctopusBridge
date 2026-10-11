@@ -247,7 +247,11 @@ def tile_parts(tile_id: int, flags: list[int] | None = None,
     w1, h1 = TILE // 2, TILE // 2
     out: list[tuple[int, int, int, int, int, int, int]] = []
     for i in range(4):
-        qsx, qsy = table[shape][i]
+        # shape ∈ [0, 48), но WATERFALL_AUTOTILE_TABLE (4 записи)
+        # и WALL_AUTOTILE_TABLE (16) короче — нечётные tileId
+        # давали IndexError. Остаток — безопасный fallback:
+        # паттерн просто повторяется циклически.
+        qsx, qsy = table[shape % len(table)][i]
         sx1 = (bx * 2 + qsx) * w1
         sy1 = (by * 2 + qsy) * h1
         dx1 = (i % 2) * w1

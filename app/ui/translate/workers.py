@@ -45,8 +45,7 @@ class TranslateWorker(QThread):
     failed = Signal(str)
 
     def __init__(self, translator: Translator, entries, src, tgt,
-                 overwrite=False, prefill: bool = False,
-                 ping_hint: str = ""):
+                 overwrite=False, ping_hint: str = ""):
         super().__init__()
         self.setObjectName("TranslateWorker")
         self.translator = translator
@@ -54,7 +53,6 @@ class TranslateWorker(QThread):
         self.src = src
         self.tgt = tgt
         self.overwrite = overwrite
-        self.prefill = prefill
         # Текст ошибки при недоступном движке (готовит GUI-поток без
         # сети; сам ping — только здесь, в фоне).
         self.ping_hint = ping_hint
@@ -63,8 +61,8 @@ class TranslateWorker(QThread):
         try:
             # Проверка связи — в фоне: ping() ходит в сеть (Google +
             # Bing-токены) и в GUI-потоке морозил окно на десятки секунд.
-            # Этапы шлём текстом: иначе «Перевожу» висит без прогресса,
-            # пока ping/prefill молчат.
+            # Этап шлём текстом: иначе «Перевожу» висит без прогресса,
+            # пока ping молчит.
             self.status.emit(TR("tr_status_ping"))
             try:
                 alive = self.translator.engine.ping()
@@ -81,18 +79,7 @@ class TranslateWorker(QThread):
                 if self.isInterruptionRequested():
                     raise InterruptedError("cancelled")
                 self.progressed.emit(d, t)
-            # Сначала память переводов: повторы и уже переведённые ранее
-            # строки уходят из сети нулём запросов.
-            if self.prefill and not self.overwrite:
-                self.status.emit(TR("tr_status_memory"))
-                try:
-                    self.translator.prefill_from_memory(
-                        self.entries, self.src, self.tgt)
-                except InterruptedError:
-                    raise
-                except Exception:  # noqa: BLE001 — память не обязательна
-                    pass
-                self.progressed.emit(0, max(len(self.entries), 1))
+            self.progressed.emit(0, max(len(self.entries), 1))
             n = self.translator.translate_entries(
                 self.entries, self.src, self.tgt,
                 progress=progress_check,

@@ -124,6 +124,10 @@ class BackupStore:
             elif not obj:
                 self._manifest = {"files": {}}
 
+    def manifest_files(self) -> dict:
+        """Копия манифеста {abs_orig: backup_name} (для проверок и UI)."""
+        return dict(self._manifest.get("files", {}))
+
     def _save_manifest(self) -> None:
         os.makedirs(self.backup_dir, exist_ok=True)
         atomic_write_json(self.manifest_path, self._manifest, indent=1)

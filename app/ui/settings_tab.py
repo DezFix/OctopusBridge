@@ -6,7 +6,7 @@ from PySide6.QtCore import QThread, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QCheckBox, QDialog, QFormLayout,
                                QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-                               QPushButton, QSpinBox,
+                               QMessageBox, QPushButton, QSpinBox,
                                QVBoxLayout, QWidget)
 
 from app.core import cache as app_cache

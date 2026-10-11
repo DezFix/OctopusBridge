@@ -109,38 +109,8 @@ PLUGIN_JS = r"""/* Плагин окна Twine-игры: синк сейвов �
               .catch(function () { lastSig = ''; });
         } catch (e) { lastSig = ''; }
     }
-    function pollImport() {
-        try {
-            fetch('/api/saves/pending-import', { cache: 'no-store' })
-                .then(function (r) { return r.json(); })
-                .then(function (p) {
-                    if (!p || !p.data || !scSave()) return;
-                    var S = scSave(), ok = false;
-                    try {
-                        var obj = S.deserialize(p.data);
-                        if (p.slot !== undefined && p.slot !== null && p.slot !== '') {
-                            S.slots.set(String(p.slot), obj);
-                        } else {
-                            S.slots.set(String(S.slots.size()), obj);
-                        }
-                        ok = true;
-                    } catch (e) { ok = false; }
-                    if (ok) {
-                        setStatus('сейв загружен в игру');
-                        fetch('/api/saves/import', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: '{"applied":1}'
-                        }).catch(function () {});
-                    }
-                })
-                .catch(function () {});
-        } catch (e) {}
-    }
     setInterval(pushSaves, 8000);
-    setInterval(pollImport, 5000);
     setTimeout(pushSaves, 5000);
-    setTimeout(pollImport, 3000);
 })();
 """
 

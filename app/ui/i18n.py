@@ -49,16 +49,16 @@ _STRINGS = {
         "en": "No recent projects",
     },
     "projects_subtitle": {
-        "ru": "Ваши игры — нажмите, чтобы продолжить перевод, или перетащите папку игры сюда",
-        "en": "Your games — click one to continue translating, or drag a game folder here",
+        "ru": "Нажмите, чтобы продолжить перевод, или перетащите папку игры.",
+        "en": "Click to continue, or drag a game folder here.",
     },
     "projects_empty_title": {
         "ru": "Пока нет проектов",
         "en": "No projects yet",
     },
     "projects_empty_hint": {
-        "ru": "Добавьте игру: перетащите папку на главный экран\nили нажмите «Добавить игру»",
-        "en": "Add a game: drag its folder to the home screen\nor press \"Add game\"",
+        "ru": "Перетащите папку игры или нажмите «Добавить игру».",
+        "en": "Drag a game folder or press Add game.",
     },
     "projects_add": {
         "ru": "Добавить игру",
@@ -197,15 +197,10 @@ _STRINGS = {
         "ru": "Проверка связи с переводчиком…",
         "en": "Checking translator connection…",
     },
-    "tr_status_memory": {
-        "ru": "Поиск готовых переводов в памяти…",
-        "en": "Looking up translation memory…",
-    },
     "tr_status_wait": {
         "ru": "Провайдеры отдыхают от лимита, жду {sec} с…",
         "en": "Providers cooling down, waiting {sec}s…",
     },
-    "tr_correcting": {"ru": "ИИ-коррекция…", "en": "Correcting…"},
     "tr_mode_new": {"ru": "Только новые и сбойные", "en": "New & failed only"},
     "tr_mode_all": {"ru": "Перевести всё заново", "en": "Re-translate all"},
     "tr_mode": {"ru": "Режим перевода", "en": "Translation mode"},
@@ -224,7 +219,6 @@ _STRINGS = {
     "tr_lang_unknown": {"ru": "Без букв", "en": "No letters"},
     "tr_cancel": {"ru": "Отмена", "en": "Cancel"},
     "tr_apply": {"ru": "Внедрить в игру", "en": "Apply to game"},
-    "tr_correct": {"ru": "ИИ-коррекция", "en": "AI Correction"},
     "tr_glossary": {"ru": "Глоссарий…", "en": "Glossary…"},
     "tr_export": {"ru": "Экспорт CSV", "en": "Export CSV"},
     "tr_import": {"ru": "Импорт CSV", "en": "Import CSV"},
@@ -301,34 +295,6 @@ _STRINGS = {
         "ru": "Отменено: переведено {done} из {total} строк (перевод сохранён в проекте — его можно доработать или применить)",
         "en": "Cancelled: {done} of {total} lines translated (kept in project)",
     },
-    "tr_correct_done": {
-        "ru": "ИИ-коррекция завершена: {n} строк вычитано",
-        "en": "AI correction done: {n} lines reviewed",
-    },
-    "tr_correct_reviewed": {
-        "ru": "Принято: {accepted} из {total} предложений",
-        "en": "Accepted: {accepted} of {total} suggestions",
-    },
-    # ── Diff review ──
-    "diff_title": {"ru": "Ревизия ИИ-коррекции", "en": "AI Correction Review"},
-    "diff_hint": {
-        "ru": "LLM предложил {n} исправлений. Принимайте или отклоняйте каждое.",
-        "en": "LLM suggested {n} corrections. Accept or reject each one.",
-    },
-    "diff_col_orig": {"ru": "Оригинал", "en": "Original"},
-    "diff_col_was": {"ru": "Было", "en": "Before"},
-    "diff_col_became": {"ru": "Стало", "en": "After"},
-    "diff_col_action": {"ru": "Действие", "en": "Action"},
-    "diff_accept": {"ru": "", "en": ""},
-    "diff_reject": {"ru": "", "en": ""},
-    "diff_accept_all": {"ru": "Принять все", "en": "Accept all"},
-    "diff_reject_all": {"ru": "Отклонить все", "en": "Reject all"},
-    "diff_apply": {"ru": "Применить", "en": "Apply"},
-    "diff_count": {
-        "ru": "Принято: {acc} из {total}",
-        "en": "Accepted: {acc} of {total}",
-    },
-
     # ── Coverage ──
     "cov_file": {"ru": "Файл", "en": "File"},
     "cov_total": {"ru": "Всего", "en": "Total"},
@@ -446,12 +412,8 @@ _STRINGS = {
               "Still untranslated: {n}",
     },
     "tr_left_over": {
-        "ru": "Не переведено {n} строк: ни один бесплатный провайдер сейчас "
-              "не смог. Они сохранены как есть и повторятся при следующем "
-              "запуске — можно закрыть приложение и вернуться позже.",
-        "en": "{n} lines were not translated: no free provider could handle "
-              "them right now. They are saved as is and will be retried on "
-              "the next run — you can close the app and come back later.",
+        "ru": "Не переведено {n} строк — повторятся при следующем запуске.",
+        "en": "{n} lines untranslated — will retry next run.",
     },
     "tr_autoresume": {
         "ru": "Предлагать дотянуть перевод при открытии проекта",
@@ -547,10 +509,8 @@ _STRINGS = {
     },
     "cheat_apply_vars": {"ru": "Применить значения", "en": "Apply values"},
     "cheat_var_hint": {
-        "ru": "Введите новое значение и нажмите Enter — применить. "
-              "Escape — отменить. Имя сохраняется в проекте.",
-        "en": "Enter a new value and press Enter to apply. "
-              "Escape cancels. Names are saved to the project.",
+        "ru": "Enter — применить, Escape — отмена.",
+        "en": "Enter applies, Escape cancels.",
     },
     "cheat_sw_hint": {
         "ru": "Галочка применяется сразу. Имя редактируется и сохраняется.",
@@ -612,7 +572,6 @@ _STRINGS = {
     "settings_general": {"ru": "Основные", "en": "General"},
     "settings_languages": {"ru": "Языки перевода", "en": "Translation Languages"},
     "settings_files": {"ru": "Файлы", "en": "Files"},
-    "settings_corr_tab": {"ru": "ИИ корректор", "en": "AI Corrector"},
     "settings_system_tab": {"ru": "Система", "en": "System"},
     "settings_cache_box": {"ru": "Кеш", "en": "Cache"},
     "settings_cache_size_lbl": {
@@ -645,12 +604,10 @@ _STRINGS = {
         "en": "Cache is empty — nothing to clean",
     },
     "settings_cache_info": {
-        "ru": "Кеш — это временные проекты (tmp*.ob.json), "
-             "оставшиеся от прерванных сессий. Проекты игр и база "
-             "переводов не удаляются.",
-        "en": "Cache means temporary projects (tmp*.ob.json) left "
-             "after interrupted sessions. Game projects and the "
-             "translation memory are never removed.",
+        "ru": "Временные файлы прерванных сессий. Проекты и база "
+              "переводов не удаляются.",
+        "en": "Temp files of interrupted sessions. Projects and the "
+              "translation memory are kept.",
     },
     "settings_provider": {"ru": "Провайдер перевода", "en": "Translation Provider"},
     "settings_files_provider": {
@@ -661,25 +618,10 @@ _STRINGS = {
         "ru": "Провайдер для ИИ-коррекции",
         "en": "AI correction provider",
     },
-    "settings_glossary_box": {"ru": "ИИ глоссарий", "en": "AI Glossary"},
-    "settings_glossary_ai": {
-        "ru": "Использовать движок ИИ-корректора для анализа терминов",
-        "en": "Use the AI corrector engine for term analysis",
-    },
-    "settings_glossary_info": {
-        "ru": "Кнопка «Анализ терминов (AI)…» в глоссарии использует тот же "
-              "LLM-движок, что и ИИ-корректор.",
-        "en": "The \"Analyze terms (AI)…\" button in the glossary uses the "
-              "same LLM engine as the AI corrector.",
-    },
     "settings_provider_lbl": {"ru": "Провайдер:", "en": "Provider:"},
     "settings_provider_fixed": {
-        "ru": "Один движок на всех — Автопилот: Google пакетами, "
-              "при лимите — Bing, дальше MyMemory (с почтой). "
-              "Крутится по кругу, пока всё не переведёт. Выбирать нечего.",
-        "en": "One engine for everything — Autopilot: Google in batches, "
-              "then Bing on limits, then MyMemory (with e-mail). "
-              "Cycles until everything is translated. Nothing to choose.",
+        "ru": "Автопилот: Google → Bing → MyMemory, по кругу.",
+        "en": "Autopilot: Google → Bing → MyMemory, cycling.",
     },
     "settings_mymemory_email": {
         "ru": "Почта для MyMemory:",
@@ -689,11 +631,6 @@ _STRINGS = {
         "ru": "необязательно — с почтой 50K символов/день",
         "en": "optional — 50K chars/day with e-mail",
     },
-    "settings_preset": {"ru": "Пресет:", "en": "Preset:"},
-    "settings_base_url": {"ru": "URL сервера:", "en": "Base URL:"},
-    "settings_api_key": {"ru": "API-ключ:", "en": "API Key:"},
-    "settings_model": {"ru": "Модель:", "en": "Model:"},
-    "settings_ollama_url": {"ru": "URL Ollama:", "en": "Ollama URL:"},
     "settings_src_lang": {"ru": "Язык оригинала:", "en": "Source language:"},
     "settings_src_lang_auto": {
         "ru": "Язык оригинала:",
@@ -734,16 +671,8 @@ _STRINGS = {
     },
     "settings_backup": {"ru": "Автобэкап при внедрении", "en": "Auto-backup on apply"},
     "settings_files_info": {
-        "ru": "«Только новые» — переводит строки без перевода.\n«Всё заново» — заново переводит все строки.",
-        "en": "\"New only\" — translates untranslated lines.\n\"Re-translate all\" — retranslates everything.",
-    },
-    "settings_api_key_ph": {
-        "ru": "API-ключ для выбранного пресета",
-        "en": "API key for selected preset",
-    },
-    "settings_api_key_lt_ph": {
-        "ru": "необязателен (нужен только своему серверу)",
-        "en": "optional (self-hosted server only)",
+        "ru": "«Только новые» — без перевода. «Всё заново» — все строки.",
+        "en": "\"New only\" — untranslated. \"Re-translate all\" — everything.",
     },
     "settings_ui_lang": {
         "ru": "Язык интерфейса:",
@@ -796,37 +725,22 @@ _STRINGS = {
         "en": "Welcome to OctopusBridge!",
     },
     "wizard_welcome_text": {
-        "ru": "OctopusBridge переводит и модифицирует игры: RPG Maker "
-              "MV/MZ, Ren'Py, Twine и Tyrano. Сейчас вы настроите основные "
-              "параметры — это займёт меньше минуты. Всё можно изменить "
-              "позже в «Настройках».",
-        "en": "OctopusBridge translates and mods games: RPG Maker MV/MZ, "
-              "Ren'Py, Twine and Tyrano. You are about to set up the "
-              "basics — it takes less than a minute. Everything can be "
-              "changed later in Settings.",
+        "ru": "Перевод игр: RPG Maker MV/MZ, Ren'Py, Twine, Tyrano. "
+              "Настройки можно изменить позже.",
+        "en": "Game translation: RPG Maker MV/MZ, Ren'Py, Twine, Tyrano. "
+              "Settings can be changed later.",
     },
     "wizard_langs_title": {
         "ru": "Языки",
         "en": "Languages",
     },
     "wizard_langs_text": {
-        "ru": "Выберите язык интерфейса и язык, на который будет "
-              "переводиться текст игр.",
-        "en": "Pick the UI language and the language game text will be "
-              "translated into.",
+        "ru": "Язык интерфейса и язык перевода.",
+        "en": "UI language and translation language.",
     },
     "wizard_provider_title": {
         "ru": "Переводчик",
         "en": "Translator",
-    },
-    "wizard_provider_text": {
-        "ru": "По умолчанию используется бесплатный Google + Bing "
-              "(без ключей и регистрации). Для больших проектов можно "
-              "подключить свой AI (OpenAI-совместимый API или Ollama) — "
-              "настройки доступны позже.",
-        "en": "Free Google + Bing is the default (no keys, no sign-up). "
-              "For large projects you can connect your own AI "
-              "(OpenAI-compatible API or Ollama) — configurable later.",
     },
     "wizard_provider_lbl": {
         "ru": "Провайдер перевода:",
@@ -837,9 +751,8 @@ _STRINGS = {
         "en": "Behavior",
     },
     "wizard_behavior_text": {
-        "ru": "Несколько полезных настроек по умолчанию. Их тоже можно "
-              "поменять в «Настройках».",
-        "en": "A few useful defaults. Also changeable in Settings.",
+        "ru": "Значения по умолчанию. Меняются в «Настройках».",
+        "en": "Defaults. Changeable in Settings.",
     },
 
     # ── Status bar ──
@@ -849,52 +762,14 @@ _STRINGS = {
     },
 
     # ── Providers (engines) ──
-    "prov_google_free": {
-        "ru": "Google Translate — бесплатный (без ключа)",
-        "en": "Google Translate — free (no key)",
-    },
-    "prov_bing": {
-        "ru": "Bing Translator — бесплатный (без ключа)",
-        "en": "Bing Translator — free (no key)",
-    },
-    "prov_mymemory": {
-        "ru": "MyMemory — бесплатный API (50 000 символов/день, без ключа)",
-        "en": "MyMemory — free API (50,000 chars/day, no key)",
-    },
-    "prov_libretranslate": {
-        "ru": "LibreTranslate — открытый и бесплатный (публичный сервер или свой)",
-        "en": "LibreTranslate — open-source and free (public or self-hosted)",
-    },
     "prov_rotate": {
         "ru": "Google + Bing — чередование (быстрее)",
         "en": "Google + Bing — round-robin (faster)",
     },
-    "prov_ai": {
-        "ru": "AI — OpenAI/Ollama/LM Studio (требуется API или локальный сервер)",
-        "en": "AI — OpenAI/Ollama/LM Studio (requires API or local server)",
-    },
-    "prov_short_google_free": {"ru": "Google Translate", "en": "Google Translate"},
-    "prov_short_bing": {"ru": "Bing Translator", "en": "Bing Translator"},
-    "prov_short_mymemory": {"ru": "MyMemory", "en": "MyMemory"},
-    "prov_short_libretranslate": {"ru": "LibreTranslate", "en": "LibreTranslate"},
     "prov_short_rotate": {
         "ru": "Google + Bing (чередование)",
         "en": "Google + Bing (round-robin)",
     },
-    "prov_short_ai": {"ru": "AI (LLM / API)", "en": "AI (LLM / API)"},
-    "hint_engine_ai": {
-        "ru": "AI-провайдер недоступен.\n\n"
-              "Локальный LLM: установите Ollama, скачайте модель — она "
-              "работает на порту 11434.\n"
-              "Удалённый API: укажите Base URL и API-ключ в настройках.\n"
-              "Проверьте соединение кнопкой «Проверить провайдера».",
-        "en": "AI provider is not connected.\n\n"
-              "For local LLM: install Ollama, pull a model, it runs on "
-              "port 11434.\n"
-              "For remote API: set base URL and API key in Settings.\n"
-              "Check connection with the 'Check provider' button.",
-    },
-
     # ── Engine tab titles ──
     "tab_vars": {"ru": "Переменные", "en": "Variables"},
     "tab_triggers": {"ru": "Триггеры", "en": "Triggers"},
@@ -1135,10 +1010,10 @@ _STRINGS = {
     "glossary_del": {"ru": "Удалить", "en": "Delete"},
     "glossary_save": {"ru": "Сохранить", "en": "Save"},
     "glossary_hint": {
-        "ru": "Термины подставляются в перевод как есть — имена не будут искажаться. "
-             "Двойной клик по строке открывает редактирование.",
-        "en": "Terms are inserted verbatim — names won't be distorted. "
-             "Double-click a row to edit it.",
+        "ru": "Термины подставляются как есть. "
+              "Двойной клик — редактировать.",
+        "en": "Terms are inserted as-is. "
+              "Double-click to edit.",
     },
     "glossary_col_orig": {"ru": "Термин", "en": "Term"},
     "glossary_col_tr": {"ru": "Перевод", "en": "Translation"},
@@ -1154,44 +1029,6 @@ _STRINGS = {
         "ru": "Вставить перевод термина в ячейку перевода",
         "en": "Insert the term's translation into the translation cell",
     },
-    "tr_memory_title": {"ru": "Похожие из памяти:", "en": "Similar from memory:"},
-    "tr_memory_take": {"ru": "Взять", "en": "Take"},
-    "tr_memory_tip": {
-        "ru": "Подставить перевод из памяти",
-        "en": "Use the translation from memory",
-    },
-    "sb_memory": {"ru": "Память: {n}", "en": "Memory: {n}"},
-    "glossary_analyze": {"ru": "Анализ терминов (AI)…", "en": "Analyze terms (AI)…"},
-    "glossary_analyze_need_ai": {
-        "ru": "Анализ требует AI-провайдера. Настройте его в Настройках (провайдер AI).",
-        "en": "Analysis requires an AI provider. Configure it in Settings (AI provider).",
-    },
-    "glossary_analyze_running": {
-        "ru": "ИИ анализирует текст…",
-        "en": "AI analyzing text…",
-    },
-    "glossary_analyze_fail": {
-        "ru": "Не удалось выполнить анализ: {}",
-        "en": "Analysis failed: {}",
-    },
-    "glossary_analyze_none": {
-        "ru": "Модель не нашла подходящих терминов.",
-        "en": "The model found no suitable terms.",
-    },
-    "glossary_terms_title": {"ru": "Кандидаты терминов", "en": "Term candidates"},
-    "glossary_terms_hint": {
-        "ru": "Отметьте термины, которые хотите добавить в глоссарий.",
-        "en": "Select terms to add to the glossary.",
-    },
-    "glossary_terms_apply": {"ru": "Добавить выбранные", "en": "Add selected"},
-    "glossary_analyze_added": {
-        "ru": "Добавлено: {accepted} из {total} терминов",
-        "en": "Added {accepted} of {total} terms",
-    },
-    "glossary_terms_col_use": {"ru": "✓", "en": "✓"},
-    "glossary_terms_col_orig": {"ru": "Термин", "en": "Term"},
-    "glossary_terms_col_tr": {"ru": "Перевод", "en": "Translation"},
-
     # ── Map tab (H1) ──
     "map_list": {"ru": "Карты", "en": "Maps"},
     "map_search_ph": {"ru": "имя или id карты…", "en": "map name or id…"},
@@ -1593,8 +1430,10 @@ _STRINGS = {
         "en": "Drop a .save — \"Apply\" will overwrite that file",
     },
     "save_apply_hint": {
-        "ru": "Изменения применяются после нажатия «Применить» — файл перезаписывается (оригинал — *.ob_backup).",
-        "en": "Changes apply after pressing \"Apply\" — the file is overwritten (original kept as *.ob_backup).",
+        "ru": "«Применить» пишет в файл (оригинал — *.ob_backup). "
+              "Игра файл сама не подхватит — загрузите слот в меню игры.",
+        "en": "\"Apply\" writes the file (original kept as *.ob_backup). "
+              "The game won't pick it up by itself — load the slot in the game menu.",
     },
     "save_saved": {
         "ru": "Сохранено: {name} ({n} параметров)",
@@ -1615,6 +1454,12 @@ _STRINGS = {
         "en": "{name} = {value} (not saved)",
     },
     "sv_save_err": {"ru": "Ошибка сохранения", "en": "Save error"},
+    "sv_save_verify_fail": {
+        "ru": "Записанный сейв не прошёл самопроверку ({n} значений "
+              "не сошлись) — файл возвращён из бэкапа, игра не тронута.",
+        "en": "Written save failed self-check ({n} mismatched values) — "
+              "file restored from backup, game untouched.",
+    },
 
     # ── Resource tab (H2) ──
     "res_select": {
@@ -1641,10 +1486,8 @@ _STRINGS = {
         "en": "Install Cyrillic font…",
     },
     "res_font_done": {
-        "ru": "Шрифт {font} скопирован и прописан в игре.\n"
-              "Оригиналы сохранены (*.ob_backup).{live}",
-        "en": "Font {font} copied and registered.\n"
-              "Originals saved (*.ob_backup).{live}",
+        "ru": "Шрифт {font} прописан в игре. Оригиналы — *.ob_backup.{live}",
+        "en": "Font {font} registered. Originals in *.ob_backup.{live}",
     },
     "res_no_key": {"ru": "ключ шифрования не найден", "en": "no encryption key"},
     "res_empty": {"ru": "файл пуст или не найден", "en": "file empty or missing"},
@@ -1689,10 +1532,12 @@ _STRINGS = {
         "en": "Nothing to restore — font was not patched",
     },
     "res_font_done_renpy": {
-        "ru": "Заменено шрифтов: {n}. Оригиналы в game/ob_fonts_orig — "
-              "кнопка «Откатить шрифт» вернёт их.{live}",
-        "en": "Replaced fonts: {n}. Originals in game/ob_fonts_orig — "
-              "the «Restore font» button brings them back.{live}",
+        "ru": "Шрифтов: {n}. Оригиналы — game/ob_fonts_orig.{live}",
+        "en": "Fonts: {n}. Originals in game/ob_fonts_orig.{live}",
+    },
+    "res_font_done_unity": {
+        "ru": "Шрифтов: {n} в {files} файлах. Оригиналы — backup/unity.",
+        "en": "Fonts: {n} in {files} files. Originals in backup/unity.",
     },
     "res_font_already": {
         "ru": "Все шрифты игры уже поддерживают кириллицу",
@@ -1701,6 +1546,378 @@ _STRINGS = {
     "res_font_restored": {
         "ru": "Оригинальные шрифты восстановлены",
         "en": "Original fonts restored",
+    },
+
+    # ── Unity: читы через PlayerPrefs (реестр, без канала в процесс) ──
+    # ── Unity: единый список переменных (игра + сейвы + реестр) ──
+    "unity_col_src": {
+        "ru": "Где",
+        "en": "Where",
+    },
+    "unity_cheats_written": {
+        "ru": "Записано: {name}",
+        "en": "Written: {name}",
+    },
+    "unity_cheats_restore_q": {
+        "ru": "Вернуть значения из автобэкапов? Правки будут потеряны.",
+        "en": "Restore values from auto-backups? Edits will be lost.",
+    },
+    "unity_cheats_restored_errors": {
+        "ru": "Восстановлено: {n}. Не вышло:\n{problems}",
+        "en": "Restored: {n}. Failed:\n{problems}",
+    },
+    "unity_live_not_written": {
+        "ru": "Игра не приняла запись.",
+        "en": "The game rejected the write.",
+    },
+    "unity_prefs_name": {
+        "ru": "Ключ",
+        "en": "Key",
+    },
+    "unity_prefs_kind": {
+        "ru": "Тип",
+        "en": "Type",
+    },
+    "unity_prefs_value": {
+        "ru": "Значение (можно править)",
+        "en": "Value (editable)",
+    },
+    "unity_prefs_show_system": {
+        "ru": "Служебные",
+        "en": "System",
+    },
+    "unity_prefs_reload": {
+        "ru": "Обновить",
+        "en": "Reload",
+    },
+    "unity_prefs_backup": {
+        "ru": "Сохранить копию",
+        "en": "Back up",
+    },
+    "unity_prefs_restore": {
+        "ru": "Восстановить",
+        "en": "Restore",
+    },
+    "unity_prefs_backup_done": {
+        "ru": "Сохранено {n} ключей в {path}",
+        "en": "Saved {n} keys to {path}",
+    },
+    "unity_prefs_restored": {
+        "ru": "Восстановлено ключей: {n}",
+        "en": "Restored keys: {n}",
+    },
+    "tab_unity_saves": {
+        "ru": "Сейвы",
+        "en": "Saves",
+    },
+    "unity_live_empty": {
+        "ru": "Запустите игру из дашборда, затем «Обновить».",
+        "en": "Launch the game from the dashboard, then press Reload.",
+    },
+    "unity_live_no_game": {
+        "ru": "Игра не запущена через это приложение (или ещё не "
+              "записала данные). Запустите её здесь.",
+        "en": "The game was not launched by this app (or has not written "
+              "any data yet). Launch it here.",
+    },
+    "unity_live_class": {
+        "ru": "Класс",
+        "en": "Class",
+    },
+    "unity_live_field": {
+        "ru": "Поле",
+        "en": "Field",
+    },
+    "unity_live_type": {
+        "ru": "Тип",
+        "en": "Type",
+    },
+    "unity_live_value": {
+        "ru": "Значение",
+        "en": "Value",
+    },
+    "unity_live_count": {
+        "ru": "Переменных: {n}",
+        "en": "Variables: {n}",
+    },
+    "unity_live_written": {
+        "ru": "Записано: {field}",
+        "en": "Written: {field}",
+    },
+    "unity_live_not_written": {
+        "ru": "Игра не приняла запись.",
+        "en": "The game rejected the write.",
+    },
+    "unity_live_game_only": {
+        "ru": "Только сборка игры",
+        "en": "Game assembly only",
+    },
+    "unity_live_scope_safe": {
+        "ru": "Безопасные",
+        "en": "Safe",
+    },
+    "unity_live_scope_game": {
+        "ru": "Вся сборка игры",
+        "en": "Whole game assembly",
+    },
+    "unity_live_scope_all": {
+        "ru": "Все сборки",
+        "en": "All assemblies",
+    },
+    "unity_live_shown": {
+        "ru": "Показано {n} из {total}",
+        "en": "Showing {n} of {total}",
+    },
+    "unity_live_readonly_lib": {
+        "ru": "Чужая библиотека: внутренности движка и физики, запись "
+              "вылетает игру. Только чтение.",
+        "en": "Third-party library: engine and physics internals — "
+              "writing here crashes the game. Read-only.",
+    },
+    "unity_live_readonly": {
+        "ru": "Чужая библиотека: здесь внутренности движка и физики, "
+              "запись вылетает игру. Только чтение.",
+        "en": "Third-party library: engine and physics internals — "
+              "writing here crashes the game. Read-only.",
+    },
+    "unity_live_undo": {
+        "ru": "Вернуть",
+        "en": "Undo",
+    },
+    "unity_live_undone": {
+        "ru": "Возвращено значений: {n}",
+        "en": "Values restored: {n}",
+    },
+    "unity_saves_search_hint": {
+        "ru": "Ищите по названию ключа, например level или exp.",
+        "en": "Search by key name, e.g. level or exp.",
+    },
+    "unity_saves_game_running": {
+        "ru": "Игра запущена и перезапишет сейв при выходе.",
+        "en": "The game is running and will overwrite the save on exit.",
+    },
+    "dash_delete_saves": {
+        "ru": "Удалить сейвы",
+        "en": "Delete saves",
+    },
+    "dash_delete_saves_q": {
+        "ru": "Удалить файлы сохранений ({n}): {names}?\n\n"
+              "Перед удалением они будут отложены в папку backup, "
+              "так что вернуть их можно будет.",
+        "en": "Delete save files ({n}): {names}?\n\n"
+              "They will be moved to the backup folder first, "
+              "so they can be restored.",
+    },
+    "dash_delete_saves_more": {
+        "ru": " и ещё {n}",
+        "en": " and {n} more",
+    },
+    "dash_delete_saves_done": {
+        "ru": "Удалено файлов: {n}",
+        "en": "Files deleted: {n}",
+    },
+    "dash_delete_saves_none": {
+        "ru": "Сейвов не найдено — удалять нечего.",
+        "en": "No saves found — nothing to delete.",
+    },
+    "dash_delete_saves_running": {
+        "ru": "Сначала закройте игру: запущенная игра перезапишет сейв "
+              "при выходе.",
+        "en": "Close the game first: a running game will overwrite "
+              "the save on exit.",
+    },
+    # ── живые читы Twine ──
+    "twine_cheat_reload": {
+        "ru": "Обновить",
+        "en": "Reload",
+    },
+    "twine_cheat_auto": {
+        "ru": "Следить",
+        "en": "Live",
+    },
+    "twine_cheat_var": {
+        "ru": "Переменная",
+        "en": "Variable",
+    },
+    "twine_cheat_type": {
+        "ru": "Тип",
+        "en": "Type",
+    },
+    "twine_cheat_val": {
+        "ru": "Значение",
+        "en": "Value",
+    },
+    "twine_cheat_empty": {
+        "ru": "Запустите игру из дашборда, затем «Обновить».",
+        "en": "Launch the game from the dashboard, then press Reload.",
+    },
+    "twine_cheat_no_channel": {
+        "ru": "Нет связи с игрой. Запустите её здесь и подождите "
+              "загрузку.",
+        "en": "No connection to the game. Launch it here and wait "
+              "for it to load.",
+    },
+    "twine_cheat_count": {
+        "ru": "Переменных: {n}",
+        "en": "Variables: {n}",
+    },
+    "twine_cheat_none": {
+        "ru": "Переменных не показано: движок игры не опознан или игра "
+              "не выставила своё состояние в окно страницы.",
+        "en": "No variables shown: the game engine was not recognized, "
+              "or the game does not expose its state on the page.",
+    },
+    "twine_cheat_no_edit": {
+        "ru": "Это объект или список — правьте его отдельные поля.",
+        "en": "This is an object or list — edit its separate fields.",
+    },
+    "twine_cheat_write_err": {
+        "ru": "Игра не приняла значение.",
+        "en": "The game rejected the value.",
+    },
+    "twine_cheat_bool": {
+        "ru": "Нужно true или false.",
+        "en": "Need true or false.",
+    },
+    "twine_cheat_number": {
+        "ru": "Не число: {s}",
+        "en": "Not a number: {s}",
+    },
+    # ── поиск по памяти (как в Cheat Engine) ──
+    "unity_scan_value_ph": {
+        "ru": "значение",
+        "en": "value",
+    },
+    "unity_scan_find": {
+        "ru": "Найти",
+        "en": "Scan",
+    },
+    "unity_scan_next": {
+        "ru": "Далее",
+        "en": "Next",
+    },
+    "unity_scan_reset": {
+        "ru": "Сброс",
+        "en": "Reset",
+    },
+    "unity_scan_restore": {
+        "ru": "Вернуть",
+        "en": "Undo",
+    },
+    "unity_scan_addr": {
+        "ru": "Адрес",
+        "en": "Address",
+    },
+    "unity_scan_val": {
+        "ru": "Значение",
+        "en": "Value",
+    },
+    "unity_scan_empty": {
+        "ru": "Запустите игру, введите число и нажмите «Найти».",
+        "en": "Launch the game, enter a number and press Scan.",
+    },
+    "unity_scan_hint": {
+        "ru": "Меняйте значение в игре и жмите «Далее» — список "
+              "сожмётся. Правьте только то, что узнали.",
+        "en": "Change the value in game and press Next to narrow the "
+              "list. Only edit what you identified.",
+    },
+    "unity_scan_kind": {
+        "ru": "{t}, {n} б",
+        "en": "{t}, {n} B",
+    },
+    "unity_scan_k_int": {
+        "ru": "целое",
+        "en": "int",
+    },
+    "unity_scan_k_uint": {
+        "ru": "без знака",
+        "en": "uint",
+    },
+    "unity_scan_k_float": {
+        "ru": "дробное",
+        "en": "float",
+    },
+    "unity_scan_f_changed": {
+        "ru": "Изменилось",
+        "en": "Changed",
+    },
+    "unity_scan_f_same": {
+        "ru": "Не изменилось",
+        "en": "Unchanged",
+    },
+    "unity_scan_f_inc": {
+        "ru": "Увеличилось",
+        "en": "Increased",
+    },
+    "unity_scan_f_dec": {
+        "ru": "Уменьшилось",
+        "en": "Decreased",
+    },
+    "unity_scan_working": {
+        "ru": "Ищу…",
+        "en": "Scanning…",
+    },
+    "unity_scan_found": {
+        "ru": "Найдено: {n} за {ms} мс ({mb} МБ памяти)",
+        "en": "Found: {n} in {ms} ms ({mb} MB of memory)",
+    },
+    "unity_scan_truncated": {
+        "ru": "Найдено: {n} — список показан не полностью",
+        "en": "Found: {n} — list is not complete",
+    },
+    "unity_scan_none": {
+        "ru": "Ничего не найдено.",
+        "en": "Nothing found.",
+    },
+    "unity_scan_skipped": {
+        "ru": "(пропущено в текстурах и коде: {n})",
+        "en": "(skipped in textures and code: {n})",
+    },
+    "unity_scan_left": {
+        "ru": "Осталось: {n}",
+        "en": "Remaining: {n}",
+    },
+    "unity_scan_all_gone": {
+        "ru": "Все адреса недоступны — вероятно, игра перезапущена.",
+        "en": "All addresses are gone — the game probably restarted.",
+    },
+    "unity_scan_written": {
+        "ru": "Записано: {addr} = {v}",
+        "en": "Written: {addr} = {v}",
+    },
+    "unity_scan_write_err": {
+        "ru": "Запись не удалась: {e}",
+        "en": "Write failed: {e}",
+    },
+    "unity_scan_restored": {
+        "ru": "Возвращено значений: {n}",
+        "en": "Values restored: {n}",
+    },
+    "unity_scan_no_value": {
+        "ru": "Введите число.",
+        "en": "Enter a number.",
+    },
+    "unity_scan_bad_number": {
+        "ru": "Не число: {s}",
+        "en": "Not a number: {s}",
+    },
+    "unity_saves_readonly": {
+        "ru": "Только просмотр: правка сейвов ломала игру.",
+        "en": "View only: editing saves crashed the game.",
+    },
+    "unity_saves_empty2": {        "ru": "Править нечего: сейвов и настроек не найдено. Сыграйте "
+              "хотя бы раз — игра их создаст.",
+        "en": "Nothing to edit: no saves or settings found. Play once — "
+              "the game will create them.",
+    },
+    "unity_saves_count": {
+        "ru": "сейв: {save}, реестр: {prefs}",
+        "en": "save: {save}, registry: {prefs}",
+    },
+    "unity_saves_all_files": {
+        "ru": "Все файлы ({n})",
+        "en": "All files ({n})",
     },
 
     # ── Ren'Py/Twine cheat tab (H3) ──
@@ -1713,12 +1930,8 @@ _STRINGS = {
     "rpy_var_name": {"ru": "Переменная", "en": "Variable"},
     "rpy_var_value": {"ru": "Значение", "en": "Value"},
     "rpy_vars_hint": {
-        "ru": "Правка применяется по Enter (или когда уводите курсор), "
-              "Escape — отмена. Галочки и заморозка ❄ применяются сразу. "
-              "Список обновляется из запущенной игры.",
-        "en": "Press Enter (or move focus away) to apply an edit, Escape "
-              "cancels. Checkboxes and ❄ freeze apply instantly. "
-              "The list refreshes from the running game.",
+        "ru": "Enter — применить, Escape — отмена.",
+        "en": "Enter applies, Escape cancels.",
     },
     "rpy_freeze": {"ru": "Заморозка", "en": "Freeze"},
     "rpy_frozen": {
@@ -1828,19 +2041,8 @@ def TR(key: str, **fmt) -> str:
 
 
 _PROVIDER_KEYS = {
-    "google_free": ("prov_google_free", "prov_short_google_free"),
-    "bing": ("prov_bing", "prov_short_bing"),
-    "mymemory": ("prov_mymemory", "prov_short_mymemory"),
-    "libretranslate": ("prov_libretranslate", "prov_short_libretranslate"),
     "rotate": ("prov_rotate", "prov_short_rotate"),
-    "ai": ("prov_ai", "prov_short_ai"),
 }
-
-
-def provider_name(key: str) -> str:
-    """Полное локализованное имя провайдера (для выпадающих списков)."""
-    pair = _PROVIDER_KEYS.get(key)
-    return TR(pair[0]) if pair else key
 
 
 def provider_short_name(key: str) -> str:
@@ -1851,7 +2053,6 @@ def provider_short_name(key: str) -> str:
 
 def engine_hint(name: str) -> str:
     """Локализованная подсказка при недоступном провайдере."""
-    key = {"ai": "hint_engine_ai"}.get(name)
-    if key is None:
-        return TR("hint_check_provider")
-    return TR(key)
+    # Движок один (rotate-пул): именованных подсказок больше нет.
+    _ = name
+    return TR("hint_check_provider")

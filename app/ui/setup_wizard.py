@@ -196,11 +196,6 @@ class SetupWizard(QDialog):
             f"font-size: 18px; font-weight: bold; color: {C_TEXT}; "
             f"background: transparent;")
         lay.addWidget(title)
-        text = QLabel(TR("wizard_provider_text"))
-        text.setWordWrap(True)
-        text.setStyleSheet(
-            f"color: {C_TEXT_SECONDARY}; background: transparent;")
-        lay.addWidget(text)
         lay.addSpacing(6)
 
         box = QGroupBox(TR("settings_provider"))

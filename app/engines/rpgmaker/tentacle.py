@@ -186,6 +186,66 @@ def clean_nwjs_profile(game_dir: str) -> list[str]:
     return renamed
 
 
+def _load_project_entries(game_dir, default_lang="ru"):
+    # (entries, target_lang) из .ob.json проекта; ([], default) если нет.
+    from app.core.models import Project, project_file_for
+    try:
+        path = project_file_for(game_dir)
+    except Exception:  # noqa: BLE001
+        return [], default_lang
+    try:
+        with open(path, encoding="utf-8") as f:
+            project = Project.from_dict(json.load(f))
+    except Exception:  # noqa: BLE001 — нет проекта/битый: молча пропускаем
+        return [], default_lang
+    try:
+        lang = getattr(project, "target_lang", None) or default_lang
+    except Exception:  # noqa: BLE001
+        lang = default_lang
+    return list(getattr(project, "entries", None) or []), lang
+
+
+def refresh_live_dict(game_dir, entries=None, target_lang="ru"):
+    # Освежает live-словарь перевода перед запуском игры (вызывать ДО Popen).
+    #
+    # Словарь запекается в файлы при apply, а ensure_bridge_registered
+    # идемпотентен — без этого вызова позже переведённые строки не доходили
+    # до игры.
+    # - MV: mv_bridge.update_tr_dict (octopus_ob.js через plugin_rel —
+    #   www/-деплой учтён);
+    # - MZ/прочие: runtime.install_runtime (ob_translation/<lang>.json +
+    #   вшитый словарь ob_runtime.js, www/-пути внутри).
+    #
+    # Возвращает число записей словаря; 0 — нечего обновлять (нет проекта,
+    # пустые переводы, нет файлов) — штатный пропуск, не ошибка. Никогда
+    # не бросает исключений: обновление словаря не должно мешать запуску.
+    try:
+        if not game_dir or not os.path.isdir(game_dir):
+            return 0
+        lang = target_lang or "ru"
+        if entries is None:
+            entries, lang = _load_project_entries(game_dir, lang)
+        if not entries:
+            return 0
+        variant = rpgm_variant.detect_variant(game_dir)
+        if variant == "mv":
+            try:
+                return int(mv_bridge.update_tr_dict(game_dir, entries) or 0)
+            except (OSError, ValueError):
+                return 0
+        try:
+            from app.core.rpgmaker import runtime as _rt
+            stats = _rt.install_runtime(game_dir, entries, target_lang=lang)
+        except (OSError, RuntimeError, ValueError):
+            return 0
+        try:
+            return int((stats or {}).get("strings", 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+    except Exception:  # noqa: BLE001 — refresh никогда не роняет запуск
+        return 0
+
+
 class RpgMakerTentacle(CDPTentacle):
     key = "rpgmaker"
     title = "RPG Maker (CDP)"
@@ -298,6 +358,15 @@ class RpgMakerTentacle(CDPTentacle):
                     game_dir, self.PAYLOAD, _TRANSLATION_PAYLOAD):
                 self.log.emit(
                     "Мост MV внедрён: js/plugins/octopus_ob.js.")
+        # Live-словарь протухает: apply запёк его в файлы, а мост
+        # идемпотентен — освежаем перед стартом (файлы ещё никто не читает).
+        # Запуск не блокируем: при неудаче только предупреждение в лог.
+        try:
+            _live_n = refresh_live_dict(game_dir)
+            if _live_n:
+                self.log.emit(f"Live-словарь: {_live_n} записей")
+        except Exception as _live_exc:  # noqa: BLE001
+            self.log.emit(f"Live-словарь не обновлён: {_live_exc}")
         try:
             self._proc = subprocess.Popen(
                 [exe, f"--remote-debugging-port={port}"],

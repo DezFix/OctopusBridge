@@ -102,32 +102,91 @@ __OT.send = function(obj) {
 };
 
 // ── Формат ──
-__OT._fmt = (function(){
-  if (typeof State !== 'undefined' && State.variables) return 'sugarcube';
-  if (typeof Harlowe !== 'undefined') return 'harlowe';
-  if (typeof window.story !== 'undefined' && window.story.state) return 'harlowe';
-  if (document.querySelector('tw-storydata')) return 'twine-raw';
+// ВАЖНО: формат НЕЛЬЗЯ определять один раз при внедрении. Скрипт
+// вклеивается в начало документа, а движок истории (SugarCube/Harlowe)
+// грузится позже — на момент внедрения State и Harlowe ещё не
+// существуют. Раньше здесь стоял IIFE, который вычислялся сразу и
+// больше не пересчитывался: на живой игре fmt навсегда оставался
+// 'unknown', и collectState/setVar молча отдавали пустоту. Отсюда было
+// «мост есть, а читов нет».
+__OT.fmt = function() {
+  try {
+    if (window.SugarCube && window.SugarCube.State) return 'sugarcube';
+    if (typeof State !== 'undefined' && State && State.variables)
+      return 'sugarcube';
+  } catch (e) { }
+  try {
+    if (window.Harlowe && window.Harlowe.state) return 'harlowe';
+  } catch (e) { }
+  try {
+    if (window.story && window.story.state) return 'harlowe';
+  } catch (e) { }
+  try {
+    if (document.querySelector('tw-storydata')) return 'twine-raw';
+  } catch (e) { }
   return 'unknown';
-})();
+};
+
+// Живой объект переменных игры (SugarCube 1 и 2, Harlowe, raw story).
+__OT.varsRoot = function() {
+  try {
+    if (window.SugarCube && window.SugarCube.State
+        && window.SugarCube.State.variables)
+      return window.SugarCube.State.variables;
+  } catch (e) { }
+  try {
+    if (typeof State !== 'undefined' && State && State.variables)
+      return State.variables;
+  } catch (e) { }
+  try {
+    if (window.Harlowe && window.Harlowe.state
+        && window.Harlowe.state.variables)
+      return window.Harlowe.state.variables;
+  } catch (e) { }
+  try {
+    if (window.story && window.story.state
+        && window.story.state.variables)
+      return window.story.state.variables;
+  } catch (e) { }
+  return null;
+};
+
+// Перерисовать игру после правки, чтобы значение было видно сразу.
+__OT.repaint = function() {
+  try {
+    if (window.SugarCube && window.SugarCube.Engine
+        && window.SugarCube.Engine.render)
+      window.SugarCube.Engine.render();
+  } catch (e) { }
+};
 
 // ── Состояние ──
 __OT.collectState = function() {
-  var s = { type: "state", format: __OT._fmt, variables: {}, variablesFlat: {}, story: {} };
-  if (__OT._fmt === 'sugarcube' && typeof State !== 'undefined') {
-    try {
-      s.variables = JSON.parse(JSON.stringify(State.variables || {}));
-      s.story = { passage: State.passage || '', turns: State.turns || 0 };
-      if (typeof Story !== 'undefined') { var c = Story.get(); s.story.title = (c && c.title) || ''; }
-      (function fl(o, p) { for (var k in o) { if (!Object.prototype.hasOwnProperty.call(o, k)) continue; var n = p ? p+'.'+k : k, v = o[k]; if (v && typeof v === 'object' && !Array.isArray(v)) fl(v, n); else s.variablesFlat[n] = v; } })(s.variables, '');
-    } catch(e) {}
-  } else if (__OT._fmt === 'harlowe') {
-    try {
-      if (window.Harlowe && window.Harlowe.state) {
-        s.variables = JSON.parse(JSON.stringify(window.Harlowe.state.variables || {}));
-        (function fl(o, p) { for (var k in o) { if (!Object.prototype.hasOwnProperty.call(o, k)) continue; var n = p ? p+'.'+k : k, v = o[k]; if (v && typeof v === 'object' && !Array.isArray(v)) fl(v, n); else s.variablesFlat[n] = v; } })(s.variables, '');
-      }
-    } catch(e) {}
+  var s = { type: "state", format: __OT.fmt(), variables: {},
+            variablesFlat: {}, story: {} };
+  var root = __OT.varsRoot();
+  if (root) {
+    try { s.variables = JSON.parse(JSON.stringify(root)); } catch (e) { }
   }
+  try {
+    if (typeof State !== 'undefined' && State) {
+      s.story = { passage: (State.passage || ''), turns: (State.turns || 0) };
+      if (typeof Story !== 'undefined') {
+        var c = Story.get(); s.story.title = (c && c.title) || '';
+      }
+    } else if (window.SugarCube && window.SugarCube.State) {
+      s.story = { passage: (window.SugarCube.State.passage || ''),
+                  turns: (window.SugarCube.State.turns || 0) };
+    }
+  } catch (e) { }
+  (function fl(o, p) {
+    for (var k in o) {
+      if (!Object.prototype.hasOwnProperty.call(o, k)) continue;
+      var n = p ? p + '.' + k : k, v = o[k];
+      if (v && typeof v === 'object' && !Array.isArray(v)) fl(v, n);
+      else s.variablesFlat[n] = v;
+    }
+  })(s.variables, '');
   return s;
 };
 
@@ -161,7 +220,7 @@ function _restoreSaves(data) {
 
 // ── Инициализация ──
 function _init() {
-  if (__OT._fmt === 'sugarcube' && typeof $ !== 'undefined') {
+  if (__OT.fmt() === 'sugarcube' && typeof $ !== 'undefined') {
     try { $(document).on(':passagedisplay', function() { setTimeout(__OT._sendState, 100); }); } catch(e) {}
   }
   setTimeout(__OT._sendState, 500);
@@ -187,31 +246,25 @@ __OT.getVars = function() {
 };
 
 __OT.setVar = function(name, value) {
-  if (__OT._fmt === 'sugarcube' && typeof State !== 'undefined') {
-    try {
-      var p = name.split('.'), o = State.variables;
-      for (var i = 0; i < p.length - 1; i++) {
-        if (o[p[i]] === undefined || o[p[i]] === null) {
-          o[p[i]] = isNaN(Number(p[i + 1])) ? {} : [];
-        }
-        o = o[p[i]];
+  var root = __OT.varsRoot();
+  if (!root) return false;
+  var o = root, p = String(name).split('.');
+  try {
+    for (var i = 0; i < p.length - 1; i++) {
+      if (o[p[i]] === undefined || o[p[i]] === null) {
+        // не создаём контейнеры на лету вслепую: если это опечатка,
+        // игрок получит молчаливо новую переменную вместо правки
+        return false;
       }
-      o[p[p.length - 1]] = value; __OT._sendState(); return true;
-    } catch(e) { return false; }
-  }
-  if (__OT._fmt === 'harlowe' && window.Harlowe) {
-    try {
-      var p = name.split('.'), o = window.Harlowe.state.variables;
-      for (var i = 0; i < p.length - 1; i++) {
-        if (o[p[i]] === undefined || o[p[i]] === null) {
-          o[p[i]] = isNaN(Number(p[i + 1])) ? {} : [];
-        }
-        o = o[p[i]];
-      }
-      o[p[p.length - 1]] = value; __OT._sendState(); return true;
-    } catch(e) { return false; }
-  }
-  return false;
+      o = o[p[i]];
+    }
+    var last = p[p.length - 1];
+    if (!(last in o)) return false;
+    o[last] = value;
+    __OT.repaint();
+    __OT._sendState();
+    return true;
+  } catch (e) { return false; }
 };
 
 __OT.exec = function(code) { try { return { ok: true, value: eval(code) }; } catch(e) { return { ok: false, error: e.message || String(e) }; } };
@@ -233,49 +286,208 @@ if (!window.__octopus || window.__octopus.tr) return;
 var OT = window.__octopus;
 var T = OT.tr = {
   dict: {}, enabled: false, from: "auto", to: "ru",
-  orig: [],          // [node, original] для отката при выключении
-  pending: null,     // {id, items:[{node, orig}]} — ждём tr_result
-  reqSeq: 0, timer: 0, busy: false, obs: null
+  orig: [],          // [target, original, applied, attr|null] для отката при выключении
+  cache: {},         // orig -> перевод
+  seen: {},          // orig -> 1 (уже был tr_result)
+  flying: {},        // orig -> 1 (висит в pending)
+  pending: null,     // {id, items:[{node|el, orig, attr}]} — ждём tr_result
+  reqSeq: 0, timer: 0, busy: false, obs: null, tick: 0
 };
 var SKIP_TAGS = {SCRIPT:1, STYLE:1, NOSCRIPT:1, TEXTAREA:1, TEMPLATE:1,
-  INPUT:1, SELECT:1, OPTION:1, CODE:1, PRE:1};
+  INPUT:1, SELECT:1, CODE:1, PRE:1};
+// OPTION намеренно вне SKIP_TAGS
 
 function hasLetters(s) { return /[A-Za-z\u00C0-\u024F\u0370-\u03FF\u0400-\u04FF\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/.test(s); }
+// hasLetters: OK / Day 1 / Level 5 -> true; 123 / ... -> false.
 
 function root() {
   return document.getElementById("passages") || document.getElementById("story") || document.body;
 }
 
-function eachText(fn) {
-  var r = root();
-  if (!r || !document.createTreeWalker) return;
-  var w = document.createTreeWalker(r, NodeFilter.SHOW_TEXT, null, false);
-  var n;
-  while ((n = w.nextNode())) {
-    var p = n.parentNode;
-    if (p && SKIP_TAGS[p.nodeName]) continue;
-    try { fn(n); } catch (e) {}
+function attrValue(el, name) {
+  try {
+    if (name === "value") {
+      var v = null;
+      try { v = el.getAttribute("value"); } catch (e) { v = null; }
+      if (v === null || v === undefined) { try { v = el.value; } catch (e2) { v = ""; } }
+      return (v === null || v === undefined) ? "" : String(v);
+    }
+    var a = null;
+    try { a = el.getAttribute(name); } catch (e) { a = null; }
+    return (a === null || a === undefined) ? null : String(a);
+  } catch (e) { return null; }
+}
+
+function collectAttrs(el, fn) {
+  var tag = "";
+  try { tag = (el.tagName || "").toUpperCase(); } catch (e) { return; }
+  var type = "";
+  try { type = ((el.getAttribute && el.getAttribute("type")) || "").toLowerCase(); } catch (e) { type = ""; }
+  if (tag === "INPUT" && (type === "button" || type === "submit" || type === "reset")) {
+    try { fn(el, "value", attrValue(el, "value")); } catch (e) {}
+  }
+  if (tag === "INPUT" || tag === "TEXTAREA") {
+    try {
+      var ph = null;
+      try { ph = el.getAttribute("placeholder"); } catch (e) { ph = null; }
+      if (ph !== null && ph !== undefined) fn(el, "placeholder", String(ph));
+    } catch (e) {}
+  }
+  try {
+    var ti = null;
+    try { ti = el.getAttribute("title"); } catch (e) { ti = null; }
+    if (ti !== null && ti !== undefined) fn(el, "title", String(ti));
+  } catch (e) {}
+  if (tag === "IMG" || tag === "AREA") {
+    try {
+      var al = null;
+      try { al = el.getAttribute("alt"); } catch (e) { al = null; }
+      if (al !== null && al !== undefined) fn(el, "alt", String(al));
+    } catch (e) {}
   }
 }
 
-function remember(node, orig, applied) {
-  for (var i = 0; i < T.orig.length; i++) {
-    if (T.orig[i][0] === node) { T.orig[i][2] = applied; return; }
+function scanAll(textFn, attrFn) {
+  var r = root();
+  if (!r) { try { r = document.body; } catch (e) { r = null; } }
+  if (!r) return;
+  function scanContainer(c) {
+    try {
+      var od = null;
+      try { od = c.ownerDocument || document; } catch (e) { od = document; }
+      if ((od || document).createTreeWalker) {
+        var w = null;
+        try { w = (od || document).createTreeWalker(c, NodeFilter.SHOW_TEXT, null, false); } catch (e) { w = null; }
+        if (w) {
+          var n = null;
+          while ((n = w.nextNode())) {
+            var p = null;
+            try { p = n.parentNode; } catch (e) { p = null; }
+            if (p && SKIP_TAGS[p.nodeName]) continue;
+            try { if (textFn) textFn(n); } catch (e) {}
+          }
+        }
+      }
+    } catch (e) {}
+    var els = null;
+    try {
+      if (c && c.querySelectorAll) els = c.querySelectorAll("*");
+      else if (c && c.getElementsByTagName) els = c.getElementsByTagName("*");
+    } catch (e) { els = null; }
+    if (!els) return;
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      if (attrFn) { try { collectAttrs(el, attrFn); } catch (e) {} }
+      var sr = null;
+      try { sr = el.shadowRoot || null; } catch (e) { sr = null; }
+      if (sr) { try { scanContainer(sr); } catch (e) {} }
+      try {
+        if (el.tagName === "IFRAME" || el.tagName === "iframe") {
+          var d = null;
+          try { d = el.contentDocument; } catch (e) { d = null; }
+          if (d) {
+            var b = null;
+            try { b = d.body || d.documentElement; } catch (e) { b = null; }
+            if (b) { try { scanContainer(b); } catch (e) {} }
+          }
+        }
+      } catch (e) {}
+    }
   }
-  T.orig.push([node, orig, applied]);
+  try { if (attrFn && r.tagName) collectAttrs(r, attrFn); } catch (e) {}
+  try { scanContainer(r); } catch (e) {}
+}
+
+function eachText(fn) {
+  scanAll(fn, null);
+}
+
+function remember(node, orig, applied, attr) {
+  var a = attr || null;
+  for (var i = 0; i < T.orig.length; i++) {
+    if (T.orig[i][0] === node && (T.orig[i][3] || null) === a) { T.orig[i][2] = applied; return; }
+  }
+  T.orig.push([node, orig, applied, a]);
+}
+
+function setAttr(el, name, val) {
+  try { el.setAttribute(name, val); } catch (e) {}
+  try { if (name === "value" && ("value" in el)) el.value = val; } catch (e) {}
+  try { if (name === "placeholder" && ("placeholder" in el)) el.placeholder = val; } catch (e) {}
+  try { if (name === "title" && ("title" in el)) el.title = val; } catch (e) {}
+  try { if (name === "alt" && ("alt" in el)) el.alt = val; } catch (e) {}
+}
+
+function getAttr(el, name) {
+  var v = attrValue(el, name);
+  return (v === null || v === undefined) ? null : String(v);
+}
+
+function applyOneText(n, v) {
+  if (Object.prototype.hasOwnProperty.call(T.dict, v)) {
+    remember(n, v, T.dict[v], null);
+    try { n.nodeValue = T.dict[v]; } catch (e) {}
+    return true;
+  }
+  if (Object.prototype.hasOwnProperty.call(T.cache, v)) {
+    var c = T.cache[v];
+    if (typeof c === "string" && c && c !== v) {
+      remember(n, v, c, null);
+      try { n.nodeValue = c; } catch (e) {}
+      return true;
+    }
+  }
+  return false;
+}
+
+function applyOneAttr(el, name, v) {
+  if (Object.prototype.hasOwnProperty.call(T.dict, v)) {
+    remember(el, v, T.dict[v], name);
+    setAttr(el, name, T.dict[v]);
+    return true;
+  }
+  if (Object.prototype.hasOwnProperty.call(T.cache, v)) {
+    var c = T.cache[v];
+    if (typeof c === "string" && c && c !== v) {
+      remember(el, v, c, name);
+      setAttr(el, name, c);
+      return true;
+    }
+  }
+  return false;
+}
+
+function goodText(v) {
+  if (!v) return false;
+  v = String(v);
+  if (v.length > 500) return false;
+  var t = v.trim();
+  if (!t || !hasLetters(t)) return false;
+  return true;
+}
+
+function isNewOrig(v) {
+  if (Object.prototype.hasOwnProperty.call(T.dict, v)) return false;
+  if (Object.prototype.hasOwnProperty.call(T.cache, v)) return false;
+  if (Object.prototype.hasOwnProperty.call(T.seen, v)) return false;
+  if (Object.prototype.hasOwnProperty.call(T.flying, v)) return false;
+  return true;
 }
 
 function applyDict() {
   if (!T.enabled) return;
   T.busy = true;
   try {
-    eachText(function(n) {
-      var v = n.nodeValue;
+    scanAll(function(n) {
+      var v = null;
+      try { v = n.nodeValue; } catch (e) { return; }
       if (!v) return;
-      if (Object.prototype.hasOwnProperty.call(T.dict, v)) {
-        remember(n, v, T.dict[v]);
-        n.nodeValue = T.dict[v];
-      }
+      applyOneText(n, v);
+    }, function(el, name, v) {
+      if (v === null || v === undefined || v === "") return;
+      var t = String(v).trim();
+      if (!t || !hasLetters(t)) return;
+      applyOneAttr(el, name, v);
     });
   } finally { T.busy = false; }
   pruneOrig();
@@ -292,36 +504,65 @@ function pruneOrig() {
 
 function maybeRequest() {
   if (!T.enabled || T.pending || !OT.send) return;
-  var items = [], chars = 0;
-  eachText(function(n) {
+  var items = [], chars = 0, batchSeen = {};
+  scanAll(function(n) {
     if (items.length >= 40 || chars >= 1800) return;
-    var v = n.nodeValue;
-    if (!v || v.length > 200) return;
-    var t = v.trim();
-    if (!t || !hasLetters(t)) return;
-    if (Object.prototype.hasOwnProperty.call(T.dict, v)) return;
-    items.push({node: n, orig: v});
+    var v = null;
+    try { v = n.nodeValue; } catch (e) { return; }
+    if (!goodText(v)) return;
+    if (!isNewOrig(v)) return;
+    if (Object.prototype.hasOwnProperty.call(batchSeen, v)) return;
+    batchSeen[v] = 1;
+    items.push({node: n, orig: v, attr: null});
+    chars += v.length;
+  }, function(el, name, v) {
+    if (items.length >= 40 || chars >= 1800) return;
+    if (v === null || v === undefined) return;
+    v = String(v);
+    if (!goodText(v)) return;
+    if (!isNewOrig(v)) return;
+    if (Object.prototype.hasOwnProperty.call(batchSeen, v)) return;
+    batchSeen[v] = 1;
+    items.push({el: el, attr: name, orig: v});
     chars += v.length;
   });
   if (!items.length) return;
   var texts = [];
   for (var i = 0; i < items.length; i++) texts.push(items[i].orig);
+  for (var j = 0; j < texts.length; j++) { try { T.flying[texts[j]] = 1; } catch (e) {} }
   T.pending = {id: ++T.reqSeq, items: items};
   try { OT.send({type: "tr_request", id: T.pending.id, texts: texts, lang_from: T.from, lang_to: T.to}); }
-  catch (e) { T.pending = null; }
+  catch (e) {
+    for (var k = 0; k < texts.length; k++) { try { delete T.flying[texts[k]]; } catch (e2) {} }
+    T.pending = null;
+  }
 }
 
 function onResult(m) {
   var p = T.pending;
-  if (!p || p.id !== m.id || !m.results) { T.pending = null; return; }
+  if (!p || p.id !== m.id || !m.results) {
+    if (p) {
+      for (var q = 0; q < p.items.length; q++) { try { delete T.flying[p.items[q].orig]; } catch (e) {} }
+    }
+    T.pending = null;
+    return;
+  }
   T.busy = true;
   try {
     for (var i = 0; i < p.items.length && i < m.results.length; i++) {
       var it = p.items[i], r = m.results[i];
+      try { delete T.flying[it.orig]; } catch (e) {}
+      try { T.seen[it.orig] = 1; } catch (e) {}
+      if (typeof r !== "string" || !r || r === it.orig) continue;
+      try { T.cache[it.orig] = r; } catch (e) {}
       try {
-        if (it.node.isConnected && it.node.nodeValue === it.orig
-            && typeof r === "string" && r && r !== it.orig) {
-          remember(it.node, it.orig, r);
+        if (it.attr) {
+          if (it.el.isConnected && getAttr(it.el, it.attr) === it.orig) {
+            remember(it.el, it.orig, r, it.attr);
+            setAttr(it.el, it.attr, r);
+          }
+        } else if (it.node.isConnected && it.node.nodeValue === it.orig) {
+          remember(it.node, it.orig, r, null);
           it.node.nodeValue = r;
         }
       } catch (e) {}
@@ -331,36 +572,85 @@ function onResult(m) {
 }
 
 function reset() {
-  // вернуть оригиналы — только туда, где лежит именно наш перевод
-  // (узел, который игра успела переписать, не трогаем)
   T.busy = true;
   try {
     for (var i = 0; i < T.orig.length; i++) {
       var pair = T.orig[i];
       try {
-        if (pair[0].isConnected && pair[0].nodeValue === pair[2]) {
-          pair[0].nodeValue = pair[1];
+        var tgt = pair[0], o = pair[1], ap = pair[2], at = pair[3] || null;
+        if (!tgt || !tgt.isConnected) continue;
+        if (at) {
+          if (getAttr(tgt, at) === ap) setAttr(tgt, at, o);
+        } else if (tgt.nodeValue === ap) {
+          tgt.nodeValue = o;
         }
       } catch (e) {}
     }
-  } finally { T.busy = false; T.orig = []; T.pending = null; }
+  } finally { T.busy = false; T.orig = []; T.pending = null; T.flying = {}; }
+}
+
+function hasWork() {
+  var found = false;
+  try {
+    scanAll(function(n) {
+      if (found) return;
+      var v = null;
+      try { v = n.nodeValue; } catch (e) { return; }
+      if (!goodText(v)) return;
+      if (!isNewOrig(v)) return;
+      found = true;
+    }, function(el, name, v) {
+      if (found) return;
+      if (v === null || v === undefined) return;
+      v = String(v);
+      if (!goodText(v)) return;
+      if (!isNewOrig(v)) return;
+      found = true;
+    });
+  } catch (e) {}
+  return found;
+}
+
+function tickNow() {
+  if (!T.enabled || T.busy || T.pending) return;
+  var hw = false;
+  try { hw = hasWork(); } catch (e) { hw = false; }
+  if (!hw) return;
+  applyDict();
+  maybeRequest();
+}
+
+function startTick() {
+  if (T.tick) return;
+  try { T.tick = setInterval(function() { tickNow(); }, 2000); } catch (e) { T.tick = 0; }
+}
+
+function stopTick() {
+  if (T.tick) { try { clearInterval(T.tick); } catch (e) {} T.tick = 0; }
 }
 
 function observe() {
-  if (T.obs || !window.MutationObserver) return;
-  var deb = 0;
-  T.obs = new MutationObserver(function() {
-    if (!T.enabled || T.busy) return;
-    if (deb) return;
-    deb = setTimeout(function() {
-      deb = 0;
+  if (!T.obs && window.MutationObserver) {
+    var deb = 0;
+    T.obs = new MutationObserver(function() {
       if (!T.enabled || T.busy) return;
-      applyDict();
-      maybeRequest();
-    }, 400);
-  });
-  try { T.obs.observe(root() || document.body,
-    {childList: true, characterData: true, subtree: true}); } catch (e) {}
+      if (deb) return;
+      deb = setTimeout(function() {
+        deb = 0;
+        if (!T.enabled || T.busy) return;
+        applyDict();
+        maybeRequest();
+      }, 400);
+    });
+    try { T.obs.observe(root() || document.body,
+      {childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ["value", "placeholder", "title", "alt"]}); } catch (e) {}
+  }
+  startTick();
+}
+
+function stopObserve() {
+  if (T.obs) { try { T.obs.disconnect(); } catch (e) {} T.obs = null; }
+  stopTick();
 }
 
 T.queue = function() {
@@ -381,11 +671,14 @@ T.onWS = function(m) {
     return true;
   }
   if (m.type === "tr_set") {
+    var nf = (typeof m.from === "string" && m.from) ? m.from : T.from;
+    var nt = (typeof m.to === "string" && m.to) ? m.to : T.to;
+    if (nf !== T.from || nt !== T.to) { T.cache = {}; T.seen = {}; T.flying = {}; }
+    T.from = nf;
+    T.to = nt;
     T.enabled = !!m.enabled;
-    if (typeof m.from === "string" && m.from) T.from = m.from;
-    if (typeof m.to === "string" && m.to) T.to = m.to;
     if (T.enabled) { observe(); applyDict(); maybeRequest(); }
-    else { reset(); if (T.obs) { try { T.obs.disconnect(); } catch (e) {} T.obs = null; } }
+    else { reset(); stopObserve(); }
     return true;
   }
   if (m.type === "tr_result") { onResult(m); return true; }
@@ -421,11 +714,8 @@ class _InjectingHTTPHandler(http_server.SimpleHTTPRequestHandler):
     directory: str = ""       # устанавливается перед созданием сервера
 
     # Синк сейвов (webapp-режим): плагин окна присылает слоты игры,
-    # колбэк пишет их в .save файлы. Импорт — payload, который плагин
-    # забирает и загружает в слот игры.
+    # колбэк пишет их в .save файлы.
     _save_sync_cb = None           # callable(payload: dict) -> int
-    _import_payload: dict = {}     # {'data': LZ-b64, 'slot': str|None}
-    _import_lock = threading.Lock()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=self.__class__.directory, **kwargs)
@@ -457,21 +747,6 @@ class _InjectingHTTPHandler(http_server.SimpleHTTPRequestHandler):
             self.send_response(302)
             self.send_header("Location", "/" + quote(rel, safe="/"))
             self.end_headers()
-            return
-        # Сейв, который приложение отдаёт игре (плагин забирает по поллу)
-        if self.path.split("?")[0] == "/api/saves/pending-import":
-            with type(self)._import_lock:
-                payload = dict(type(self)._import_payload)
-            body = json.dumps(payload).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            try:
-                self.wfile.write(body)
-            except (ConnectionResetError, BrokenPipeError, TimeoutError):
-                pass
             return
         # .html — инжекция пэйлоада (мост) или экран ошибок (webapp-режим)
         _noq = self.path.split("?")[0].lower()
@@ -613,7 +888,7 @@ class _InjectingHTTPHandler(http_server.SimpleHTTPRequestHandler):
             pass  # клиент оборвал загрузку — не ошибка сервера
 
     def do_POST(self):
-        """Синк слотов из окна игры (/api/saves) и подтверждение импорта."""
+        """Синк слотов из окна игры (/api/saves)."""
         try:
             length = int(self.headers.get("Content-Length", 0) or 0)
         except ValueError:
@@ -632,10 +907,6 @@ class _InjectingHTTPHandler(http_server.SimpleHTTPRequestHandler):
                     pass
             body = json.dumps({"ok": cb is not None, "count": count}
                               ).encode("utf-8")
-        elif path == "/api/saves/import":
-            with type(self)._import_lock:
-                type(self)._import_payload = {}
-            body = b'{"ok":true}'
         else:
             self.send_error(404)
             return
@@ -902,10 +1173,26 @@ class TwineTentacle(Tentacle):
         # Live-перевод: словарь из проекта .ob.json уходит в игру
         # по WebSocket (tr_dict) при подключении страницы. Файлы игры
         # не изменяются вообще.
+        #
+        # Поверх словаря проекта подмешиваем память live-перевода: всё,
+        # что игре уже показывали, при следующем запуске выходит
+        # мгновенно, а не после похода в сеть. Без этого игрок видит
+        # «половина текста сразу, половина с задержкой» каждый раз.
         self._tr_dict = load_tr_dict(self._game_dir)
+        n_project = len(self._tr_dict)
+        if self._game_dir:
+            try:
+                from app.core.twine import live_tr
+
+                for k, v in live_tr.load(self._game_dir).items():
+                    self._tr_dict.setdefault(k, v)
+            except Exception:  # noqa: BLE001 — память переводов не критична
+                pass
+        self._tr_session: dict = {}
         if self._tr_dict:
             self.log.emit(
-                f"Live-перевод: {len(self._tr_dict)} строк из проекта.")
+                f"Live-перевод: {len(self._tr_dict)} строк "
+                f"(проект: {n_project}).")
 
         # HTTP-сервер
         rel = os.path.relpath(self._game_path, self._game_dir)
@@ -1018,21 +1305,8 @@ class TwineTentacle(Tentacle):
                 f"Синк сейвов: {len(paths)} файл(а) из игры в папку игры.")
         return len(paths)
 
-    def push_save_to_game(self, data: str, slot: str | None = None) -> bool:
-        """Отдать .save в игру: плагин окна заберёт в течение ~5 с.
-
-        slot — номер слота игры ('0'..'9'); None — первый свободный."""
-        if not self._use_webapp_window:
-            return False
-        payload = {"data": data, "slot": slot}
-        with _InjectingHTTPHandler._import_lock:
-            _InjectingHTTPHandler._import_payload = payload
-        return True
-
     def detach(self):
         _InjectingHTTPHandler._save_sync_cb = None
-        with _InjectingHTTPHandler._import_lock:
-            _InjectingHTTPHandler._import_payload = {}
         self._close_webapp_window()
         self._restore_sent = False
         self._stop_ws()
@@ -1194,6 +1468,42 @@ class TwineTentacle(Tentacle):
                 "type": "tr_result",
                 "id": msg.get("id"),
                 "results": results})
+        self._remember_tr(texts, results)
+
+    def _remember_tr(self, texts: list, results: list) -> None:
+        """Сохранить показанные переводы, чтобы в следующий раз мгновенно.
+
+        Пишем не в проект (его держит вкладка перевода, и подмена из
+        WS-потока портила бы файл), а в отдельную память игры.
+        """
+        game_dir = getattr(self, "_game_dir", "")
+        if not game_dir or not texts:
+            return
+        pairs = {}
+        for src, dst in zip(texts, results or []):
+            src, dst = str(src or ""), str(dst or "")
+            if src and dst and src != dst and len(src) <= 500:
+                pairs[src] = dst
+        if not pairs:
+            return
+        try:
+            from app.core.twine import live_tr
+
+            # сначала в память сессии — чтобы уже в этом запуске словарь
+            # рос и повторы не шли в сеть заново
+            sess = getattr(self, "_tr_session", None)
+            if sess is None:
+                sess = self._tr_session = {}
+            for k, v in pairs.items():
+                sess.setdefault(k, v)
+                self._tr_dict.setdefault(k, v)
+            if self._ws_server and self._ws_server.has_client() \
+                    and len(self._tr_dict) % 50 == 0:
+                self._ws_server.send({"type": "tr_dict",
+                                      "data": self._tr_dict})
+            live_tr.add(game_dir, pairs)
+        except Exception:  # noqa: BLE001 — нельзя ронять игру из-за памяти
+            pass
 
     def _send_tr_status(self, msg: str | None) -> None:
         """Шлёт странице статус провайдера (однажды на изменение)."""

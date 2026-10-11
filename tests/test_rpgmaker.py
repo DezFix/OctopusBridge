@@ -2311,4 +2311,67 @@ _sh69.rmtree(_td69, ignore_errors=True)
 print("   OK")
 
 print()
+print("70) Карта: маркер «вы здесь» и живое слежение за игроком...")
+from PySide6.QtGui import QColor as _QC70
+from PySide6.QtTest import QTest as _QT70
+# сброс живого состояния игрока
+_mt65._player_map_id = None
+_mt65._player_xy = None
+_mt65._map_id = 7
+_mt65._map_data = {"width": 20, "height": 15,
+                   "data": [0] * 20 * 15 * 6, "events": []}
+_mt65.zoom_combo.setCurrentIndex(3)  # 100%: pixmap = базе 1:1
+# базовый слой 960x720 (48 px/тайл — как рендер движка)
+_base70 = _QImage66(960, 720, _QImage66.Format_ARGB32)
+_base70.fill(_QC70(24, 24, 24))
+_mt65._base_img = _base70
+_ev70 = _QImage66(960, 720, _QImage66.Format_ARGB32_Premultiplied)
+_ev70.fill(_QC70(0, 0, 0, 0))
+_mt65._ev_img = _ev70
+# без state — позиции не знаем, маркера нет
+_mt65._compose()
+assert _mt65._player_xy is None
+# state на карте игрока: позиция запомнилась, маркер нарисован
+_mt65._on_state({"type": "state", "mapId": 7,
+                 "playerX": 12, "playerY": 9})
+assert _mt65._player_map_id == 7 and _mt65._player_xy == (12, 9)
+_pm70 = _mt65.canvas.pixmap()
+assert _pm70 is not None and not _pm70.isNull()
+assert (_pm70.width(), _pm70.height()) == (960, 720)
+_col70 = _pm70.toImage().pixelColor(602, 456)  # тайл (12,9) + 2px
+assert _col70.blue() > _col70.red() and _col70.blue() > 120, \
+    (_col70.red(), _col70.green(), _col70.blue())
+# карта игрока — жирной в списке
+_mt65._maps = [(7, "Start"), (3, "Other")]
+_mt65._fill_maps()
+_fonts70 = [_mt65.map_list.item(r).font().bold()
+            for r in range(_mt65.map_list.count())]
+assert _fonts70 == [True, False], _fonts70
+# на чужой карте маркер не рисуется
+_mt65._map_id = 3
+_mt65._compose()
+_col70b = _mt65.canvas.pixmap().toImage().pixelColor(602, 456)
+assert not (_col70b.blue() > _col70b.red()
+            and _col70b.blue() > 120)
+_mt65._map_id = 7
+# таймер слежения: пока вкладка видна — state опрашивается живьём
+_mt65._state_timer.setInterval(200)  # ускоряем для теста
+_mt65.show()
+try:
+    _qapp65.processEvents()
+    _before70 = _m65.states
+    _QT70.qWait(700)
+    assert _m65.states > _before70, "таймер не слежит за игроком"
+finally:
+    _mt65.hide()
+assert not _mt65._state_timer.isActive()
+_mt65._state_timer.setInterval(2500)
+# после телепорта — сразу уточняем позицию игрока
+_b2 = _m65.states
+_mt65._send_teleport(7, 1, 1)
+_mt65._on_cheat_ack("teleport", True, "", "")
+assert _m65.states > _b2, "после телепорта state не уточняется"
+print("   OK: маркер + жирная строка + слежение + refresh")
+
+print()
 print("ВСЕ ТЕСТЫ RPG MAKER ПРОШЛИ")

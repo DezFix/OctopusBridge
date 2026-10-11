@@ -36,6 +36,9 @@ def create_tentacle(engine_key: str) -> Tentacle | None:
     if engine_key == "twine":
         from app.engines.twine.tentacle import TwineTentacle
         return TwineTentacle()
+    if engine_key == "html":
+        from app.engines.html.tentacle import HtmlTentacle
+        return HtmlTentacle()
     if engine_key == "tyrano":
         from app.engines.tyrano.tentacle import TyranoTentacle
         return TyranoTentacle()

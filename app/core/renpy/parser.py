@@ -21,6 +21,7 @@ import pickle
 import re
 import struct
 import textwrap
+import unicodedata
 import zlib
 
 from app.core.models import TranslationEntry
@@ -90,13 +91,69 @@ def _is_interp_safe(original: str, translation: str) -> bool:
         return False
     return True
 
-_STR = r'"((?:[^"\\]|\\.)*)"'
-RE_CHOICE = re.compile(r'^\s*' + _STR + r'\s*:\s*$')
-RE_TR_FN = re.compile(r'_\(\s*' + _STR + r'\s*\)')
-RE_OLD = re.compile(r'^\s*old\s+' + _STR)
+_LIT_PREFIX = r"(?:[rR][fF]|[fF][rR]|[fFrR])?"
+_STR_DQ = r'"((?:[^"\\]|\\.)*)"'
+_STR_SQ = r"'((?:[^'\\]|\\.)*)'"
+_STR = r'(?:"((?:[^"\\]|\\.)*)"|\'((?:[^\'\\]|\\.)*)\')'
+RE_CHOICE = re.compile(
+    r"^\s*" + _LIT_PREFIX + _STR + r"\s*(?:if\b.*)?:\s*$")
+RE_TR_FN = re.compile(r"(?:__|_p?)\(\s*" + _LIT_PREFIX + _STR + r"\s*\)")
+RE_OLD = re.compile(r"^\s*old\s+" + _LIT_PREFIX + _STR)
 RE_COMMENT = re.compile(r'^\s*#')
 # начало строки-диалога: необязательный говорящий + открывающая кавычка
-RE_QUOTE_START = re.compile(r'^\s*(?:[a-zA-Z_][\w.]*\s+)?\"')
+RE_QUOTE_START = re.compile(
+    r"^\s*(?:[a-zA-Z_][\w.]*\s+)?" + _LIT_PREFIX + "['\"]")
+# String literals inside a line: "..." first, '...' only when no "..."
+# on the line (so an apostrophe in "don't" gives no false literal).
+_RE_DQ_LIT = re.compile(_LIT_PREFIX + _STR_DQ)
+_RE_SQ_LIT = re.compile(_LIT_PREFIX + _STR_SQ)
+# Triple quotes (e.g. e """monologue"""): separate branch with DOTALL.
+_RE_TRIPLE = re.compile(_LIT_PREFIX + r'"""(.*?)"""', re.DOTALL)
+# show text / scene text: exception from _DLG_SKIP_RE (P4).
+_RE_SHOW_TEXT = re.compile(r"(?:show|scene)\s+text\b")
+# Menu caption: menu (caption="What to do?") (P6).
+_RE_MENU = re.compile(r"menu\b")
+# Screen-language words holding visible text (P5). A separator is
+# required after the keyword: text = "x" is assignment, not text.
+_RE_SCREEN_KW = re.compile(r"(?:text|textbutton|label|input)(?=\s|['\"(])")
+
+# Indent stack of open screen blocks (P5): a screen header opens,
+# a line indented less-or-equal closes it, blank lines change nothing.
+# Best effort; self-clears on dedent (first line of a new file is
+# always column 0).
+_SCREEN_STACK: list[int] = []
+
+
+def _reset_screen_stack() -> None:
+    """Reset the screen-block tracker (isolation between files/tests)."""
+    del _SCREEN_STACK[:]
+
+
+def _m_text(m: re.Match) -> str:
+    """Text of a combined _STR match: group 1 ("...") or 2 ('...')."""
+    g1 = m.group(1)
+    if g1 is not None:
+        return g1
+    try:
+        return m.group(2) or ""
+    except IndexError:
+        return ""
+
+
+def _has_str_literal(line: str) -> bool:
+    """Whether the line holds a string literal (P17: skip-words are
+    skipped only when NO literal follows, so window "Hi" extracts)."""
+    return bool(_RE_DQ_LIT.search(line) or _RE_SQ_LIT.search(line))
+
+
+def _line_str_literals(line: str) -> list[str]:
+    """All string literals of the line with escape-decoding (P4/P5/P6)."""
+    out = [_decode_rpy_literal(m.group(1))
+           for m in _RE_DQ_LIT.finditer(line)]
+    if out:
+        return out
+    return [_decode_rpy_literal(m.group(1))
+            for m in _RE_SQ_LIT.finditer(line)]
 
 _DLG_SKIP_RE = re.compile(
     r'^(?:def|default|define|label|screen|transform|style|image|'
@@ -108,7 +165,8 @@ _DLG_SKIP_RE = re.compile(
     r'(?:\s|$)')
 
 RE_DIALOGUE = re.compile(
-    r'^\s*(?:[a-zA-Z_][\w.]*\s+)?[fF]?' + _STR + r'(?:\s|:|$)')
+    r"^\s*(?:[a-zA-Z_][\w.]*\s+){0,2}" + _LIT_PREFIX + _STR
+    + r"(?:\s|:|$)")
 
 # начало python-блока: python:, init python:, init -1 python:, python hide:
 RE_PY_BLOCK_HEADER = re.compile(
@@ -298,13 +356,58 @@ def _sl_text_value(part) -> str | None:
     except Exception:
         pass
     m = re.search(_STR, src)
-    return m.group(1) if m else None
+    if not m:
+        return None
+    t = _m_text(m)
+    return _decode_rpy_literal(t) if t else None
+
+
+def _show_text_parts(v, _seen=None) -> list[str]:
+    """Text of show text / scene text from .rpyc Show/Scene nodes (P4).
+
+    The string may sit as PyExpr (source of a string literal, read via
+    _sl_text_value) or as a ready string (text/what). Bare ASCII words
+    without spaces (image names in imspec, like eileen/happy) are left
+    alone: a name is indistinguishable from a one-word text, and a
+    false translation of names breaks sprite showing.
+    """
+    if _seen is None:
+        _seen = set()
+    out: list[str] = []
+    if v is None or id(v) in _seen:
+        return out
+    _seen.add(id(v))
+    if isinstance(v, dict):
+        for _x in v.values():
+            out.extend(_show_text_parts(_x, _seen))
+        return out
+    if isinstance(v, (list, tuple)):
+        for _x in v:
+            out.extend(_show_text_parts(_x, _seen))
+        return out
+    if isinstance(v, str):
+        t = _sl_text_value(v)
+        if t and _looks_like_text(t):
+            return [t]
+        if getattr(type(v), "_ob_py_expr", False):
+            return []  # python code (a variable name), not text
+        s = v.strip()
+        if s and _looks_like_text(s) \
+                and (" " in s or re.search(r'[^\x00-\x7F]', s)):
+            return [s]
+        return []
+    src = getattr(v, "source", None)
+    if isinstance(src, str) and src:
+        t = _sl_text_value(src)
+        if t and _looks_like_text(t):
+            out.append(t)
+    return out
 
 
 def _looks_like_text(s: str) -> bool:
     """Является ли строковый литерал текстом для перевода, а не
     именем файла, URL, цветом, числом или ключом-«пустышкой»."""
-    if len(s) < 2 or len(s) > 4000:
+    if len(s) < 2 or len(s) > 20000:
         return False
     if not any(ch.isalpha() for ch in s):
         return False
@@ -467,19 +570,25 @@ def _py_string_literals(src: str) -> list[tuple[str, str]]:
 
     try:
         tree = ast.parse(src)
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, RecursionError):
+        # глубоко вложенные блоки роняют парсер рекурсией
         tree = None
     if tree is not None:
-        body = tree.body
-        # module-docstring пропускаем только если за ним есть код:
-        # одиночная голая строка может быть текстом (Default.value =
-        # PyExpr('"Найди меч"') — выражение-литерал, а не документация)
-        if len(body) > 1 and isinstance(body[0], ast.Expr) \
-                and isinstance(body[0].value, ast.Constant) \
-                and isinstance(body[0].value.value, str):
-            body = body[1:]
-        for st in body:
-            _collect(st)
+        try:
+            body = tree.body
+            # module-docstring пропускаем только если за ним есть код:
+            # одиночная голая строка может быть текстом (Default.value =
+            # PyExpr('"Найди меч"') — выражение-литерал, а не документация)
+            if len(body) > 1 and isinstance(body[0], ast.Expr) \
+                    and isinstance(body[0].value, ast.Constant) \
+                    and isinstance(body[0].value.value, str):
+                body = body[1:]
+            for st in body:
+                _collect(st)
+        except RecursionError:
+            # слишком глубокое AST-дерево — best effort регулярками
+            return [(t, "") for t in _regex_literals(src)
+                    if _looks_like_text(t)]
         return [(t, h) for t, h in out if _looks_like_text(t)]
     else:
         # py2-синтаксис (Ren'Py 7) или кривой блок — регулярками
@@ -544,8 +653,19 @@ def _walk_ast(stmts) -> list[tuple[str, str]]:
                 for part in _string_parts(label):
                     if len(part) >= 2:
                         result.append(("choice", part))
-                if isinstance(item, (list, tuple)) and len(item) > 2:
-                    walk(item[2])
+                # 3-кортеж: (label, условие, блок); 2-кортеж:
+                # (label, блок) — пункт меню без условия, блок в item[1]
+                if isinstance(item, (list, tuple)):
+                    if len(item) == 2:
+                        walk(item[1])
+                    elif len(item) > 2:
+                        walk(item[2])
+            # Menu caption menu (caption="What to do?") plus prompt/who
+            # (P7): visible text that used to be lost completely.
+            for _cap_attr in ("caption", "prompt", "who"):
+                for part in _string_parts(getattr(nodes, _cap_attr, None)):
+                    if len(part) >= 2:
+                        result.append(("choice", part))
 
         elif nt == "Label":
             walk(getattr(nodes, "block", []))
@@ -586,11 +706,36 @@ def _walk_ast(stmts) -> list[tuple[str, str]]:
             # класс (mock _mock_Text / _mock__textbutton).
             _d = getattr(nodes, "displayable", None)
             disp_name = getattr(_d, "__name__", "") if _d is not None else ""
-            if disp_name.removeprefix("_mock_") in ("Text", "_textbutton"):
+            # P8: Label/Input/Button hold visible text too; add/bar/image
+            # (file names) still stay out of the whitelist.
+            if disp_name.removeprefix("_mock_") in (
+                    "Text", "_textbutton", "Label", "Input", "Button",
+                    "_label", "_input", "_button"):
                 for pos in getattr(nodes, "positional", []) or []:
                     v = _sl_text_value(pos)
-                    if v:
+                    if v and _looks_like_text(v):
                         result.append(("screen", v))
+                # keyword args (input default "...", Button value="...");
+                # action/background and the rest are code or file names.
+                _kw = getattr(nodes, "keyword", None)
+                if _kw is None:
+                    _kw = getattr(nodes, "keywords", None)
+                if isinstance(_kw, dict):
+                    for _kk in ("default", "value"):
+                        if _kk in _kw:
+                            v = _sl_text_value(_kw[_kk])
+                            if v and _looks_like_text(v):
+                                result.append(("screen", v))
+
+        elif base in ("Show", "Scene"):
+            # show text "..." / scene text "..." (P4): the text sits in
+            # imspec (PyExpr with a literal source) or in text/what.
+            for _s in _show_text_parts(getattr(nodes, "imspec", None)):
+                result.append(("screen", _s))
+            for _s in _show_text_parts(getattr(nodes, "text", None)):
+                result.append(("screen", _s))
+            for _s in _show_text_parts(getattr(nodes, "what", None)):
+                result.append(("screen", _s))
 
         elif base == "SLPython":
             for s, hint in _code_literals(getattr(nodes, "code", None)):
@@ -791,7 +936,14 @@ def extract(game_dir: str, extract_lang: str | None = None
                         for kind, s in _walk_ast(stmts):
                             add(rel, f"{rel}:{kind}", s)
                 else:
-                    text = raw.decode("utf-8", errors="replace")
+                    try:
+                        text = raw.decode("utf-8")
+                    except UnicodeDecodeError:
+                        # Старые RU-моды в cp1251 (как в ветке
+                        # чтения с диска ниже): без фолбэка —
+                        # кракозябры вместо русского текста
+                        text = raw.decode("cp1251", errors="replace")
+                    _reset_screen_stack()
                     for n, line in enumerate(text.splitlines(), 1):
                         _extract_line(rel, n, line, add)
             except Exception:
@@ -814,13 +966,17 @@ def extract(game_dir: str, extract_lang: str | None = None
         else:
             try:
                 try:
-                    with open(path, encoding="utf-8") as f:
+                    # utf-8-sig: BOM в начале файла иначе
+                    # съедает первую строку-диалог (регэкспы
+                    # не матчат \ufeff)
+                    with open(path, encoding="utf-8-sig") as f:
                         lines = f.readlines()
                 except UnicodeDecodeError:
                     # Старые RU-моды в cp1251: без фолбэка весь файл
                     # молча пропускался (0 строк).
                     with open(path, encoding="cp1251") as f:
                         lines = f.readlines()
+                _reset_screen_stack()
                 i = 0
                 n_lines = len(lines)
                 while i < n_lines:
@@ -873,31 +1029,40 @@ def extract(game_dir: str, extract_lang: str | None = None
                     # пока нечётное число неэкранированных кавычек не
                     # станет чётным. Только для строк, похожих на диалог/
                     # old-блок — код (python: и т.п.) не склеиваем.
-                    if _unescaped_quotes(line) % 2 == 1 \
+                    _dq_odd = _unescaped_quotes(line) % 2 == 1
+                    _sq_odd = _unescaped_quotes(line, '"') % 2 == 1
+                    if ((_dq_odd or _sq_odd)
                             and (RE_QUOTE_START.match(line)
-                                 or RE_OLD.match(line)):
+                                 or RE_OLD.match(line))) \
+                            or line.rstrip().endswith("\\"):
                         start = i
                         buf = [line]
-                        odd = True
+                        odd = (_dq_odd, _sq_odd)
                         guard = 0
-                        while i + 1 < n_lines and odd and guard < 200:
+                        while i + 1 < n_lines and guard < 200 \
+                                and (odd[0] or odd[1]
+                                     or buf[-1].rstrip().endswith("\\")):
                             i += 1
                             guard += 1
                             nxt = lines[i]
                             buf.append(nxt)
-                            if _unescaped_quotes(nxt) % 2 == 1:
-                                odd = False
+                            odd = (
+                                odd[0] ^ (_unescaped_quotes(nxt) % 2 == 1),
+                                odd[1]
+                                ^ (_unescaped_quotes(nxt, '"') % 2 == 1))
                         _extract_line(rel, start + 1, "".join(buf), add)
                     else:
                         _extract_line(rel, i + 1, line, add)
                     i += 1
-            except (OSError, UnicodeDecodeError):
+            except Exception:
+                # один битый файл не должен убивать всю
+                # выгрузку (как в ветках .rpyc/.rpa выше)
                 pass
 
     return entries
 
 
-def _unescaped_quotes(line: str) -> int:
+def _unescaped_quotes(line: str, q: str = '"') -> int:
     """Число неэкранированных двойных кавычек в строке (чётность решает,
     закрыта ли строка-литерал на этой физической строке)."""
     count = 0
@@ -906,33 +1071,131 @@ def _unescaped_quotes(line: str) -> int:
         if line[i] == "\\":
             i += 2
             continue
-        if line[i] == '"':
+        if line[i] == q:
             count += 1
         i += 1
     return count
 
 
+# Escape-последовательности строковых литералов .rpy: простые,
+# шестнадцатеричные и именованные — см. _decode_rpy_literal
+_RE_LIT_ESCAPE = re.compile(
+    r"\\(n|t|r|\"|'|\\)"
+    r"|\\x([0-9a-fA-F]{2})"
+    r"|\\u([0-9a-fA-F]{4})"
+    r"|\\U([0-9a-fA-F]{8})"
+    r"|\\N\{([^}\n]*)\}")
+
+_LIT_SIMPLE_ESCAPES = {"n": "\n", "t": "\t", "r": "\r",
+                       '"': '"', "'": "'", "\\": "\\"}
+
+
+def _decode_rpy_literal(text: str) -> str:
+    """Декодирует escape-последовательности строкового литерала
+    .rpy (обратное _escape, плюс \\xNN, \\uXXXX, \\UXXXXXXXX
+    и \\N{...}).
+
+    Ren'Py декодирует литералы при парсинге скрипта — в игре
+    строка уже раскодирована («\\n» — перевод строки,
+    «\\u00e9» — «é»). Извлечение обязано вернуть РАНТАЙМНУЮ
+    строку: иначе old-ключи в tl/<lang>/*.rpy и ключи
+    ob_dict.json никогда не совпадут со строками игры, и такие
+    реплики молча не переводятся. Best effort: неизвестные
+    escape оставляем как есть (кодек unicode_escape ломает
+    не-ASCII — не подходит).
+    """
+    if "\\" not in text:
+        return text
+
+    def _repl(m: re.Match) -> str:
+        simple = m.group(1)
+        if simple is not None:
+            return _LIT_SIMPLE_ESCAPES[simple]
+        hx = m.group(2) or m.group(3) or m.group(4)
+        if hx is not None:
+            try:
+                return chr(int(hx, 16))
+            except ValueError:
+                # \U за пределами Unicode — best effort
+                return "\ufffd"
+        try:
+            return unicodedata.lookup(m.group(5))
+        except (KeyError, ValueError):
+            return "\ufffd"
+
+    return _RE_LIT_ESCAPE.sub(_repl, text)
+
+
 def _extract_line(rel: str, n: int, line: str, add) -> None:
     """Extract strings from a single .rpy source line."""
-    if len(line) > 4000 or RE_COMMENT.match(line):
+    if len(line) > 20000 or RE_COMMENT.match(line):
         return
+    # Backslash-newline glues physical lines (joining happens in
+    # extract; here we normalize a ready buffer so the STR regexes
+    # see one logical line).
+    if "\\\n" in line or "\\\r" in line:
+        line = line.replace("\\\r\n", "").replace("\\\n", "").replace(
+            "\\\r", "")
+    # Screen tracker by indent (P5): a screen header opens a block, a
+    # line indented less-or-equal closes it (blank lines do not count).
+    _probe = line.lstrip()
+    if _probe:
+        _ind = len(line) - len(_probe)
+        while _SCREEN_STACK and _ind <= _SCREEN_STACK[-1]:
+            _SCREEN_STACK.pop()
+        if re.match(r"screen\s+\w", _probe):
+            _SCREEN_STACK.append(_ind)
     try:
         found: list[tuple[str, str]] = []
+        _tm = _RE_TRIPLE.search(line)
+        if _tm and _tm.group(1):
+            _tt = _decode_rpy_literal(_tm.group(1))
+            if _tt and _looks_like_text(_tt):
+                found.append((_tt, "dialogue"))
         m = RE_OLD.match(line)
         if m:
-            found.append((m.group(1), "translate-block"))
+            found.append((_decode_rpy_literal(_m_text(m)),
+                          "translate-block"))
         else:
             m = RE_CHOICE.match(line)
             if m:
-                found.append((m.group(1), "choice"))
+                found.append((_decode_rpy_literal(_m_text(m)),
+                              "choice"))
             else:
                 stripped = line.lstrip()
-                if not _DLG_SKIP_RE.match(stripped):
+                _stv = _RE_SHOW_TEXT.match(stripped)
+                if _stv:
+                    # show text "..." / scene text "..." (P4)
+                    for _t in _line_str_literals(stripped[_stv.end():]):
+                        if _t and _looks_like_text(_t):
+                            found.append((_t, "screen"))
+                elif _RE_MENU.match(stripped):
+                    # menu (caption="What to do?") (P6)
+                    for _t in _line_str_literals(line):
+                        if _t and _looks_like_text(_t):
+                            found.append((_t, "menu-caption"))
+                elif _RE_SCREEN_KW.match(stripped):
+                    # text/textbutton/label/input: screen text inside a
+                    # screen block, dialogue otherwise; both filtered
+                    # (used to leak colors and file names into
+                    # dialogues via the RE_DIALOGUE fallback).
+                    for _t in _line_str_literals(line):
+                        if _t and _looks_like_text(_t):
+                            found.append((
+                                _t, "screen" if _SCREEN_STACK else "dialogue"))
+                elif not _DLG_SKIP_RE.match(stripped) \
+                        or _has_str_literal(line):
+                    # P17: skip-words (label/window/show...) are skipped
+                    # only when NO literal follows on the line.
                     dm = RE_DIALOGUE.match(line)
                     if dm:
-                        found.append((dm.group(1), "dialogue"))
+                        _dt = _decode_rpy_literal(_m_text(dm))
+                        if _dt and (not _DLG_SKIP_RE.match(stripped)
+                                    or _looks_like_text(_dt)):
+                            found.append((_dt, "dialogue"))
         for mm in RE_TR_FN.finditer(line):
-            found.append((mm.group(1), "_()"))
+            found.append((_decode_rpy_literal(_m_text(mm)),
+                          "_()"))
     except Exception:
         return
     for text, kind in found:
@@ -1049,7 +1312,9 @@ def _read_existing_olds(out_path: str) -> set[str]:
         with open(out_path, encoding="utf-8") as f:
             multiline = re.compile(RE_OLD.pattern, re.MULTILINE)
             raw = multiline.findall(f.read())
-        return {_unescape_rpy_string(r) for r in raw}
+        # RE_OLD with combined _STR: findall gives (double, single)
+        # pairs, take the non-empty one.
+        return {_unescape_rpy_string(a or b) for a, b in raw}
     except (OSError, UnicodeDecodeError):
         return set()
 
@@ -1073,6 +1338,13 @@ def apply(game_dir: str, entries: list[TranslationEntry],
     # Пустой/«None» от caller'а -> русский, и в tl/None не пишем никогда.
     lang = LANG_FOLDERS.get(target_lang, target_lang) if target_lang \
         else LANG_FOLDERS["ru"]
+    # Валидация имени языка: без неё target_lang вроде
+    # "../../evil" через os.path.join пишет ob_*.rpy ВНЕ
+    # game/tl (path traversal), а перевод строки в имени
+    # ломает заголовок «translate <lang> strings:» — игра
+    # не стартует.
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", str(lang)):
+        raise ValueError(f"невалидное имя языка: {target_lang!r}")
     if not _is_tl_lang(str(lang)):
         lang = LANG_FOLDERS["ru"]
     by_file: dict[str, list[TranslationEntry]] = {}
@@ -1136,6 +1408,10 @@ def apply(game_dir: str, entries: list[TranslationEntry],
         try:
             _atomic_write(out_path, "".join(chunks), encoding="utf-8")
         except OSError:
+            # путь попал в written_paths ДО записи: при сбое
+            # убираем — иначе осиротевший ob_*.rpy посчитают
+            # текущим и не вычистят
+            written_paths.discard(out_path)
             continue
         if not _written_file_ok(out_path):
             # свой же битый файл не оставляем: Ren'Py упадёт на старте
@@ -1188,8 +1464,10 @@ def apply(game_dir: str, entries: list[TranslationEntry],
         pass
 
     if stats["files"] > 0:
-        import json
         import shutil
+
+        from app.core.io import atomic_write_json as _atomic_json
+        from app.core.io import atomic_write_text as _atomic_text
 
         font_src = os.path.join(os.path.dirname(__file__), "..", "assets",
                                 "fonts", "NotoSans-Regular.ttf")
@@ -1210,13 +1488,16 @@ def apply(game_dir: str, entries: list[TranslationEntry],
         dict_path = os.path.join(game_dir, "game", "tl", lang,
                                  "ob_dict.json")
         os.makedirs(os.path.dirname(dict_path), exist_ok=True)
-        with open(dict_path, "w", encoding="utf-8") as f:
-            json.dump(full_dict, f, ensure_ascii=False)
+        # атомарно, как ob_*.rpy: обрыв посреди записи раньше
+        # оставлял усечённый JSON — рантайм-хук ловил исключение
+        # и отключал ВСЕ переводы (_OB_DICT = {})
+        _atomic_json(dict_path, full_dict, ensure_ascii=False)
 
         activate_path = os.path.join(game_dir, "game", "tl", lang,
                                      "ob_activate.rpy")
-        with open(activate_path, "w", encoding="utf-8") as f:
-            f.write(_ACTIVATE_TEMPLATE.format(lang=lang))
+        _atomic_text(activate_path,
+                     _ACTIVATE_TEMPLATE.format(lang=lang),
+                     encoding="utf-8")
 
     return stats
 

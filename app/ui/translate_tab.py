@@ -67,7 +67,6 @@ class TranslateTab(QWidget):
         self._selected_file = ""
         self._file_items: list[_FileItem] = []
         self._toast_timer: QTimer | None = None
-        self._mem_cache: dict[int, list[dict]] = {}
         # Индекс id -> запись: ручная правка шла линейным сканом
         # по 40k строк на каждое нажатие Enter. Источник валидности —
         # сам список проекта (см. _entry_by_id).
@@ -258,20 +257,6 @@ class TranslateTab(QWidget):
         gb.addStretch(1)
         right_lay.addWidget(self.gloss_bar)
 
-        # ── панель памяти: похожие переводы для выбранной строки ──
-        self.mem_bar = QWidget()
-        self.mem_bar.setVisible(False)
-        self.mem_bar_lay = QHBoxLayout(self.mem_bar)
-        mb = self.mem_bar_lay
-        mb.setContentsMargins(14, 2, 14, 2)
-        mb.setSpacing(6)
-        self.mem_title = QLabel(TR("tr_memory_title"))
-        self.mem_title.setStyleSheet(
-            f"color: {C_TEXT_SECONDARY}; font-size: 11px;")
-        mb.addWidget(self.mem_title)
-        mb.addStretch(1)
-        right_lay.addWidget(self.mem_bar)
-
         self.stack = QStackedWidget()
 
         self.table = QTableWidget(0, 5)
@@ -297,7 +282,6 @@ class TranslateTab(QWidget):
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._table_menu)
         self.table.currentCellChanged.connect(self._glossary_bar_update)
-        self.table.currentCellChanged.connect(self._memory_bar_update)
         self._copy_shortcut = QShortcut(
             QKeySequence.StandardKey.Copy, self.table,
             activated=self._copy_cell)
@@ -651,11 +635,6 @@ class TranslateTab(QWidget):
         p = self._project()
         if p is None:
             return
-        try:
-            # новый проект/фильтр — старые подсказки памяти невалидны
-            self._mem_cache.clear()
-        except Exception:  # noqa: BLE001
-            pass
         self._loading = True
         try:
             rows = self._filtered()
@@ -774,152 +753,6 @@ class TranslateTab(QWidget):
         self.table.setCurrentCell(row, COL_TRANS)
         item.setText(new)
         self._on_item_changed(item)
-
-    # ── память: похожие переводы для выбранной строки ──
-
-    @staticmethod
-    def _mem_short(text: str, limit: int = 40) -> str:
-        t = " ".join((text or "").split())
-        return t if len(t) <= limit else t[:limit - 1] + "…"
-
-    def _memory_bar_update(self, row: int = -1, col: int = -1, *args):
-        """Секция «Похожие из памяти» для выбранной строки.
-
-        suggest_all быстрый (LIMIT 200 + difflib в памяти), вызывается
-        прямо из GUI; результат кэшируется по entry id. Битая tm2
-        панель просто прячет.
-        """
-        try:
-            self.mem_title.show()
-            bar = self.mem_bar_lay
-            while bar.count() > 2:  # title + stretch
-                item = bar.takeAt(1)
-                w = item.widget()
-                if w:
-                    w.deleteLater()
-            if row < 0:
-                row = self.table.currentRow()
-            if row < 0 or not self._project():
-                self.mem_bar.setVisible(False)
-                return
-            orig_item = self.table.item(row, COL_ORIG)
-            trans_item = self.table.item(row, COL_TRANS)
-            if not orig_item:
-                self.mem_bar.setVisible(False)
-                return
-            orig = orig_item.text()
-            if not (orig or "").strip():
-                self.mem_bar.setVisible(False)
-                return
-            entry_id = orig_item.data(Qt.UserRole)
-            p = self._project()
-            src = getattr(p, "source_lang", None) \
-                or self.main.settings.value("source_lang", "auto")
-            tgt = getattr(p, "target_lang", None) \
-                or self.main.settings.value("target_lang", "ru")
-            tm = getattr(self.main, "tm", None)
-            if tm is None:
-                self.mem_bar.setVisible(False)
-                return
-            # точный язык источника (auto -> detect), иначе suggest_all
-            # по ключу 'auto' ничего не найдёт
-            try:
-                from app.core.translate.service import _resolve_src
-                lang = _resolve_src(orig, src, tgt)
-            except Exception:  # noqa: BLE001
-                lang = None
-            if not lang:
-                # строка уже на целевом языке — подсказки не нужны
-                self.mem_bar.setVisible(False)
-                return
-            try:
-                cached = self._mem_cache.get(entry_id)
-            except Exception:  # noqa: BLE001
-                cached = None
-            if cached is None:
-                try:
-                    sug = tm.suggest_all(orig, lang, tgt, limit=3)
-                except Exception:  # noqa: BLE001 — битая tm2
-                    self.mem_bar.setVisible(False)
-                    return
-                try:
-                    self._mem_cache[entry_id] = sug
-                except Exception:  # noqa: BLE001
-                    pass
-            else:
-                sug = cached
-            if not sug:
-                self.mem_bar.setVisible(False)
-                return
-            cur_trans = trans_item.text().strip() if trans_item else ""
-            shown = 0
-            for s in sug[:3]:
-                try:
-                    target = s.get("target", "")
-                    source = s.get("source", "")
-                    score = float(s.get("score", 0.0))
-                except Exception:  # noqa: BLE001
-                    continue
-                if not (target or "").strip():
-                    continue
-                if cur_trans and target.strip() == cur_trans and score >= 0.999:
-                    continue  # точное уже стоит в ячейке
-                pct = int(round(score * 100))
-                lbl = QLabel(
-                    f"{self._mem_short(source)} → "
-                    f"{self._mem_short(target)} ({pct}%)")
-                lbl.setStyleSheet(
-                    f"color: {C_TEXT_SECONDARY}; font-size: 11px; "
-                    "background: transparent;")
-                lbl.setToolTip(source)
-                bar.insertWidget(bar.count() - 1, lbl)
-                btn = QPushButton(TR("tr_memory_take"))
-                btn.setObjectName("chip_filter")
-                btn.setCursor(Qt.PointingHandCursor)
-                btn.setToolTip(TR("tr_memory_tip"))
-                btn.clicked.connect(
-                    lambda checked=False, tt=target, ss=score:
-                        self._memory_apply(tt, ss))
-                bar.insertWidget(bar.count() - 1, btn)
-                shown += 1
-            self.mem_bar.setVisible(shown > 0)
-        except Exception:  # noqa: BLE001 — панель памяти никогда не роняет GUI
-            try:
-                self.mem_bar.setVisible(False)
-            except Exception:  # noqa: BLE001
-                pass
-
-    def _memory_apply(self, target: str, score: float = 0.0):
-        """Кнопка «Взять»: подставить перевод из памяти."""
-        try:
-            row = self.table.currentRow()
-            if row < 0:
-                return
-            item = self.table.item(row, COL_TRANS)
-            orig_item = self.table.item(row, COL_ORIG)
-            if not item or not orig_item:
-                return
-            entry_id = orig_item.data(Qt.UserRole)
-            p = self._project()
-            if not p:
-                return
-            e = next((x for x in p.entries if x.id == entry_id), None)
-            if e is None:
-                return
-            e.translation = target
-            e.status = "translated" if score >= 0.999 else "manual"
-            try:
-                self.main.save_project()
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                self._mem_cache.pop(entry_id, None)
-            except Exception:  # noqa: BLE001
-                pass
-            self.fill_table()
-            self._update_stats()
-        except Exception:  # noqa: BLE001
-            pass
 
     def _copy_text(self, text: str):
         if text:
@@ -1098,7 +931,7 @@ class TranslateTab(QWidget):
         # ping() — в воркере (в GUI морозил окно); текст ошибки — здесь.
         engine_name = getattr(engine, "name", "rotate")
         ping_hint = engine_hint(engine_name)
-        translator = Translator(engine, tm=self.main.tm,
+        translator = Translator(engine,
                                 glossary=self.main.glossary)
         # Только выбранные в диалоге языки оригинала (остальные строки
         # остаются как есть — не жжём запросы). P0: воркеру — копию
@@ -1114,7 +947,7 @@ class TranslateTab(QWidget):
         self.worker = TranslateWorker(
             translator, list(targets),
             s.value("source_lang", "auto"), s.value("target_lang", "ru"),
-            overwrite=self._pending_overwrite, prefill=True,
+            overwrite=self._pending_overwrite,
             ping_hint=ping_hint)
         self.worker.progressed.connect(self._on_progress)
         self.worker.left.connect(self._on_left_over)

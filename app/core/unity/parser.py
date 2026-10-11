@@ -10,10 +10,16 @@
 Перевод (ленивый UnityPy, без него — пустые заглушки):
 - harvest_textasset() / harvest_monobehaviour() — чистые, без UnityPy;
 - patch_textasset() / patch_monobehaviour() — чистые, без UnityPy;
-- extract() — TextAsset/MonoBehaviour/TextMesh/GUIText
-  -> list[TranslationEntry] (json_path='asset://<file>/<path_id>/<field>',
+- extract() — TextAsset/MonoBehaviour/TextMesh/GUIText/TextMeshProUGUI/
+  TextMeshPro + текстовые файлы StreamingAssets (*.json/*.csv/*.txt)
+  -> list[TranslationEntry] (json_path='asset://<file>/<path_id>/<field>'
+  для ассетов и 'asset://<file>/streaming/content' для StreamingAssets,
   context='<Type>:<name>' без текста, дедуп по (file, json_path));
-- apply() — BackupStore + atomic_write_bytes + verify переоткрытием.
+- apply() — BackupStore + atomic_write_bytes + verify переоткрытием
+  (StreamingAssets — прямой перезаписью файла тем же паттерном);
+- font_patch() — замена m_FontData классических Font на TTF с кириллицей
+  (TMP SDF-генерация вне скоупа: нужен Unity Editor; TMP_FontAsset
+  только детектим и честно отчитываемся в stats).
 
 Разведка (структура, без значений):
 - TextAsset ~103 в sharedassets2/3/4/5 + resources: все UTF-8 (ok=103,
@@ -147,6 +153,14 @@ def iter_asset_files(game_dir: str) -> list[str]:
 
 # Подозрительные на текст поля MonoBehaviour-typetree (VN/Choice/TMP).
 # Сравнение — case-insensitive подстрока в имени поля.
+# Naninovel/Fungus/Yarn/I2-полей в ней нет — их хинты не добавляем.
+#
+# "action" здесь НЕТ намеренно: в RealMono-игре поле actionName — это
+# не подпись для игрока, а имя действия Unity Input System (и `m_ActionId`
+# / `m_DefaultActionMap` рядом). Перевод таких строк ломает привязку
+# ввода — персонаж перестаёт ходить. Идентификаторы перечислены явно в
+# _IDENT_FIELDS, а подсказку "action" мы убрали, чтобы следующая игра
+# с похожим полем не сломалась тем же образом.
 _TEXT_HINTS: tuple[str, ...] = (
     "m_text",
     "text",
@@ -179,6 +193,24 @@ _SKIP_FIELDS: frozenset[str] = frozenset({
     "m_FileID",
     "m_PathID",
     "guid",
+})
+
+# Идентификаторы и привязки ввода. Перевод строки здесь ломает механику,
+# а не текст: Unity Input System ищет действие/карту по имени/GUID и молча
+# перестаёт реагировать на управление. Имена берём и с префиксом, и без —
+# в typetree встречаются оба варианта. Исторический случай: 553 записи
+# actionName/m_ActionId/m_DefaultActionMap были переведены, персонаж
+# перестал ходить.
+_IDENT_FIELDS: frozenset[str] = frozenset({
+    "actionName", "m_ActionName",
+    "actionMap", "m_ActionMap",
+    "m_DefaultActionMap",
+    "m_ActionId", "actionId",
+    "m_BindingId", "bindingId",
+    "m_CompositeBindingId",
+    "m_ControlScheme",
+    "m_ControlPath", "m_Path",
+    "m_AssetName", "assetName",
 })
 
 _TOKEN_RE = re.compile(r"([^\.\[\]]+)|\[(\d+)\]")
@@ -294,13 +326,19 @@ def _set_path_value(tree: dict, field_path: str, new_text: str) -> bool:
 
 
 def _has_sentence(value: object) -> bool:
-    """Есть ли в JSON-дереве хоть одно «предложение» (текст для игрока)."""
+    """Есть ли в JSON-дереве хоть одно «предложение» (текст для игрока).
+
+    «Предложение» = буквы, длина >= 10 и **пробел внутри**. Последнее
+    условие добавлено не для красоты: без него за предложение сходили
+    строки вида ``com.unity.2d.sprite@1.0.0`` из отчёта сборки Unity —
+    JSON-конфиг перестал определяться и его переводили целым блобом.
+    """
     stack: list[object] = [value]
     while stack:
         node = stack.pop()
         if isinstance(node, str):
             s = node.strip()
-            if len(s) >= 10 and _has_letters(s):
+            if len(s) >= 10 and _has_letters(s) and " " in s:
                 return True
         elif isinstance(node, dict):
             stack.extend(node.values())
@@ -328,11 +366,56 @@ def _is_json_config(text: str) -> bool:
     return not _has_sentence(obj)
 
 
+def _is_table(text: str) -> bool:
+    """True — TextAsset это таблица (CSV/TSV), а не цельный текст.
+
+    Почему это критично: ``patch_textasset`` подменяет содержимое
+    TextAsset целиком. Для прозы это правильно, а для таблицы — нет:
+    перевод одной ячейки затёрёт бы все остальные. В реальной Mono-игре
+    100 из 101 TextAsset оказались CSV/TSV (реплики по строкам), и
+    замена файла целиком ломала разметку — «текст чутька поломался».
+
+    Признак таблицы: несколько строк, и на большинстве из них
+    один и тот же разделитель (``,`` или ``\\t``) встречается одинаковое
+    число раз. Считаем доминирующее число разделителей: если оно
+    покрывает >= 60% строк и >= 1 — это таблица. Обычный текст с запятыми
+    так не ловится (число запятых по строкам разное), а ``a,b\\nc,d`` и
+    ``a,b,c\\nd,e,f`` — обе таблицы.
+    """
+    lines = [ln for ln in text.replace("\r\n", "\n").split("\n") if ln.strip()]
+    if len(lines) < 2:
+        return False
+    for delim in (",", "\t"):
+        counts = [ln.count(delim) for ln in lines]
+        best, hits = 0, 0
+        for c in sorted(set(counts), reverse=True):
+            n = counts.count(c)
+            if n > hits:
+                best, hits = c, n
+        if best >= 1 and hits >= max(2, int(len(lines) * 0.6)):
+            return True
+    return False
+
+
+#: маркер строки внутри TextAsset: 'm_Script#7' == 7-я строка файла
+_TA_LINE = "m_Script#"
+
+
 def harvest_textasset(name: str, script: str | bytes) -> list[tuple[str, str]]:
-    """Текст TextAsset -> [('m_Script', text)] или [] (пусто/бинарь/конфиг).
+    """Текст TextAsset -> [('m_Script#N', строка_N)] — ПОСТРОЧНО.
 
     Чистая, без UnityPy. ``name`` — только для сигнатуры (в контекст
     его подставляет extract, здесь не используется).
+
+    Почему построчно, а не одним куском: ``patch_textasset`` подменяет
+    содержимое TextAsset целиком, и раньше весь файл уходил переводчику
+    одной строкой. Переводчик имеет право склеить/потерять/переставить
+    строки — и он это делал, из-за чего диалоги «чутька ломались».
+    С построчной разбивкой каждый перевод встаёт ровно на своё место,
+    а число строк в файле не меняется никогда.
+
+    Пропускаем: пусто/без букв, JSON-конфиги движка, таблицы (CSV/TSV —
+    им нужна посекционная правка по колонкам, формат у каждой игры свой).
     """
     _ = name
     text = _decode_text(script)
@@ -343,7 +426,16 @@ def harvest_textasset(name: str, script: str | bytes) -> list[tuple[str, str]]:
         return []
     if _is_json_config(stripped):
         return []
-    return [("m_Script", stripped)]
+    if _is_table(stripped):
+        return []
+    out: list[tuple[str, str]] = []
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    for idx, line in enumerate(lines):
+        s = line.strip()
+        if len(s) < 2 or not _has_letters(s):
+            continue
+        out.append((f"{_TA_LINE}{idx}", s))
+    return out
 
 
 def harvest_monobehaviour(tree: dict) -> list[tuple[str, str]]:
@@ -363,7 +455,7 @@ def harvest_monobehaviour(tree: dict) -> list[tuple[str, str]]:
             for key, val in node.items():
                 if not isinstance(key, str):
                     continue
-                if key in _SKIP_FIELDS:
+                if key in _SKIP_FIELDS or key in _IDENT_FIELDS:
                     continue
                 if _is_pptr(val):
                     continue
@@ -401,14 +493,69 @@ def harvest_monobehaviour(tree: dict) -> list[tuple[str, str]]:
     return out
 
 
+def _line_index(field: str) -> int | None:
+    """'m_Script#7' -> 7. Не тот формат или мусор -> None."""
+    if not isinstance(field, str) or not field.startswith(_TA_LINE):
+        return None
+    tail = field[len(_TA_LINE):]
+    if not tail.isdigit():
+        return None
+    return int(tail)
+
+
+def _split_lines(raw: str | bytes) -> list[str]:
+    """Строки TextAsset. Перевод строки сохраняет исходный вариант."""
+    text = _decode_text(raw) if isinstance(raw, bytes) else raw
+    if not isinstance(text, str):
+        return []
+    return text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+
+
+def patch_textasset_lines(
+    script: str | bytes,
+    by_index: dict[int, str],
+) -> str | bytes:
+    """Новый m_Script с заменёнными строками по индексам. Чистая.
+
+    Меняются ТОЛЬКО перечисленные номера строк; остальные остаются
+    байт в байт, включая пустые строки и отступы. Число строк не меняется
+    никогда — разбивка на строки это главное, что держит диалог живым
+    после перевода. Без совпадений — исходник без изменений.
+    """
+    if not by_index:
+        return script
+    text = _decode_text(script)
+    if text is None:
+        return script
+    newline = "\r\n" if "\r\n" in text else ("\r" if "\r" in text else "\n")
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    changed = False
+    for idx, new_text in by_index.items():
+        if isinstance(new_text, str) and 0 <= idx < len(lines):
+            if lines[idx] != new_text:
+                lines[idx] = new_text
+                changed = True
+    if not changed:
+        return script
+    out = newline.join(lines)
+    if isinstance(script, bytes):
+        try:
+            return out.encode("utf-8")
+        except Exception:
+            return script
+    return out
+
+
 def patch_textasset(
     script: str | bytes,
     translations: dict[str, str] | list[tuple[str, str]],
 ) -> str | bytes:
-    """Новый m_Script по translations. Чистая, без UnityPy.
+    """Совместимость: старая точка входа (цельная подмена m_Script).
 
     ``translations`` — dict {field: new} или [(field, new)] (ищется
     'm_Script'); без совпадения — исходник без изменений (тип сохранён).
+    Новая разметка ('m_Script#N') сюда не попадает — её обрабатывает
+    patch_textasset_lines: построчно, иначе диалог ломается.
     """
     new: str | None = None
     if isinstance(translations, dict):
@@ -482,6 +629,59 @@ def patch_monobehaviour(
     return new_tree
 
 
+# ── StreamingAssets (текстовые файлы, без UnityPy) ──────────────────────────
+
+# Текстовые суффиксы StreamingAssets (только по имени, без чтения).
+_STREAMING_SUFFIXES = (".json", ".csv", ".txt")
+
+# Шрифт из комплекта репозитория (Noto Sans заведомо с кириллицей;
+# проверить cmap нечем — fontTools в окружении нет, честная оговорка).
+_BUNDLED_FONT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "assets", "fonts", "NotoSans-Regular.ttf")
+
+# Сигнатуры TTF/OTF: шрифт обязан начинаться с одной из них.
+_TTF_MAGICS = (b"\x00\x01\x00\x00", b"OTTO", b"true", b"typ1")
+
+
+def iter_streaming_text_files(game_dir: str) -> list[str]:
+    """Отн. пути текстовых файлов из *_Data/StreamingAssets (sort)."""
+    out: list[str] = []
+    for ddir in _data_dirs(game_dir):
+        sdir = os.path.join(ddir, "StreamingAssets")
+        for root, _dirs, files in os.walk(sdir):
+            for name in files:
+                if name.lower().endswith(_STREAMING_SUFFIXES):
+                    full = os.path.join(root, name)
+                    try:
+                        if os.path.isfile(full):
+                            out.append(os.path.relpath(full, game_dir)
+                                       .replace(os.sep, "/"))
+                    except OSError:
+                        continue
+    return sorted(out)
+
+
+def harvest_streaming_text(
+    name: str, text: str | bytes,
+) -> list[tuple[str, str]]:
+    """Весь текстовый файл -> [('content', text)] или [].
+
+    Те же гарды, что у TextAsset: пусто/без букв/JSON-конфиг — пропуск.
+    ``name`` — только для сигнатуры (в контекст его подставляет extract).
+    """
+    _ = name
+    decoded = _decode_text(text)
+    if decoded is None:
+        return []
+    stripped = decoded.strip()
+    if len(stripped) < 2 or not _has_letters(stripped):
+        return []
+    if _is_json_config(stripped):
+        return []
+    return [("content", stripped)]
+
+
 # Кэш typetree-генераторов: {(game_dir, version): gen}. Загрузка Managed
 # в холодную может занять десятки секунд — один раз на игру за сессию,
 # дальше переиспользуем (иначе 58с на КАЖДЫЙ файл extract/apply).
@@ -489,12 +689,17 @@ _TTGEN_CACHE: dict[tuple[str, str], object] = {}
 
 
 def _close_env(env) -> None:
-    """Закрыть файловые ручки env (fsspec LocalFileOpener).
+    """Закрыть файловые ручки env (поток исходного ассета).
 
     UnityPy.load(path) держит исходник открытым; на Windows открытая
     ручка роняет os.replace с WinError 5. Закрываем детерминированно
     перед atomic_write_bytes (загрузка из байтов — НЕ вариант: через
     неё ломается разбор скриптовых полей MonoBehaviour).
+
+    Важно: в UnityPy 1.25.3 у ассета нет ``reader.stream`` — поток лежит
+    сразу в ``asset.stream`` (fsspec LocalFileOpener). Поэтому перебираем
+    все разумные места, иначе _close_env молча ничего не делает и ручка
+    течёт на каждой открытой ассете (14+ на проекте).
     Без исключений.
     """
     try:
@@ -506,16 +711,21 @@ def _close_env(env) -> None:
     except Exception:
         return
     for asset in items:
-        try:
-            reader = getattr(asset, "reader", None)
-            stream = getattr(reader, "stream", None)
-        except Exception:
-            continue
-        try:
-            if stream is not None and not getattr(stream, "closed", True):
-                stream.close()
-        except Exception:
-            pass
+        # поток может быть в самом ассете, в его ``reader`` или вложенно
+        holders = [asset, getattr(asset, "reader", None)]
+        for holder in holders:
+            if holder is None:
+                continue
+            for attr in ("stream", "f", "file", "_file", "closable"):
+                stream = getattr(holder, attr, None)
+                closer = getattr(stream, "close", None)
+                if not callable(closer):
+                    continue
+                try:
+                    if not getattr(stream, "closed", False):
+                        closer()
+                except Exception:
+                    pass
 
 # ── UnityPy-слой (ленивый импорт) ──────────────────────────────────────────
 
@@ -523,7 +733,12 @@ def _close_env(env) -> None:
 # показывает typetree-статус, иначе молчаливый 101 вместо 6400.
 LAST_STATS: dict = {}
 
-_TEXT_TYPES = frozenset({"TextAsset", "MonoBehaviour", "TextMesh", "GUIText"})
+# TextMeshProUGUI/TextMeshPro — скриптовые компоненты (в части сборок
+# приходят отдельными типами, не MonoBehaviour): поле m_text (строчное).
+_TMP_TYPES = frozenset({"TextMeshProUGUI", "TextMeshPro"})
+
+_TEXT_TYPES = frozenset(
+    {"TextAsset", "MonoBehaviour", "TextMesh", "GUIText"}) | _TMP_TYPES
 
 
 def _try_import_unitypy():
@@ -657,7 +872,7 @@ def _object_name(tree: dict, fallback: str = "") -> str:
 
 
 def extract(game_dir: str, stats: dict | None = None) -> list:
-    """Строки TextAsset/MonoBehaviour/TextMesh/GUIText -> TranslationEntry.
+    """Строки TextAsset/MonoBehaviour/TextMesh/GUIText/TMP + StreamingAssets -> TranslationEntry.
 
     json_path='asset://<basename>/<path_id>/<field>',
     file=отн. путь ассета, context='<Type>:<name>' (имя без текста),
@@ -678,7 +893,7 @@ def extract(game_dir: str, stats: dict | None = None) -> list:
     next_id = 1
     stat = {"candidates": 0, "checked": 0, "loaded": 0, "load_failed": 0,
             "objects": 0, "text_objects": 0, "parse_fail": 0, "parse_err": "",
-            "typetree": "off"}
+            "typetree": "off", "fonts": 0, "tmp_fonts": 0, "streaming": 0}
     cands = _candidate_files(game_dir)
     stat["candidates"] = len(cands)
     for rel in cands:
@@ -722,6 +937,12 @@ def extract(game_dir: str, stats: dict | None = None) -> list:
                 except Exception:
                     continue
                 stat["objects"] += 1
+                if str(type_name) == "Font":
+                    stat["fonts"] += 1
+                elif str(type_name) == "TMP_FontAsset":
+                    # SDF-шрифты TextMeshPro генерируются только в Unity
+                    # Editor — детектим и честно отчитываемся, не патчим.
+                    stat["tmp_fonts"] += 1
                 if str(type_name) not in _TEXT_TYPES:
                     continue
                 stat["text_objects"] += 1
@@ -761,6 +982,16 @@ def extract(game_dir: str, stats: dict | None = None) -> list:
                             obj_name, tree.get("m_Script", ""))
                     elif type_name == "MonoBehaviour":
                         pairs = harvest_monobehaviour(tree)
+                    elif type_name in _TMP_TYPES:
+                        # TextMeshProUGUI / TextMeshPro: поле m_text
+                        # (строчное; в patch обязано совпасть по регистру).
+                        raw = tree.get("m_text", None)
+                        text = _decode_text(raw) if raw is not None else None
+                        if text is not None:
+                            stripped = text.strip()
+                            if len(stripped) >= 2 \
+                                    and _has_letters(stripped):
+                                pairs = [("m_text", stripped)]
                     else:  # TextMesh / GUIText: поле m_Text
                         raw = tree.get("m_Text", tree.get("m_text", None))
                         text = _decode_text(raw) if raw is not None else None
@@ -787,6 +1018,27 @@ def extract(game_dir: str, stats: dict | None = None) -> list:
                         context=context, original=original))
                     next_id += 1
         _close_env(env)
+    for rel in iter_streaming_text_files(game_dir):
+        abs_path = os.path.join(game_dir, *rel.split("/"))
+        if not os.path.isfile(abs_path):
+            continue
+        try:
+            with open(abs_path, "rb") as f:
+                raw = f.read()
+        except OSError:
+            continue
+        basename = rel.rsplit("/", 1)[-1]
+        for field, original in harvest_streaming_text(basename, raw):
+            json_path = f"asset://{basename}/streaming/{field}"
+            key = (rel, json_path)
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append(TranslationEntry(
+                id=next_id, file=rel, json_path=json_path,
+                context=f"Streaming:{basename}", original=original))
+            next_id += 1
+            stat["streaming"] += 1
     if stats is not None:
         stats.update(stat)
         stats["entries"] = len(entries)
@@ -794,6 +1046,109 @@ def extract(game_dir: str, stats: dict | None = None) -> list:
     LAST_STATS.update(stat)
     LAST_STATS["entries"] = len(entries)
     return entries
+
+
+def _apply_streaming_file(
+    game_dir: str,
+    rel: str,
+    items: list,
+    stats: dict,
+    backup: bool,
+    backup_root: str | None,
+) -> None:
+    """Прямая замена всего содержимого текстового файла (без UnityPy).
+
+    Тот же паттерн, что у ассетов: сверка с оригиналом, BackupStore,
+    atomic_write_bytes, verify перечитыванием. Статистика — в stats.
+    """
+    abs_path = os.path.join(game_dir, *rel.split("/"))
+    if not os.path.isfile(abs_path):
+        _skip(stats, "streaming-missing-file", len(items))
+        return
+    try:
+        with open(abs_path, "rb") as f:
+            current = f.read().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        _skip(stats, "streaming-unreadable", len(items))
+        return
+    applied = 0
+    for entry in items:
+        try:
+            if isinstance(entry, dict):
+                trans = str(entry.get("translation", ""))
+                orig = entry.get("original", "")
+            else:
+                trans = str(getattr(entry, "translation", ""))
+                orig = getattr(entry, "original", "")
+        except Exception:
+            _skip(stats, "bad-entry", 1)
+            continue
+        if not trans.strip():
+            _skip(stats, "no-translation", 1)
+            continue
+        orig_s = orig if isinstance(orig, str) else ""
+        if current != orig_s and current.strip() != orig_s.strip():
+            _skip(stats, "changed", 1)
+            continue
+        current = trans
+        applied += 1
+    if not applied:
+        return
+    if backup:
+        try:
+            from app.core.io import BackupStore
+
+            bdir = backup_root or os.path.join(
+                game_dir, "backup", "unity")
+            saved = BackupStore(bdir).backup(abs_path)
+            if saved:
+                stats["backups"].append(saved)
+        except Exception:
+            pass
+    try:
+        from app.core.io import atomic_write_bytes
+
+        atomic_write_bytes(abs_path, current.encode("utf-8"))
+        try:
+            with open(abs_path, "rb") as f:
+                check = f.read().decode("utf-8")
+            if check == current:
+                stats["verified"] += 1
+            else:
+                _verify_fail(stats, rel)
+        except (OSError, UnicodeDecodeError):
+            _verify_fail(stats, rel)
+        stats["files"] += 1
+        stats["strings"] += applied
+    except Exception as e:
+        _skip(stats, "write-failed", applied)
+        _problem(stats, f"{rel}: {type(e).__name__}")
+
+
+def _verify_fail(stats: dict, rel: str) -> None:
+    """Verify не сошёлся: список строк (контракт), не счётчик."""
+    stats.setdefault("verify_failed", []).append(rel)
+    _problem(stats, f"{rel}: не совпало после записи")
+
+
+def _problem(stats: dict, text: str) -> None:
+    """Причина пропуска/сбоя для показа пользователю (без текста игры)."""
+    problems = stats.setdefault("problems", [])
+    if len(problems) < 20 and text not in problems:
+        problems.append(text)
+
+
+def _skip(stats: dict, reason: str, count: int = 1) -> None:
+    """Засчитать пропуск с причиной (контракт ApplyReport).
+
+    Молчаливые пропуски — главная причина жалоб «перевод не применился»:
+    UI обязан показать, ЧТО и ПОЧЕМУ пропущено.
+    """
+    if count <= 0:
+        return
+    stats["skipped"] = stats.get("skipped", 0) + count
+    by = stats.setdefault("skipped_by", {})
+    by[reason] = by.get(reason, 0) + count
 
 
 def apply(
@@ -807,21 +1162,28 @@ def apply(
     """Перевод в ассеты: BackupStore + atomic_write_bytes + verify.
 
     Группировка по e.file, позиция — из json_path
-    ('asset://<file>/<path_id>/<field>'), сверка с оригиналом,
-    пропуск при расхождении. Без UnityPy ->
-    {'files': 0, 'strings': 0, 'skipped': 'no-unitypy'}.
+    ('asset://<file>/<path_id>/<field>'; StreamingAssets — по маркеру
+    '/streaming/' прямой перезаписью файла), сверка с оригиналом,
+    пропуск при расхождении. target_lang записывается в stats.
+    Без UnityPy -> {'files': 0, 'strings': 0, 'skipped': 'no-unitypy'}.
     Пустой вход (с UnityPy) -> {'files': 0} (совместимость заглушки).
     """
-    _ = target_lang
     _ = kwargs
     UnityPy = _try_import_unitypy()
     if UnityPy is None:
-        return {"files": 0, "strings": 0, "skipped": "no-unitypy"}
+        return {"files": 0, "strings": 0, "skipped_total": 0,
+                "skipped_by": {"no-unitypy": 1}, "verify_failed": [],
+                "backups": [], "verify_restored": True,
+                "target_lang": target_lang}
     _force_pure_python_reader()
     if not entries:
-        return {"files": 0}
+        return {"files": 0, "strings": 0, "skipped_total": 0,
+                "skipped_by": {}, "verify_failed": [],
+                "backups": [], "verify_restored": True,
+                "target_lang": target_lang}
     # группировка по файлу (поддержка TranslationEntry и dict)
     by_file: dict[str, list] = {}
+    no_translation = 0
     for entry in entries:
         try:
             if isinstance(entry, dict):
@@ -835,30 +1197,57 @@ def apply(
         except Exception:
             continue
         if not translation.strip() or status == "skip" or not file:
+            no_translation += 1
             continue
         by_file.setdefault(file, []).append(entry)
-    if not by_file:
-        return {"files": 0, "strings": 0, "skipped": 0}
+    # Контракт ApplyReport (app/engines/protocol.py): skipped_total +
+    # skipped_by(причины) + verify_failed СПИСОК строк. UI обязан показать
+    # пропуски, иначе «применил — в игре пусто» остаётся без объяснения.
     stats: dict = {"files": 0, "strings": 0, "skipped": 0,
-                   "backups": [], "verified": 0, "verify_failed": 0}
+                   "skipped_by": {}, "backups": [], "verified": 0,
+                   "verify_failed": [], "verify_restored": True,
+                   "problems": [], "target_lang": target_lang}
+    if no_translation:
+        _skip(stats, "no-translation", no_translation)
     for rel, items in by_file.items():
+        stream_items: list = []
+        asset_items: list = []
+        for entry in items:
+            try:
+                jp = entry.get("json_path", "") \
+                    if isinstance(entry, dict) \
+                    else str(getattr(entry, "json_path", ""))
+            except Exception:
+                _skip(stats, "bad-json-path", 1)
+                continue
+            if "/streaming/" in jp:
+                stream_items.append(entry)
+            else:
+                asset_items.append(entry)
+        if stream_items:
+            _apply_streaming_file(game_dir, rel, stream_items, stats,
+                                  backup, backup_root)
+        if not asset_items:
+            continue
+        items = asset_items
         abs_path = os.path.join(game_dir, *rel.split("/"))
         if not os.path.isfile(abs_path):
-            stats["skipped"] += len(items)
+            _skip(stats, "missing-file", len(items))
             continue
         try:
             if os.path.getsize(abs_path) < 128:
-                stats["skipped"] += len(items)
+                _skip(stats, "tiny-file", len(items))
                 continue
         except OSError:
-            stats["skipped"] += len(items)
+            _skip(stats, "stat-failed", len(items))
             continue
         # Путь, НЕ байты: load(bytes) ломает разбор скриптовых полей
         # MonoBehaviour. Ручки закрываем _close_env перед записью.
         try:
             env = UnityPy.load(abs_path)
-        except Exception:
-            stats["skipped"] += len(items)
+        except Exception as e:
+            _skip(stats, "load-failed", len(items))
+            _problem(stats, f"{rel}: {type(e).__name__}")
             continue
         try:
             _setup_typetree(env, game_dir)
@@ -870,7 +1259,7 @@ def apply(
         try:
             files = getattr(env, "files", {})
         except Exception:
-            stats["skipped"] += len(items)
+            _skip(stats, "unreadable", len(items))
             continue
         for _ak, asset in list(files.items()):
             objects = getattr(asset, "objects", None)
@@ -899,15 +1288,15 @@ def apply(
                     trans = str(getattr(entry, "translation", ""))
                     orig = getattr(entry, "original", "")
             except Exception:
-                stats["skipped"] += 1
+                _skip(stats, "bad-entry", 1)
                 continue
             parsed = _parse_json_path(jp)
             if parsed is None:
-                stats["skipped"] += 1
+                _skip(stats, "bad-json-path", 1)
                 continue
             _fpart, pid, field = parsed
             if not trans.strip():
-                stats["skipped"] += 1
+                _skip(stats, "no-translation", 1)
                 continue
             grouped.setdefault(pid, []).append((field, trans, orig))
         file_written = 0
@@ -915,7 +1304,7 @@ def apply(
             obj = pid_to_obj.get(pid)
             tname = pid_to_type.get(pid, "?")
             if obj is None:
-                stats["skipped"] += len(lst)
+                _skip(stats, "object-missing", len(lst))
                 continue
             # строгий typetree; fallback-база для MonoBehaviour —
             # маркер неполноты (patch такой базы уронил бы скрипт-данные)
@@ -932,33 +1321,73 @@ def apply(
                     if isinstance(cand, dict):
                         tree = cand
                 except Exception:
-                    stats["skipped"] += len(lst)
+                    _skip(stats, "typetree-failed", len(lst))
                     continue
             if tree is None:
-                stats["skipped"] += len(lst)
+                _skip(stats, "typetree-empty", len(lst))
                 continue
             if tname == "MonoBehaviour" and not strict_ok:
                 # скриптовые поля без генератора недоступны — не портим
-                stats["skipped"] += len(lst)
+                _skip(stats, "no-script-fields", len(lst))
                 continue
             # сверка оригиналов + отбор к применению
             to_apply: list[tuple[str, str]] = []
+            # 'm_Script#N' — построчные правки TextAsset: идут отдельной
+            # веткой, потому что _get_path_value работает с деревом, а
+            # здесь индекс строки внутри обычной строки.
+            line_edits: dict[int, tuple[str, str]] = {}
             for field, trans, orig in lst:
+                if field.startswith(_TA_LINE):
+                    idx = _line_index(field)
+                    if idx is None:
+                        _skip(stats, "bad-json-path", 1)
+                        continue
+                    line_edits[idx] = (trans, orig)
+                    continue
                 cur = _get_path_value(tree, field)
                 if cur is None:
                     # TextAsset m_Script может лежать как bytes/str —
                     # _get_path_value уже декодирует; None = нет поля
-                    stats["skipped"] += 1
+                    _skip(stats, "field-missing", 1)
                     continue
                 orig_s = orig if isinstance(orig, str) else ""
                 if cur != orig_s and cur.strip() != orig_s.strip():
-                    stats["skipped"] += 1
+                    _skip(stats, "changed", 1)
                     continue
                 to_apply.append((field, trans))
-            if not to_apply:
+            if not to_apply and not line_edits:
                 continue
+            if tname == "TextAsset" and line_edits:
+                # строчные: сверить оригинал и заменить только свои номера
+                raw = tree.get("m_Script", "")
+                lines = _split_lines(raw)
+                ok_lines: dict[int, str] = {}
+                for idx, (trans, orig) in line_edits.items():
+                    if not isinstance(orig, str) or idx < 0 \
+                            or idx >= len(lines) or not trans.strip():
+                        _skip(stats, "field-missing", 1)
+                        continue
+                    cur_line = lines[idx].strip()
+                    if cur_line != orig and cur_line != orig.strip():
+                        _skip(stats, "changed", 1)
+                        continue
+                    ok_lines[idx] = trans
+                if ok_lines:
+                    new_script = patch_textasset_lines(raw, ok_lines)
+                    if new_script == raw:
+                        _skip(stats, "patch-failed", len(ok_lines))
+                        continue
+                    tree["m_Script"] = new_script
+                    file_written += len(ok_lines)
+                    if not to_apply:
+                        try:
+                            obj.patch(tree)  # type: ignore[attr-defined]
+                        except Exception:
+                            file_written -= len(ok_lines)
+                            _skip(stats, "patch-failed", len(ok_lines))
+                            continue
             try:
-                if tname == "TextAsset":
+                if tname == "TextAsset" and to_apply:
                     mapping = dict(to_apply)
                     new_script = patch_textasset(
                         tree.get("m_Script", ""), mapping)
@@ -967,7 +1396,8 @@ def apply(
                     tree["m_Script"] = new_script
                     obj.patch(tree)  # type: ignore[attr-defined]
                     file_written += len(to_apply)
-                elif tname in ("TextMesh", "GUIText"):
+                elif tname in ("TextMesh", "GUIText",
+                                "TextMeshProUGUI", "TextMeshPro"):
                     new_tree = patch_monobehaviour(tree, to_apply)
                     if new_tree == tree:
                         continue
@@ -980,9 +1410,9 @@ def apply(
                     obj.patch(new_tree)  # type: ignore[attr-defined]
                     file_written += len(to_apply)
                 else:
-                    stats["skipped"] += len(to_apply)
+                    _skip(stats, "type-unsupported", len(to_apply))
             except Exception:
-                stats["skipped"] += len(to_apply)
+                _skip(stats, "patch-failed", len(to_apply))
                 continue
         if file_written <= 0:
             continue
@@ -1007,20 +1437,32 @@ def apply(
         try:
             from app.core.io import atomic_write_bytes
 
-            for _ak, asset in list(
-                    getattr(env, "files", {}).items()):
-                save = getattr(asset, "save", None)
-                if not callable(save):
+            target_norm = os.path.normcase(os.path.normpath(os.path.abspath(abs_path)))
+            # target asset by normalized path: UnityPy lazily pulls dependencies into env.files, do not rewrite them
+            candidates = []
+            for _ck, _ca in list(getattr(env, 'files', {}).items()):
+                try:
+                    _cn = os.path.normcase(os.path.normpath(os.path.abspath(str(_ck))))
+                except Exception:
                     continue
-                # однозадачный случай: один файл на диске
-                if len(getattr(env, "files", {})) != 1:
+                if _cn == target_norm:
+                    candidates.append((_ck, _ca))
+            if not candidates:
+                # legacy single-file fallback: single entry with non-matching key, save it, multiple mismatches stay skipped
+                if len(getattr(env, 'files', {})) == 1:
+                    candidates = list(getattr(env, 'files', {}).items())
+            for _ak, asset in candidates:
+                save = getattr(asset, 'save', None)
+                if not callable(save):
                     continue
                 raw = save()
                 if not isinstance(raw, (bytes, bytearray)):
                     continue
                 data = bytes(raw)
+                break
             if data is None:
-                stats["skipped"] += file_written
+                _skip(stats, "save-failed", file_written)
+                _problem(stats, f"{rel}: не удалось сохранить асет")
                 continue
             _close_env(env)
             atomic_write_bytes(abs_path, data)
@@ -1031,10 +1473,203 @@ def apply(
                 _ = getattr(check_env, "files", {})
                 stats["verified"] += 1
             except Exception:
-                stats["verify_failed"] += 1
+                _verify_fail(stats, rel)
             stats["files"] += 1
             stats["strings"] += file_written
-        except Exception:
-            stats["skipped"] += file_written
+        except Exception as e:
+            _skip(stats, "write-failed", file_written)
+            _problem(stats, f"{rel}: {type(e).__name__}")
             continue
+    # Контракт ApplyReport: UI читает skipped_total/skipped_by, а не skipped.
+    stats["skipped_total"] = stats["skipped"]
     return stats
+
+
+def font_patch(
+    game_dir: str,
+    ttf_path: str | None = None,
+    backup: bool = True,
+    backup_root: str | None = None,
+) -> dict:
+    """Замена m_FontData классических Font на TTF с кириллицей.
+
+    По умолчанию — комплектный NotoSans-Regular.ttf из
+    app/core/assets/fonts. Паттерн как у apply(): BackupStore до записи,
+    atomic_write_bytes, verify переоткрытием из байтов. Один список байт
+    шрифта переиспользуется между объектами (копий на объект не делаем —
+    9-МБ TTF в десятках копий съел бы сотни мегабайт RAM).
+
+    TMP SDF-генерация вне скоупа (нужен Unity Editor): объекты
+    TMP_FontAsset только считаем в stats['tmp_fonts'].
+    Без UnityPy -> {'patched': False, 'reason': 'no-unitypy'}.
+    """
+    UnityPy = _try_import_unitypy()
+    if UnityPy is None:
+        return {"patched": False, "fonts": 0, "files": 0,
+                "reason": "no-unitypy"}
+    src = ttf_path or _BUNDLED_FONT
+    try:
+        with open(src, "rb") as f:
+            blob = f.read()
+    except OSError:
+        return {"patched": False, "fonts": 0, "files": 0,
+                "reason": "no-ttf"}
+    if len(blob) < 128 or bytes(blob[:4]) not in _TTF_MAGICS:
+        return {"patched": False, "fonts": 0, "files": 0,
+                "reason": "bad-ttf"}
+    font_blob = list(blob)
+    _force_pure_python_reader()
+    stats: dict = {"patched": False, "fonts": 0, "files": 0, "strings": 0,
+                   "skipped": 0, "backups": [], "verified": 0,
+                   "verify_failed": 0, "tmp_fonts": 0, "names": [],
+                   "dynamic_neutralized": 0, "reason": "no-fonts"}
+    for rel in _candidate_files(game_dir):
+        abs_path = os.path.join(game_dir, *rel.split("/"))
+        if not os.path.isfile(abs_path):
+            continue
+        try:
+            if os.path.getsize(abs_path) < 128:
+                continue
+        except OSError:
+            continue
+        try:
+            env = UnityPy.load(abs_path)
+        except Exception:
+            continue
+        try:
+            pid_to_obj: dict[int, object] = {}
+            for _ak, asset in list(getattr(env, "files", {}).items()):
+                objects = getattr(asset, "objects", None)
+                if not objects:
+                    continue
+                vals = objects.values() \
+                    if isinstance(objects, dict) else objects
+                for obj in list(vals):
+                    try:
+                        tname = str(getattr(obj.type, "name", "?"))
+                    except Exception:
+                        continue
+                    if tname == "TMP_FontAsset":
+                        stats["tmp_fonts"] += 1
+                    elif tname == "Font":
+                        try:
+                            pid = int(getattr(obj, "path_id", -1))
+                        except Exception:
+                            continue
+                        pid_to_obj[pid] = obj
+            if not pid_to_obj:
+                continue
+            patched_here = 0
+            for _pid, obj in pid_to_obj.items():
+                try:
+                    tree = obj.parse_as_dict()  # type: ignore[attr-defined]
+                    if not isinstance(tree, dict):
+                        tree = obj.parse_as_dict(  # type: ignore[attr-defined]
+                            check_read=False)
+                except Exception:
+                    try:
+                        tree = obj.parse_as_dict(  # type: ignore[attr-defined]
+                            check_read=False)
+                    except Exception:
+                        stats["skipped"] += 1
+                        continue
+                if not isinstance(tree, dict) or "m_FontData" not in tree:
+                    stats["skipped"] += 1
+                    continue
+                try:
+                    tree["m_FontData"] = font_blob
+                    # Динамический OS-шрифт Unity игнорирует m_FontData:
+                    # он берёт системный файл по имени из m_FontNames.
+                    # Пустой список делает шрифт статическим — тогда
+                    # текст рисуется из внедрённых данных и кириллица
+                    # видна (иначе после перевода пустые квадраты).
+                    names = tree.get("m_FontNames")
+                    if isinstance(names, list) and names:
+                        tree["m_FontNames"] = []
+                        stats["dynamic_neutralized"] += 1
+                    obj.patch(tree)  # type: ignore[attr-defined]
+                    patched_here += 1
+                    name = tree.get("m_Name", "")
+                    if isinstance(name, str) and name:
+                        stats["names"].append(name)
+                except Exception:
+                    stats["skipped"] += 1
+                    continue
+            stats["fonts"] += len(pid_to_obj)
+            if patched_here <= 0:
+                continue
+            if backup:
+                try:
+                    from app.core.io import BackupStore
+
+                    bdir = backup_root or os.path.join(
+                        game_dir, "backup", "unity")
+                    saved = BackupStore(bdir).backup(abs_path)
+                    if saved:
+                        stats["backups"].append(saved)
+                except Exception:
+                    pass
+            data: bytes | None = None
+            try:
+                from app.core.io import atomic_write_bytes
+
+                target_norm = os.path.normcase(os.path.normpath(os.path.abspath(abs_path)))
+                # target asset by normalized path: UnityPy lazily pulls dependencies into env.files, do not rewrite them
+                candidates = []
+                for _ck, _ca in list(getattr(env, 'files', {}).items()):
+                    try:
+                        _cn = os.path.normcase(os.path.normpath(os.path.abspath(str(_ck))))
+                    except Exception:
+                        continue
+                    if _cn == target_norm:
+                        candidates.append((_ck, _ca))
+                if not candidates:
+                    # legacy single-file fallback: single entry with non-matching key, save it, multiple mismatches stay skipped
+                    if len(getattr(env, 'files', {})) == 1:
+                        candidates = list(getattr(env, 'files', {}).items())
+                for _ak, asset in candidates:
+                    save = getattr(asset, 'save', None)
+                    if not callable(save):
+                        continue
+                    raw = save()
+                    if not isinstance(raw, (bytes, bytearray)):
+                        continue
+                    data = bytes(raw)
+                    break
+                if data is None:
+                    stats["skipped"] += patched_here
+                    continue
+                _close_env(env)
+                atomic_write_bytes(abs_path, data)
+                try:
+                    check_env = UnityPy.load(bytes(data))
+                    _ = getattr(check_env, "files", {})
+                    stats["verified"] += 1
+                except Exception:
+                    stats["verify_failed"] += 1
+                stats["files"] += 1
+                stats["strings"] += patched_here
+            except Exception:
+                stats["skipped"] += patched_here
+                continue
+        finally:
+            try:
+                _close_env(env)
+            except Exception:
+                pass
+    if stats["files"]:
+        stats["patched"] = True
+        stats["reason"] = "ok"
+    return stats
+
+
+def is_patched(game_dir: str) -> bool:
+    """Есть ли бэкапы font_patch (для показа кнопки «Восстановить»)."""
+    try:
+        from app.core.io import BackupStore
+
+        store = BackupStore(os.path.join(game_dir, "backup", "unity"))
+        return bool(store.manifest_files())
+    except Exception:
+        return False
+

@@ -128,11 +128,18 @@ def build_runtime_source(tr_dict: dict, target_lang: str = "ru",
     if "window.__octopus_trInstall({});" in payload:
         payload = payload.replace(
             "window.__octopus_trInstall({});", "")
-    return (_RUNTIME_PLUGIN_TEMPLATE
-            .replace("{{TRANSLATION_PAYLOAD}}", payload)
-            .replace("{{DICT_JSON}}", dict_json)
-            .replace("{{LANG}}", target_lang)
-            .replace("{{COUNT}}", str(len(tr_dict))))
+    # единственный проход: последовательные .replace повторно
+    # подменяли бы {{LANG}}/{{COUNT}}/{{DICT_JSON}}, если такой
+    # маркер встретился внутри перевода (часть словаря)
+    subs = {
+        "{{TRANSLATION_PAYLOAD}}": payload,
+        "{{DICT_JSON}}": dict_json,
+        "{{LANG}}": target_lang,
+        "{{COUNT}}": str(len(tr_dict)),
+    }
+    return re.sub(
+        r"\{\{(?:TRANSLATION_PAYLOAD|DICT_JSON|LANG|COUNT)\}\}",
+        lambda m: subs[m.group(0)], _RUNTIME_PLUGIN_TEMPLATE)
 
 
 def _backup_once(game_dir: str, rel: str, original_text: bytes | None = None) -> bool:

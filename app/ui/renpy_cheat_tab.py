@@ -410,7 +410,7 @@ class _VarsBaseTab(QWidget):
         from app.core.twine import savefile
         try:
             data = savefile.load_save(path)
-        except (ValueError, OSError) as e:
+        except (ValueError, OSError, IndexError) as e:
             self.lbl_status.setText(str(e))
             return
         self._save_path = path

@@ -64,16 +64,6 @@ class StatusBar(QFrame):
             f"color: {C_TEXT_SECONDARY}; font-size: 11px; background: transparent;")
         lay.addWidget(self.lbl_connection)
 
-        dot2 = QLabel("·")
-        dot2.setStyleSheet(f"color: {C_TEXT_SECONDARY}; font-size: 11px; background: transparent;")
-        lay.addWidget(dot2)
-
-        # TM: размер памяти переводов (tm.stats()["total"])
-        self.lbl_memory = QLabel("")
-        self.lbl_memory.setStyleSheet(
-            f"color: {C_TEXT_SECONDARY}; font-size: 11px; background: transparent;")
-        lay.addWidget(self.lbl_memory)
-
         lay.addStretch(1)
 
         # ── project summary: готово / черновики / пусто + %% ──
@@ -153,14 +143,3 @@ class StatusBar(QFrame):
 
     def clear_task(self):
         self.lbl_task.setText("")
-
-    def set_memory(self, total: int):
-        """Размер памяти переводов: «Память: {total}». Пусто при total<=0."""
-        try:
-            n = int(total)
-        except (TypeError, ValueError):
-            n = 0
-        if n > 0:
-            self.lbl_memory.setText(TR("sb_memory", n=_fmt(n)))
-        else:
-            self.lbl_memory.setText("")

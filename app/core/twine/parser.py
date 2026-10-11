@@ -466,6 +466,10 @@ def _macro_args(macro: str) -> list[tuple[str, int, str]]:
     кавычка)."""
     out: list[tuple[str, int, str]] = []
     for m in _RE_STR_LIT.finditer(macro):
+        # литерал сразу после «[» - индекс/свойство ($inv["sword"]):
+        # это код-ключ, перевод сломает игру
+        if macro[:m.start()].rstrip().endswith("["):
+            continue
         out.append((m.group("v"), m.start(), m.group("q")))
     return out
 
@@ -903,6 +907,8 @@ def _apply_macro_args(stext: str,
     return out
 
 
+# FROZEN: file-translation disabled in UI, overlay-only.
+# Kept for manual repair of already-broken games; do not call from UI or extract.
 def apply(game_dir: str, entries: list[TranslationEntry],
           backup_root: str | None = None, on_skip=None,
           target_lang: str | None = None) -> dict:
@@ -1188,8 +1194,8 @@ def apply(game_dir: str, entries: list[TranslationEntry],
         base = os.path.splitext(story)[0]
         out_path = f"{base}_{target_lang}.html"
         if not written:
+            # out_file не возвращаем: файл не создавался
             return {"files": 0, "strings": 0, "backups": [],
-                    "out_file": out_path,
                     "out_dir": os.path.dirname(out_path)}
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(new_text)
@@ -1202,6 +1208,8 @@ def apply(game_dir: str, entries: list[TranslationEntry],
             "backups": [backup_path] if backup_path else []}
 
 
+# FROZEN: file-translation disabled in UI, overlay-only.
+# Kept for manual repair of already-broken games; do not call from UI or extract.
 def restore_original(game_dir: str) -> dict:
     """Восстанавливает оригинальный .html из backup/ (одноразовый бэкап
     до первого перевода). Возвращает статистику."""
@@ -1445,6 +1453,8 @@ def story_to_json(game_dir: str) -> dict:
     return doc
 
 
+# FROZEN: file-translation disabled in UI, overlay-only.
+# Kept for manual repair of already-broken games; do not call from UI or extract.
 def write_story_json(game_dir: str, out_path: str | None = None) -> str:
     """Пишет JSON-модель игры рядом с ней: «игра.json». Возвращает путь.
 

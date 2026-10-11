@@ -4,6 +4,8 @@
 Левая колонка: список карт + текущая карта игрока.
 Правая колонка: полная отрисовка карты (тайлсеты) + зум.
 Клик по карте: событие → быстрый просмотр; пустая клетка → выбор.
+Где игрок: подпись, жирная строка в списке и маркер «вы здесь»
+на его карте; пока вкладка видна — позиция опрашивается живьём.
 
 Отрисовка тяжёлых слоёв (тайлы+тени) вынесена в фоновый поток —
 интерфейс не замирает на больших картах; зум лишь перекомпоновывает
@@ -14,8 +16,10 @@ from __future__ import annotations
 import copy
 import os
 
-from PySide6.QtCore import QThread, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
+from PySide6.QtCore import (QPointF, QThread, QTimer, Qt,
+                             Signal)
+from PySide6.QtGui import (QColor, QImage, QPainter, QPalette,
+                            QPixmap)
 from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QLineEdit,
                                 QListWidget, QListWidgetItem, QMessageBox,
                                 QPushButton, QScrollArea, QSplitter,
@@ -340,6 +344,14 @@ class MapTab(QWidget):
         self._pending_tp: tuple | None = None
         self._selected_cell: tuple[int, int] | None = None
         self._live_switches: list | None = None
+        # где игрок сейчас: карта + тайл из state игры
+        self._player_map_id: int | None = None
+        self._player_xy: tuple[int, int] | None = None
+        # живое слежение: пока вкладка видна, опрашиваем state,
+        # чтобы маркер и подпись следовали за игроком в игре
+        self._state_timer = QTimer(self)
+        self._state_timer.setInterval(2500)
+        self._state_timer.timeout.connect(self._request_state)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -426,6 +438,11 @@ class MapTab(QWidget):
         super().showEvent(event)
         self.reload()
         self._request_state()
+        self._state_timer.start()
+
+    def hideEvent(self, event):
+        self._state_timer.stop()
+        super().hideEvent(event)
 
     def _live_channel(self):
         ensure = getattr(self.main, "ensure_channel", None)
@@ -477,6 +494,44 @@ class MapTab(QWidget):
             it = QListWidgetItem(f"{mid:03d}  {name}")
             it.setData(Qt.UserRole, mid)
             self.map_list.addItem(it)
+        if self._player_map_id is not None:
+            self._highlight_player_row(self._player_map_id)
+
+    def _highlight_player_row(self, map_id: int):
+        """Карта, где игрок сейчас, — жирной в списке."""
+        dflt = self.map_list.palette().brush(QPalette.Text)
+        for r in range(self.map_list.count()):
+            it = self.map_list.item(r)
+            cur = it.data(Qt.UserRole) == map_id
+            f = it.font()
+            if f.bold() != cur:
+                f.setBold(cur)
+                it.setFont(f)
+            it.setForeground(QColor(110, 190, 255) if cur else dflt)
+
+    def _draw_player_marker(self, pm: QPixmap):
+        """Маркер «вы здесь»: позиция игрока на его текущей карте."""
+        if (self._player_xy is None
+                or self._map_id != self._player_map_id
+                or self._base_img is None or pm.isNull()):
+            return
+        bw, bh = self._base_img.width(), self._base_img.height()
+        if bw <= 0 or bh <= 0 or pm.width() <= 0 or pm.height() <= 0:
+            return
+        kx, ky = pm.width() / bw, pm.height() / bh
+        t = maprender.TILE
+        cx = (self._player_xy[0] + 0.5) * t * kx
+        cy = (self._player_xy[1] + 0.5) * t * ky
+        r = max(4.0, t * 0.32 * min(kx, ky))
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.setPen(QColor(255, 255, 255, 235))
+        p.setBrush(QColor(50, 150, 255, 190))
+        p.drawEllipse(QPointF(cx, cy), r, r)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, 235))
+        p.drawEllipse(QPointF(cx, cy), r * 0.32, r * 0.32)
+        p.end()
 
     def _on_map_selected(self, row: int):
         if row < 0:
@@ -543,6 +598,7 @@ class MapTab(QWidget):
         проекта/выходе). P0: максимум wait(200) на поток — run() выходит
         по isInterruptionRequested() (проверка на каждой строке),
         незавершившиеся потоки дочищаются сами через finished."""
+        self._state_timer.stop()
         for th in list(self._render_threads):
             try:
                 th.requestInterruption()
@@ -615,9 +671,10 @@ class MapTab(QWidget):
             if self._ev_img is not None:
                 evp = QPixmap.fromImage(self._ev_img).scaled(
                     dw, dh, Qt.KeepAspectRatio, transform)
-                p = QPainter(pm)
-                p.drawPixmap(0, 0, evp)
-                p.end()
+            p = QPainter(pm)
+            p.drawPixmap(0, 0, evp)
+            p.end()
+        self._draw_player_marker(pm)
         self.canvas.setPixmap(pm)
         self.canvas.resize(pm.size())
         w, h, *_ = maprender.map_layers(self._map_data)
@@ -789,6 +846,9 @@ class MapTab(QWidget):
         if ok:
             self.lbl_map_info.setText(
                 TR("map_tp_done", map_id=map_id, x=x, y=y))
+            # позиция игрока изменилась — уточняем state,
+            # чтобы маркер и подпись сразу показали новое место
+            self._request_state()
         else:
             self.lbl_map_info.setText(
                 TR("map_tp_fail", error=error or "?"))
@@ -866,7 +926,17 @@ class MapTab(QWidget):
         current = state.get("mapId")
         if current is None:
             return
+        self._player_map_id = current
+        try:
+            self._player_xy = (int(state.get("playerX", 0)),
+                               int(state.get("playerY", 0)))
+        except (TypeError, ValueError):
+            self._player_xy = None
         self.lbl_player_map.setText(player_map_label(state))
+        self._highlight_player_row(current)
+        if self._map_id == current:
+            # открыта карта игрока — перерисовать маркер «вы здесь»
+            self._compose()
         for r in range(self.map_list.count()):
             it = self.map_list.item(r)
             if it.data(Qt.UserRole) == current:

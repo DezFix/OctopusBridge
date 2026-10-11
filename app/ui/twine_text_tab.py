@@ -48,6 +48,8 @@ class TwineTextTab(QWidget):
         self.btn_json.setIcon(icon("file-text", 14, C_TEXT_SECONDARY))
         self.btn_json.clicked.connect(self._save_json)
         bar.addWidget(self.btn_json)
+        # soft-disable: file-translation off (overlay-only), keep method frozen.
+        self.btn_json.setVisible(False)
         self.btn_refresh = QPushButton(TR("twine_text_refresh"))
         self.btn_refresh.setIcon(icon("arrows-clockwise"))
         self.btn_refresh.clicked.connect(self.refresh)

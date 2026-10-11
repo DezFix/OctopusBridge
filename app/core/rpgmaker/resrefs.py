@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import os
+import threading
 
 # где живут ресурсы (и www-варианты деплоя)
 _RES_DIRS = ("audio", "img", "movies",
@@ -30,6 +31,7 @@ _MV_ENC_EXT = {".png": ".rpgmvp", ".ogg": ".rpgmvo", ".m4a": ".rpgmvo",
               ".webm": ".rpgmvm", ".mp4": ".rpgmvm"}
 
 _cache: dict[str, set[str]] = {}
+_cache_lock = threading.Lock()
 
 
 def _stems_of(filename: str) -> set[str]:
@@ -59,9 +61,10 @@ def build_index(game_dir: str) -> set[str]:
     (фильтр молча отключён, поведение как раньше).
     """
     norm = os.path.normpath(game_dir)
-    hit = _cache.get(norm)
-    if hit is not None:
-        return hit
+    with _cache_lock:
+        hit = _cache.get(norm)
+        if hit is not None:
+            return hit
     idx: set[str] = set()
     try:
         for rel in _RES_DIRS:
@@ -73,16 +76,18 @@ def build_index(game_dir: str) -> set[str]:
                     idx.update(_stems_of(fn))
     except OSError:
         pass
-    _cache[norm] = idx
+    with _cache_lock:
+        _cache[norm] = idx
     return idx
 
 
 def clear_index(game_dir: str | None = None) -> None:
     """Сбросить кэш (после добавления файлов в игру)."""
-    if game_dir is None:
-        _cache.clear()
-    else:
-        _cache.pop(os.path.normpath(game_dir), None)
+    with _cache_lock:
+        if game_dir is None:
+            _cache.clear()
+        else:
+            _cache.pop(os.path.normpath(game_dir), None)
 
 
 def is_resource_name(idx: set[str] | None, text: str) -> bool:

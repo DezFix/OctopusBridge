@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core.tyrano import parser
 from app.engines.tyrano import TyranoModule
-from app.engines.registry import detect_engine
+from app.engines.registry import DISABLED_ENGINES, detect_engine
 
 SAMPLE_KS = """\
 ;これはコメントです
@@ -43,13 +43,13 @@ def make_project(root: str) -> None:
         f.write(SAMPLE_KS)
 
 
-print("1) Детект: tyrano/ + data/scenario -> вес, реестр находит модуль...")
+print("1) Детект: tyrano/ + data/scenario -> вес; движок приглушён в реестре...")
 with tempfile.TemporaryDirectory() as td:
     make_project(td)
     assert parser.detect(td) == 95
-    mod = detect_engine(td)
-    assert mod is not None and mod.key == "tyrano"
     assert TyranoModule.detect(td) == 95
+    assert "tyrano" in DISABLED_ENGINES
+    assert detect_engine(td) is None, "реестр должен скрывать tyrano"
 # без tyrano/, но с .ks — тоже Tyrano
 with tempfile.TemporaryDirectory() as td:
     os.makedirs(os.path.join(td, "data", "scenario"))

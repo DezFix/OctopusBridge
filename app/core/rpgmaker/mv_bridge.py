@@ -19,6 +19,11 @@ import re
 import time
 import urllib.request
 
+try:
+    import psutil
+except ImportError:
+    psutil = None
+
 from app.core.io import atomic_write_bytes, atomic_write_text
 from app.core.translate.service import build_tr_dict
 
@@ -524,6 +529,28 @@ def _remove_entry_by_name(text: str, name: str) -> str:
 
 # ── клиент моста (app -> игра) ──
 
+def _pid_matches(reported, expected) -> bool:
+    # main pid or renderer child pid
+    if expected is None:
+        return True
+    if reported is None:
+        return False
+    try:
+        reported = int(reported)
+        expected = int(expected)
+    except (TypeError, ValueError):
+        return False
+    if reported == expected:
+        return True
+    if psutil is None:
+        return False
+    try:
+        p = psutil.Process(expected)
+        return any(c.pid == reported for c in p.children(recursive=True))
+    except Exception:
+        return False
+
+
 def bridge_probe(port: int, expected_pid: int | None = None) -> bool:
     try:
         req = urllib.request.Request(
@@ -535,7 +562,7 @@ def bridge_probe(port: int, expected_pid: int | None = None) -> bool:
             data = json.loads(r.read().decode("utf-8", "replace"))
         if data.get("name") != BRIDGE_PLUGIN_NAME:
             return False
-        return expected_pid is None or data.get("pid") == expected_pid
+        return _pid_matches(data.get("pid"), expected_pid)
     except Exception:  # noqa: BLE001
         return False
 

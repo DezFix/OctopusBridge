@@ -2,7 +2,7 @@
 
 ## 1. Что это
 
-OctopusBridge — десктопное приложение для Windows, предназначенное для **перевода и модификации компьютерных игр**: визуальных новелл, JRPG, текстовых квестов. Оно извлекает тексты игры, переводит их (бесплатные интернет-сервисы или собственная LLM), записывает перевод обратно в файлы игры и/или внедряет его в запущенную игру в реальном времени. Дополнительно даёт «чит-инструменты»: редактирование переменных, золота, предметов, карт, сейвов.
+OctopusBridge — десктопное приложение для Windows, предназначенное для **перевода и модификации компьютерных игр**: визуальных новелл, JRPG, текстовых квестов. Оно извлекает тексты игры, переводит их (бесплатные интернет-сервисы), записывает перевод обратно в файлы игры и/или внедряет его в запущенную игру в реальном времени. Дополнительно даёт «чит-инструменты»: редактирование переменных, золота, предметов, карт, сейвов.
 
 Лицензия: GPL-3.0. Проект открытый, ведётся на GitHub (DezFix/OctopusBridge). Языки интерфейса: русский, английский.
 
@@ -12,9 +12,11 @@ OctopusBridge — десктопное приложение для Windows, пр
 |---|---|---|
 | RPG Maker MV / MZ | JSON-базы данных, карты, события; шифрованные ресурсы (`.png_`, `.ogg_`, `.rpgmvp` и др.); Electron-сборки с `app.asar` | стабильный |
 | Ren'Py (7.x / 8.x) | исходники `.rpy`, скомпилированные `.rpyc` (legacy и RPC2), архивы `.rpa` (v1, v2.0, v3.0) | стабильный |
-| TyranoScript / TyranoBuilder | `data/scenario/*.ks`, Electron-сборки | поддерживается |
-| Twine (SugarCube) | HTML-стори `*.html`, сейвы `.save` (LZ-String) | экспериментальный |
-| Wolf RPG Editor | `Data/*.wolf` (DXA-v8), `Game.dat`/`*Database.dat`/`CommonEvent.dat`/`.mps`; внедрение в loose-`Data/` | экспериментальный |
+| TyranoScript / TyranoBuilder | `data/scenario/*.ks`, Electron-сборки | отложен: код на месте, выключен в реестре (DISABLED_ENGINES) |
+| AjinSyoujyo | Electron-сборка TyranoScript (asar + override) | отложен: код на месте, выключен в реестре (DISABLED_ENGINES) |
+| Twine (SugarCube) | HTML-стори `*.html`, сейвы `.save` (LZ-String) | экспериментальный (активен: файловый перевод, редактор сейвов, live через мост) |
+| Wolf RPG Editor | `Data/*.wolf` (DXA-v8), `Game.dat`/`*Database.dat`/`CommonEvent.dat`/`.mps`; внедрение в loose-`Data/` | отложен: код на месте, выключен в реестре (DISABLED_ENGINES) |
+| Unity | Mono/IL2CPP, тексты TextMesh/GUIText (UnityPy) | отложен: код на месте, выключен в реестре (DISABLED_ENGINES) |
 
 Движок определяется автоматически по структуре папки игры (весовой детектор). Для каждой игры ведётся проект `.ob.json` (пути, переводы, настройки), проекты хранятся в `%APPDATA%\OctopusBridge`.
 
@@ -25,11 +27,10 @@ OctopusBridge — десктопное приложение для Windows, пр
 - **Движки перевода**:
   - Google (каскад из 3 бесплатных эндпоинтов, встроенная защита от rate-limit, переключение на запасные);
   - Bing;
-  - AI / LLM (OpenAI-совместимый API: OpenRouter, Ollama, LM Studio и т.п.);
+  - MyMemory (с e-mail из настроек);
   - Rotate (автопереключение между доступными).
-- **AI-корректор**: LLM улучшает перевод с учётом глоссария и контекста, перед применением показывается дифф (старое/новое) с подтверждением.
 - **Защита от поломки кода игры**: маскирование игровых тегов (`\C[8]`, `<center>`, `{b}`, `<xN/>` и др.) — перевод не трогает макросы, имена переменных и служебные вставки; контроль целостности (сместившиеся/потерянные токены отбрасываются).
-- **Глоссарий** (общий для всех проектов, с категориями и быстрой вставкой в таблицу перевода) и **память переводов** (SQLite) — повторный перевод не дублируется, старые переводы восстанавливаются при повторном извлечении.
+- **Глоссарий** (общий для всех проектов, с категориями и быстрой вставкой в таблицу перевода).
 - **Кэш перевода** — единый `octopus_cache.json` в папке игры; CSV-импорт/экспорт.
 
 ### 3.2. Живая сессия (щупальце)
@@ -82,17 +83,21 @@ app/
                mv_bridge.py (HTTP-мост MV), asar-чтение
     tyrano/  parser.py (сценарии .ks)
     twine/   parser.py, savefile.py (LZ-String)
-    translate/ engines.py (Google/Bing/AI/Rotate), corrector.py (AI-корректор),
-               glossary.py, memory.py (SQLite), quality.py
-    tentacles/  base.py (абстракция щупальца), cdp_base.py (CDP-клиент)
+    wolf/    dxa.py (DXA-v8: XOR/Huffman/LZ, read-only), parser.py
+             (Game/Database/CommonEvent/.mps, loose-apply), fontpatch.py
+    translate/ engines.py (Google/Bing/MyMemory/Rotate), glossary.py,
+               mask.py, fixers.py, detect.py, alphabets.py, service.py
+    tentacles/  DEPRECATED-шим (base.py, cdp_base.py) — только совместимость импортов
     models.py  TranslationEntry, Project
+  live/                     — live-слой (работа с запущенной игрой)
+    tentacle.py             Tentacle (запуск/останов щупальца), LaunchResult
+    session.py              GameSession
+    cdp_base.py             CDP-база (общий код CDP-щупалец)
   transport/                — транспорты
     cdp/  client.py (WebSocket CDP), browser.py (поиск портов отладки)
     frida_rpc/  injector.py (внедрение Python-кода в процесс Ren'Py)
-    wolf/ dxa.py (DXA-v8: XOR/Huffman/LZ, read-only), parser.py
-           (Game/Database/CommonEvent/.mps, loose-apply), fontpatch.py
     core/assets/fonts/        — NotoSans-Regular.ttf (патч шрифтов)
-tests/                      — функциональные тесты (10 файлов)
+tests/                      — функциональные тесты (14 файлов)
 build_app.py                — сборка .exe (PyInstaller)
 setup.iss                   — установщик (Inno Setup)
 run_tests.py                — запуск всех тестов
@@ -105,7 +110,6 @@ run_tests.py                — запуск всех тестов
 - Python 3.13 (Windows 10/11 x64).
 - PySide6 6.11 (Qt6) — GUI, мультимедиа (FFmpeg-бэкенд).
 - requests, websockets (CDP), psutil (процессы), frida (внедрение в Ren'Py), pywebview (Twine).
-- ctranslate2 / sentencepiece / huggingface_hub (локальные NMT-модели; опционально, в минимальной сборке отключены).
 - PyInstaller — сборка single-exe; Inno Setup — установщик; GitHub Actions — CI (тесты + сборка на Windows).
 
 ## 6. Сборка и релиз
@@ -120,13 +124,13 @@ build.bat                          # обёртка для Windows
 
 ## 7. Тесты и качество
 
-- `python run_tests.py` — 10 функциональных тестовых файлов (парсеры движков, шифрование, архивы, агенты, щупальца, UI-логика), без обращения к сети.
+- `python run_tests.py` — 14 функциональных тестовых файлов (парсеры движков, шифрование, архивы, агенты, щупальца, UI-логика), без обращения к сети.
 - CI (GitHub Actions, windows-latest): установка зависимостей → тесты → сборка exe.
 - Линт: ruff (в коде поддерживается чистота, E402/F401 в тестах допускаются осознанно).
 
 ## 8. Ограничения и примечания
 
 - Перевод пакетный (не построчный live): текст извлекается, переводится и записывается до запуска игры; live-хуки работают как дополнение к файловому патчу.
-- Google/Bing — неофициальные бесплатные эндпоинты: без ключей, но возможны лимиты объёма; для больших проектов рекомендуется AI-провайдер.
+- Google/Bing — неофициальные бесплатные эндпоинты: без ключей, но возможны лимиты объёма.
 - Инструменты модифицируют игру (файлы и/или память процесса) — использовать на играх, которые пользователь вправе модифицировать.
 - Репозиторий, трекер, релизы: https://github.com/DezFix/OctopusBridge

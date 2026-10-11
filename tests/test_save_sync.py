@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-"""Синк сейвов Twine: write_slots → .save, HTTP-эндпоинты /api/saves
-(плагин окна → файлы), pending-import/import (приложение → игра)."""
+"""Синк сейвов Twine: write_slots → .save, HTTP-эндпоинт /api/saves
+(плагин окна → файлы)."""
 import io
 import json
 import os
@@ -29,7 +29,7 @@ GAME_HTML = '''<!DOCTYPE html>
 SAVE_DATA = {
     "id": "test-game",
     "state": {
-        "index": 1,
+        "index": 0,
         "history": [{
             "title": "start",
             "variables": {
@@ -47,7 +47,7 @@ SAVE_DATA = {
 def make_slot_b64(variables: dict) -> str:
     data = {
         "id": SAVE_DATA["id"],
-        "state": {"index": 1, "history": [{"title": "start",
+        "state": {"index": 0, "history": [{"title": "start",
                                            "variables": variables}]},
     }
     text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
@@ -80,7 +80,7 @@ with tempfile.TemporaryDirectory() as td:
     assert len(saves) == 1, saves
     print("   OK:", os.path.basename(paths[0]))
 
-print("2) HTTP: POST /api/saves пишет файлы, GET pending-import, import...")
+print("2) HTTP: POST /api/saves пишет файлы...")
 with tempfile.TemporaryDirectory() as td:
     with open(os.path.join(td, "index.html"), "w", encoding="utf-8") as f:
         f.write(GAME_HTML)
@@ -97,8 +97,6 @@ with tempfile.TemporaryDirectory() as td:
     _InjectingHTTPHandler._inject_html = False
     _InjectingHTTPHandler._shield_html = True
     _InjectingHTTPHandler._save_sync_cb = sync_cb
-    with _InjectingHTTPHandler._import_lock:
-        _InjectingHTTPHandler._import_payload = {}
 
     srv = _ThreadedHTTPServer(("127.0.0.1", 0), _InjectingHTTPHandler)
     port = srv.server_address[1]
@@ -121,26 +119,6 @@ with tempfile.TemporaryDirectory() as td:
         assert savefile.load_save(os.path.join(td, files[0]))["state"][
             "history"][0]["variables"]["money"] == 10
 
-        with urllib.request.urlopen(base + "/api/saves/pending-import",
-                                    timeout=5) as r:
-            assert json.loads(r.read().decode("utf-8")) == {}
-
-        with _InjectingHTTPHandler._import_lock:
-            _InjectingHTTPHandler._import_payload = {
-                "data": b64, "slot": "3"}
-        with urllib.request.urlopen(base + "/api/saves/pending-import",
-                                    timeout=5) as r:
-            p = json.loads(r.read().decode("utf-8"))
-        assert p == {"data": b64, "slot": "3"}, p
-
-        req = urllib.request.Request(
-            base + "/api/saves/import", data=b'{"applied":1}',
-            headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=5) as r:
-            assert json.loads(r.read().decode("utf-8")) == {"ok": True}
-        with _InjectingHTTPHandler._import_lock:
-            assert _InjectingHTTPHandler._import_payload == {}
-
         # файл игры отдаётся с экраном ошибок и ЕДИНЫМ пэйлоадом моста
         # (состояние/читы/сейвы + live-перевод) — как в браузере
         with urllib.request.urlopen(base + "/index.html", timeout=5) as r:
@@ -154,25 +132,7 @@ with tempfile.TemporaryDirectory() as td:
         srv.shutdown()
         srv.server_close()
 
-print("3) push_save_to_game: payload ставится, detach() сбрасывает...")
-tent = TwineTentacle(use_webapp_window=True)
-assert tent.push_save_to_game("ABC123", None) is True
-with _InjectingHTTPHandler._import_lock:
-    assert _InjectingHTTPHandler._import_payload == {"data": "ABC123",
-                                                     "slot": None}
-assert tent.push_save_to_game("DEF", "5") is True
-with _InjectingHTTPHandler._import_lock:
-    assert _InjectingHTTPHandler._import_payload == {"data": "DEF", "slot": "5"}
-tent.detach()
-with _InjectingHTTPHandler._import_lock:
-    assert _InjectingHTTPHandler._import_payload == {}
-assert _InjectingHTTPHandler._save_sync_cb is None
-# браузерный режим не умеет пушить
-tent2 = TwineTentacle(use_webapp_window=False)
-assert tent2.push_save_to_game("X", None) is False
-print("   OK")
-
-print("3b) Live-перевод по WebSocket: tr_set/tr_dict/tr_state/tr_request...")
+print("3) Live-перевод по WebSocket: tr_set/tr_dict/tr_state/tr_request...")
 
 
 class FakeWS:
@@ -304,7 +264,7 @@ assert flat["none"] is None
 # round-trip через set_variables: индексы списков пишутся обратно
 # (редактор шлёт все листья, включая неизменённые)
 data = {"id": "t",
-        "state": {"index": 1,
+        "state": {"index": 0,
                   "history": [{"title": "s", "variables": {}}]}}
 savefile.set_variables(data, {
     "flags[0]": 9, "flags[1]": 2, "flags[2]": 3,
@@ -318,6 +278,29 @@ assert v["new"] == [None, None, "x"], v["new"]
 # глубокое дерево тоже собирается обратно
 savefile.set_variables(data, {"deep.a.b.c": 5})
 assert savefile.get_variables(data)["deep"]["a"]["b"]["c"] == 5
+print("   OK")
+
+print("4b) state.index 0-based: активный момент — history[index]...")
+_mdata = {"id": "t", "state": {"index": 2, "history": [
+    {"title": "a", "variables": {"hp": 1}},
+    {"title": "b", "variables": {"hp": 2}},
+    {"title": "c", "variables": {"hp": 3}},
+]}}
+assert savefile.get_variables(_mdata)["hp"] == 3, savefile.get_variables(_mdata)
+savefile.set_variables(_mdata, {"hp": 300})
+assert savefile.get_variables(_mdata)["hp"] == 300
+# правка попала ТОЛЬКО в активный момент, соседние не тронуты
+assert _mdata["state"]["history"][1]["variables"]["hp"] == 2
+assert _mdata["state"]["history"][0]["variables"]["hp"] == 1
+# delta-формат: дельта i == история i, активный — index (0-based)
+_ddata = {"id": "t", "state": {"index": 1, "delta": [
+    {"title": "a", "variables": {"hp": 1, "money": 10}},
+    {"title": "b", "variables": {"money": 20}},
+]}}
+_v = savefile.get_variables(_ddata)
+assert _v["hp"] == 1 and _v["money"] == 20, _v
+savefile.set_variables(_ddata, {"hp": 99})
+assert savefile.get_variables(_ddata)["hp"] == 99
 print("   OK")
 
 print("ALL OK")

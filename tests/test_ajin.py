@@ -20,7 +20,7 @@ from app.core.ajin import parser as ajin_parser
 from app.core.ajin.layered import LayeredView
 from app.core.tentacles import create_tentacle
 from app.engines.ajin import AjinModule
-from app.engines.registry import detect_engine
+from app.engines.registry import DISABLED_ENGINES, detect_engine
 
 SAMPLE_KS = """\
 ;synthetic comment — must be skipped
@@ -95,13 +95,13 @@ def make_game(root: str, with_saves: bool = True) -> str:
     return root
 
 
-print("1) Детект: exe + asar + override + перехватчик -> вес 110/120...")
+print("1) Детект: exe + asar + override + перехватчик -> вес 110/120; приглушён...")
 with tempfile.TemporaryDirectory() as td:
     make_game(td, with_saves=True)
     assert ajin_parser.detect(td) == 120
     assert AjinModule.detect(td) == 120
-    mod = detect_engine(td)
-    assert mod is not None and mod.key == "ajin", type(mod)
+    assert "ajin" in DISABLED_ENGINES
+    assert detect_engine(td) is None, "реестр должен скрывать ajin"
 with tempfile.TemporaryDirectory() as td:
     make_game(td, with_saves=False)
     assert ajin_parser.detect(td) == 110
@@ -218,7 +218,17 @@ _app = QApplication([])
 with tempfile.TemporaryDirectory() as td:
     make_game(td)
     w = MainWindow()
-    assert w.open_project(td) == "electron-tyrano"
+    # ajin приглушён в реестре (DISABLED_ENGINES): включаем его
+    # на время открытия, чтобы проверить настоящий поток MainWindow
+    # (таблицы читов живут, пока движок выключен — код на месте)
+    import app.engines.registry as _reg
+    _real_disabled = _reg.DISABLED_ENGINES
+    _reg.DISABLED_ENGINES = frozenset()
+    try:
+        opened = w.open_project(td)
+    finally:
+        _reg.DISABLED_ENGINES = _real_disabled
+    assert opened == "electron-tyrano", opened
     roles = [r for _, r in w._engine_tabs]
     assert roles == ["translate", "cheats", "triggers"], roles
     var_tab = w.cheat_tab
@@ -430,7 +440,14 @@ from PySide6.QtCore import Qt as _Qt
 with tempfile.TemporaryDirectory() as td:
     make_game(td)
     w2 = MainWindow()
-    assert w2.open_project(td) == "electron-tyrano"
+    import app.engines.registry as _reg2
+    _real_disabled2 = _reg2.DISABLED_ENGINES
+    _reg2.DISABLED_ENGINES = frozenset()
+    try:
+        opened2 = w2.open_project(td)
+    finally:
+        _reg2.DISABLED_ENGINES = _real_disabled2
+    assert opened2 == "electron-tyrano", opened2
     var_tab = w2.cheat_tab
     trg_tab = next(t for t, r in w2._engine_tabs if r == "triggers")
     live = _json.dumps([{"name": "money", "value": 100},

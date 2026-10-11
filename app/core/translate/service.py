@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-"""Сервис перевода: склеивает определение языка, маскирование, глоссарий,
-движок и память переводов.
+"""Сервис перевода: склеивает определение языка, маскирование, глоссарий
+и движок.
 
 Принцип: перевод не имеет права упасть из-за одного провайдера. Строка,
 которую не удалось перевести, не помечается «готово» — она возвращается
@@ -21,12 +21,10 @@ from .fixers import apply_fixers
 from .glossary import Glossary
 from .mask import (is_code_only, mask, split_edge_codes, tokens_present,
                    unmask, validate)
-from .memory import TranslationMemory
 
-# батчи для LLM ограничиваем по примерному числу токенов, а не только
-# по числу строк: длинные строки обрывают ответ модели.
-# Пакеты крупнее = меньше запросов: Google отдаёт до 200 строк за раз,
-# LLM-движки режут батч сами.
+# Батчи ограничиваем по примерному числу токенов, а не только по числу
+# строк. Пакеты крупнее = меньше запросов: Google отдаёт до 200 строк
+# за раз.
 TARGET_TOKENS = 1500
 MAX_BATCH_LINES = 100
 
@@ -134,10 +132,9 @@ def _reattach(text: str, lead: list[str], trail: list[str]) -> str:
 
 
 class Translator:
-    def __init__(self, engine: BaseEngine, tm: TranslationMemory | None = None,
+    def __init__(self, engine: BaseEngine,
                  glossary: Glossary | None = None):
         self.engine = engine
-        self.tm = tm
         self.glossary = glossary
         self.cancelled = False
         # строки, которые не удалось перевести в этом запуске: остаются
@@ -222,12 +219,6 @@ class Translator:
         if _is_code_token(text):
             return text
 
-        cached = None
-        if self.tm and not overwrite:
-            cached = self.tm.get(text, src_lang, tgt_lang)
-        if cached:
-            return cached
-
         # TextPreserve prefix/suffix: краевые коды не отправляем движку,
         # приклеиваем к результату (переводчики их теряют чаще всего)
         lead, mid, trail = split_edge_codes(text)
@@ -280,11 +271,6 @@ class Translator:
             out_parts.append(lead_ws + restored + trail_ws)
         result = "".join(out_parts)
         result = _reattach(result, lead, trail)
-        # В память переводов пишем только реальные переводы: иначе при
-        # сбое движка (результат == оригинал) INSERT OR REPLACE затирает
-        # хороший перевод мусором.
-        if self.tm and result != text and result.strip():
-            self.tm.put(text, result, src_lang, tgt_lang)
         return result
 
     # ---------- пакет простых строк (имена и т.п.) ----------
@@ -318,10 +304,6 @@ class Translator:
             if _is_code_token(text):
                 out[i] = text
                 continue
-            cached = self.tm.get(text, src, tgt_lang) if self.tm else None
-            if cached:
-                out[i] = cached
-                continue
             lead, mid, trail = split_edge_codes(text)
             masked, codes = mask(mid)
             if is_code_only(masked):
@@ -347,7 +329,6 @@ class Translator:
                 out_list = list(translated) if translated else []
                 if len(out_list) < len(chunk):
                     out_list.extend([None] * (len(chunk) - len(out_list)))
-                tm_pairs: list[tuple[str, str]] = []
                 for (i, text, _src, masked, codes, lead, trail), res in \
                         zip(chunk, out_list):
                     if not res or not res.strip():
@@ -362,64 +343,9 @@ class Translator:
                                             orig_codes.strip())
                     result = _reattach(restored, lead, trail)
                     out[i] = result
-                    if result != text and result.strip():
-                        tm_pairs.append((text, result))
-                if self.tm and tm_pairs:
-                    self.tm.put_many(tm_pairs, src, tgt_lang)
         return out
 
     # ---------- записи проекта ----------
-    def prefill_from_memory(
-        self,
-        entries: list[TranslationEntry],
-        src_lang: str,
-        tgt_lang: str,
-    ) -> int:
-        """Подтянуть переводы из памяти (ТМ) для записей без перевода.
-
-        Точное совпадение + совпадение по нормализованной строке
-        (пробелы/переносы) — делает TranslationMemory.get().
-        Записям с найденным переводом ставит status='translated'.
-        Пропускает записи с уже готовым переводом и status='skip'.
-        Возвращает число подтянутых строк. Движок не используется.
-        """
-        if not self.tm:
-            return 0
-        # Группируем по реальному языку строки и тянем PACKETом
-        # (lookup_many: один проход, один коммит). Поштучный tm.get()
-        # с commit на хит здесь запрещён — 3000 строк вешали GUI.
-        groups: dict[str, list] = {}
-        for e in entries:
-            if (e.translation or "").strip() or e.status == "skip":
-                continue
-            if not (e.original or "").strip():
-                continue
-            lang = _resolve_src(e.original, src_lang, tgt_lang)
-            if not lang:
-                continue
-            groups.setdefault(lang, []).append(e)
-        n = 0
-        for lang, group in groups.items():
-            if self.cancelled:
-                break
-            found = self.tm.lookup_many(
-                [e.original for e in group], lang, tgt_lang)
-            if lang != src_lang:
-                missing = [e.original for e in group if e.original not in found]
-                if missing:
-                    try:
-                        extra = self.tm.lookup_many(missing, src_lang, tgt_lang)
-                    except Exception:
-                        extra = {}
-                    found.update(extra)
-            for e in group:
-                hit = found.get(e.original)
-                if hit:
-                    e.translation = hit
-                    e.status = "translated"
-                    n += 1
-        return n
-
     def translate_entries(
         self,
         entries: list[TranslationEntry],
@@ -517,24 +443,19 @@ class Translator:
         orig = holders[0].original or "" if holders else ""
         return apply_fixers(text, src_lang, tgt_lang, orig)
 
-    def _commit(self, job, text, done: list[int],
-                tm_pairs: list[tuple[str, str]]) -> None:
+    def _commit(self, job, text, done: list[int]) -> None:
         holders, _masked, _codes, _lead, _trail = job
         for e in holders:
             e.translation = text
             e.status = "translated"
             done[0] += 1
-        if text != holders[0].original and text.strip():
-            tm_pairs.append((holders[0].original, text))
 
     def _run_jobs(self, jobs: list[tuple], src_lang: str, tgt_lang: str,
-                  done: list[int], report: Callable[[], None],
-                  tm_pairs: list[tuple[str, str]]) -> list[tuple]:
+                  done: list[int], report: Callable[[], None]) -> list[tuple]:
         """Прогоняет список заданий через движок пакетами.
 
         Возвращает задания, которые не удалось перевести — их никуда не
-        теряем, они уйдут в следующий круг повтора. Запись в память
-        переводов делает вызывающий.
+        теряем, они уйдут в следующий круг повтора.
         """
         left: list[tuple] = []
         for start in range(0, len(jobs), MAX_BATCH_LINES):
@@ -556,7 +477,7 @@ class Translator:
                 if text is None:
                     left.append(job)
                     continue
-                self._commit(job, text, done, tm_pairs)
+                self._commit(job, text, done)
             report()
         return left
 
@@ -570,17 +491,6 @@ class Translator:
         for e in targets:
             unique.setdefault(e.original, []).append(e)
 
-        # Память одним пакетом (lookup_many: один проход, один коммит),
-        # а не tm.get() на каждую строку (там UPDATE+commit на хит —
-        # тысячи fsync на больших проектах).
-        cached_map: dict[str, str] = {}
-        if self.tm and not overwrite:
-            try:
-                cached_map = self.tm.lookup_many(
-                    list(unique), src_lang, tgt_lang)
-            except Exception:  # noqa: BLE001 — память не обязательна
-                cached_map = {}
-
         # Позиции для контекста — индексной картой за O(n), а не линейным
         # поиском на каждую строку (было O(n^2): десятки секунд на 40k).
         pos_of: dict[int, int] = {id(e): i for i, e in enumerate(targets)}
@@ -592,7 +502,6 @@ class Translator:
         batch_jobs: list[tuple] = []
         batch_indices: list[int] = []
         batch_tokens: list[int] = [0]
-        tm_pairs: list[tuple[str, str]] = []
 
         def flush():
             if not batch_src:
@@ -625,10 +534,7 @@ class Translator:
                 if text is None:
                     jobs.append(job)
                     continue
-                self._commit(job, text, done, tm_pairs)
-            if self.tm and tm_pairs:
-                self.tm.put_many(tm_pairs, src_lang, tgt_lang)
-                tm_pairs.clear()
+                self._commit(job, text, done)
             batch_src.clear()
             batch_jobs.clear()
             batch_indices.clear()
@@ -639,16 +545,6 @@ class Translator:
             if self.cancelled:
                 break
             job = (holders, "", [], [], [])
-            # В режиме «Перевести всё заново» память переводов не
-            # консультируем: иначе записи с уже готовым переводом
-            # замыкаются на старый кэш и не пересоздаются.
-            cached = cached_map.get(original)
-            if cached:
-                for e in holders:
-                    e.translation = cached
-                    e.status = "translated"
-                    done[0] += 1
-                continue
             # строки с терминами из глоссария — поштучно, чтобы сегментировать
             if self.glossary and any(
                     t in original for t in self.glossary.terms(src_lang, tgt_lang)):
@@ -712,10 +608,7 @@ class Translator:
                     left_gloss.append(gjob)
                     continue
                 job = (holders, original, [], [], [])
-                self._commit(job, text, done, tm_pairs)
-            if self.tm and tm_pairs:
-                self.tm.put_many(tm_pairs, src_lang, tgt_lang)
-                tm_pairs.clear()
+                self._commit(job, text, done)
             report()
             jobs.extend(left_gloss)
 
@@ -744,11 +637,7 @@ class Translator:
                 report()
             elif self._engine_dead():
                 break   # сети нет ни у кого — ждать нечего
-            jobs = self._run_jobs(jobs, src_lang, tgt_lang, done, report,
-                                  tm_pairs)
-            if self.tm and tm_pairs:
-                self.tm.put_many(tm_pairs, src_lang, tgt_lang)
-                tm_pairs.clear()
+            jobs = self._run_jobs(jobs, src_lang, tgt_lang, done, report)
             if len(jobs) >= before:
                 break   # прогресса нет — дальше крутить нечего
 

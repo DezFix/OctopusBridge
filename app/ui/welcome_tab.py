@@ -256,6 +256,15 @@ class WelcomeTab(QWidget):
         row_launch.addWidget(self.btn_launch, 1)  # stretch=1 fills width
         actions_lay.addLayout(row_launch)
 
+        # удаление сейвов — только для Unity: там игра пишет прогресс в
+        # файлы рядом с собой, и иногда нужно начать заново. Кнопка
+        # появляется лишь у Unity-проекта (см. refresh_dashboard)
+        self.btn_delete_saves = QPushButton(TR("dash_delete_saves"))
+        self.btn_delete_saves.setIcon(icon("trash"))
+        self.btn_delete_saves.clicked.connect(self._action_delete_saves)
+        self.btn_delete_saves.setVisible(False)
+        actions_lay.addWidget(self.btn_delete_saves)
+
         self.lbl_session_status = QLabel(TR("dash_session_idle"))
         self.lbl_session_status.setWordWrap(True)
         actions_lay.addWidget(self.lbl_session_status)
@@ -342,8 +351,12 @@ class WelcomeTab(QWidget):
         key = module.key if module else ""
         variant = getattr(module, "variant", "") or ""
 
-        # ряд «Кириллица»: RPG Maker MV/MZ, Ren'Py и Wolf RPG
-        cyr_supported = key in ("rpgmaker", "renpy", "wolf")
+        # удаление сейвов — только у Unity: только там игра пишет
+        # прогресс в JSON рядом с собой
+        self.btn_delete_saves.setVisible(key == "unity")
+
+        # ряд «Кириллица»: RPG Maker MV/MZ, Ren'Py, Wolf RPG и Unity Mono
+        cyr_supported = key in ("rpgmaker", "renpy", "wolf", "unity")
         self.cyr_row.setVisible(cyr_supported)
         if cyr_supported:
             if key == "rpgmaker":
@@ -352,6 +365,9 @@ class WelcomeTab(QWidget):
             elif key == "wolf":
                 from app.core.wolf import fontpatch
                 patched = fontpatch.is_patched(p.game_dir)
+            elif key == "unity":
+                from app.core.unity import parser as unity_parser
+                patched = unity_parser.is_patched(p.game_dir)
             else:
                 from app.core.renpy import fontpatch
                 patched = fontpatch.is_patched(p.game_dir)
@@ -652,12 +668,19 @@ class WelcomeTab(QWidget):
         if self.main.session.is_active():
             return  # _on_session_client уже выставил «Стоп»
         if self.main.session.is_game_running():
-            # игра открыта, отладчика нет: перевод через ob_runtime.js,
-            # читы недоступны. Кнопка — «Стоп», иначе окно не закрыть.
+            # игра открыта, канала нет: показываем настоящую причину,
+            # если щупальце её знает, а не generic «нет отладчика»
             self.btn_launch.setEnabled(True)
             self.btn_launch.setText(TR("dash_stop"))
             self.btn_launch.setIcon(icon("stop"))
-            self.lbl_session_status.setText(TR("dash_session_nocdp"))
+            detail = ""
+            try:
+                tent = self.main.session.tentacle
+                detail = str(getattr(tent, "_rpc_error", "") or "")
+            except Exception:  # noqa: BLE001
+                detail = ""
+            self.lbl_session_status.setText(
+                detail if detail else TR("dash_session_nocdp"))
             return
         # ok=True, но процесса нет (MV-фолбэк без attached?) —
         # разблокируем кнопку, чтобы не залипала
@@ -671,6 +694,52 @@ class WelcomeTab(QWidget):
         self.btn_launch.setText(TR("dash_launch"))
         self.btn_launch.setIcon(icon("play"))
         self.lbl_session_status.setText(TR("dash_session_idle"))
+
+    def _action_delete_saves(self):
+        """Стереть файлы сохранений Unity-игры (с откатом в backup/)."""
+        p = self.main.project
+        module = self.main.engine_module
+        if p is None or module is None or module.key != "unity":
+            return
+        # при запущенной игре она перезапишет сейв при выходе — удалять
+        # бессмысленно, поэтому сначала просим закрыть игру
+        if self.main.session.is_active():
+            QMessageBox.warning(
+                self, TR("err"), TR("dash_delete_saves_running"))
+            return
+        from app.core.unity import json_save
+
+        try:
+            files = json_save.find_saves(p.game_dir)
+        except OSError:
+            files = []
+        if not files:
+            QMessageBox.information(
+                self, TR("done"), TR("dash_delete_saves_none"))
+            return
+        names = ", ".join(os.path.basename(f) for f in files[:6])
+        if len(files) > 6:
+            names += TR("dash_delete_saves_more", n=len(files) - 6)
+        if QMessageBox.question(
+                self, TR("dash_delete_saves"),
+                TR("dash_delete_saves_q", n=len(files), names=names)
+        ) != QMessageBox.Yes:
+            return
+        try:
+            res = json_save.delete_saves(p.game_dir)
+        except OSError as e:
+            QMessageBox.critical(self, TR("err"), str(e))
+            return
+        if res.get("errors"):
+            QMessageBox.warning(
+                self, TR("done"),
+                TR("dash_delete_saves_done", n=res.get("count", 0))
+                + "\n" + "\n".join(res["errors"][:6]))
+        else:
+            QMessageBox.information(
+                self, TR("done"),
+                TR("dash_delete_saves_done", n=res.get("count", 0)))
+        self._refresh_stats()
 
     def _apply_pending_font_size(self):
         size = self._pending_font_size
@@ -737,6 +806,14 @@ class WelcomeTab(QWidget):
                 else:
                     QMessageBox.information(
                         self, TR("done"), TR("res_font_already"))
+            elif mod.key == "unity":
+                report = mod.font_patch(p.game_dir)
+                QMessageBox.information(
+                    self, TR("done"),
+                    TR("res_font_done_unity",
+                       n=report.get("fonts", 0),
+                       files=report.get("files", 0),
+                       dyn=report.get("dynamic_neutralized", 0)))
             else:
                 from app.core.renpy import fontpatch
                 report = fontpatch.patch_font(p.game_dir)
@@ -780,6 +857,14 @@ class WelcomeTab(QWidget):
                     self, TR("done"),
                     TR("res_font_done_renpy", n=report["replaced"],
                        live=self._live_suffix(False)))
+            elif mod.key == "unity":
+                report = mod.font_patch(p.game_dir, ttf_path=path)
+                QMessageBox.information(
+                    self, TR("done"),
+                    TR("res_font_done_unity",
+                       n=report.get("fonts", 0),
+                       files=report.get("files", 0),
+                       dyn=report.get("dynamic_neutralized", 0)))
             else:
                 from app.core.renpy import fontpatch
                 report = fontpatch.patch_font(p.game_dir, path)
@@ -805,6 +890,8 @@ class WelcomeTab(QWidget):
             elif mod.key == "wolf":
                 from app.core.wolf import fontpatch
                 fontpatch.restore_font(p.game_dir)
+            elif mod.key == "unity":
+                mod.restore_original(p.game_dir)
             else:
                 from app.core.renpy import fontpatch
                 fontpatch.restore_font(p.game_dir)

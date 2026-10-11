@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
-"""Модуль Unity (Mono/IL2CPP) — детект, извлечение и внедрение.
+"""Модуль Unity (Mono) — детект, извлечение и внедрение.
 
-Текст лежит в .assets/.bundle/.resource (TextAsset, MonoBehaviour,
-TextMesh/GUIText) — парсинг через UnityPy (см. app/core/unity/parser.py,
+Текст лежит в .assets/.bundle/.resource/level* (TextAsset, MonoBehaviour,
+TextMesh/GUIText, TextMeshProUGUI/TextMeshPro) + текстовые файлы
+StreamingAssets — парсинг через UnityPy (см. app/core/unity/parser.py,
 ленивый импорт; без UnityPy extract -> [], apply -> no-unitypy).
-Читов нет (нативного канала к процессу Unity нет, вкладка только
-translate); шрифт — будущий font-patch (заглушка font_patch()).
+IL2CPP вне скоупа (признанное ограничение). Читов нет (нативного канала
+к процессу Unity нет, вкладка только translate); шрифт — замена m_FontData
+классических Font через font_patch() (TMP SDF — только детект: нужен Editor).
 """
 from __future__ import annotations
 
@@ -16,8 +18,14 @@ class UnityModule(EngineModule):
     key = "unity"
     title = "Unity"
     variant = ""
-    maturity = "frozen"  # фокус — RPG-семья; только критические фиксы
-    features = {"file-translation", "font-patch"}
+    maturity = "experimental"  # файловый перевод Mono работает, читов нет
+    # Конвенция базы (app/engines/base.py): только 'cheats', 'resources',
+    # 'font', 'files'.
+    # 'cheats' намеренно НЕТ: в базе этот флаг гейтит автозапуск игры при
+    # открытии проекта (app/ui/main_window.py), а живой канал Unity
+    # поднимается по запросу — когда пользователь сам нажал «Запустить».
+    # Сам канал есть (см. app/transport/unity_rpc), просто не автоматический.
+    features = {"files", "font"}
 
     @classmethod
     def detect(cls, game_dir: str) -> int:
@@ -63,13 +71,17 @@ class UnityModule(EngineModule):
                             target_lang=kwargs.get("target_lang", "ru"))
 
     def font_patch(self, game_dir: str = "", **kwargs) -> dict:
-        """Заглушка замены шрифта (Font x2 в resources/sharedassets0).
+        """Замена m_FontData классических Font на TTF с кириллицей.
 
-        Реальный патч TMP/Unity-Font — TODO; пока честно отвечаем,
-        что ничего не сделано, чтобы UI не врал о «готово».
+        Делегирует parser.font_patch (BackupStore + atomic + verify);
+        TMP SDF не трогаем (нужен Unity Editor) — их счётчик в stats.
         """
-        _ = (game_dir, kwargs)
-        return {"patched": False, "reason": "todo"}
+        from app.core.unity import parser
+        return parser.font_patch(
+            game_dir or self.game_dir,
+            ttf_path=kwargs.get("ttf_path"),
+            backup=kwargs.get("backup", True),
+            backup_root=kwargs.get("backup_root"))
 
     def restore_original(self, game_dir: str) -> dict:
         """Откат перевода: вернуть бэкапы BackupStore (backup/unity)."""

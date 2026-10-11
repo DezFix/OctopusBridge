@@ -48,15 +48,28 @@ def build_tabs(engine_key: str, main_window) -> list[tuple]:
         ]
 
     if engine_key == "twine":
+        # Мост живых читов (get_vars/var_set) написан давно, а вкладки не
+        # было — шеф видел «читов нет». Правка идёт прямо в переменные
+        # запущенной игры, поэтому видна сразу и без загрузки сейва.
         from app.ui.save_editor_tab import SaveEditorTab
+        from app.ui.twine_cheat_tab import TwineCheatTab
         from app.ui.twine_text_tab import TwineTextTab
+        cheat_tab = TwineCheatTab(main_window)
         save_tab = SaveEditorTab(main_window)
         text_tab = TwineTextTab(main_window)
+        main_window.cheat_tab = cheat_tab
         return [
-            (translate, TR("tab_translate"), "translate"),
             (text_tab, TR("tab_twine_text"), "module"),
+            (cheat_tab, TR("tab_cheats"), "cheats"),
             (save_tab, TR("tab_save_editor"), "module"),
         ]
+
+    if engine_key == "html":
+        # overlay-only: вкладок нет, live-оверлей работает из дашборда
+        # поверх запущенной игры. Общий поиск данных в окне страницы
+        # пробовали — на реальных HTML-играх он ничего не находит,
+        # поэтому читы оставлены только там, где движок известен.
+        return []
 
     if engine_key == "ajin":
         from app.ui.ajin_cheat_tab import AjinTriggersTab, AjinVariablesTab
@@ -69,7 +82,20 @@ def build_tabs(engine_key: str, main_window) -> list[tuple]:
             (trg_tab, TR("tab_triggers"), "triggers"),
         ]
 
-    # tyrano / wolf / unity и остальные: только файловый перевод.
+    if engine_key == "unity":
+        # Как у Twine: перевод + поиск по памяти + просмотр сейвов.
+        # Списки полей и правка файлов убраны: и то, и другое ломало игру.
+        from app.ui.unity_cheat_tab import UnityScanTab, UnitySavesTab
+        cheats = UnityScanTab(main_window)
+        saves = UnitySavesTab(main_window)
+        main_window.cheat_tab = cheats
+        return [
+            (translate, TR("tab_translate"), "translate"),
+            (cheats, TR("tab_cheats"), "cheats"),
+            (saves, TR("tab_unity_saves"), "module"),
+        ]
+
+    # tyrano / wolf и остальные: только файловый перевод.
     # Читы и live сюда не добавляем, пока ядро не станет железным.
     return [
         (translate, TR("tab_translate"), "translate"),

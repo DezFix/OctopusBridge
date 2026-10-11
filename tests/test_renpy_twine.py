@@ -1314,9 +1314,9 @@ print("   OK")
 print("5) Twine: LZ-сейвы (round-trip + delta)...")
 from app.core.twine import savefile
 
-sample = '{"id":"x","state":{"index":1,"history":[{"variables":{"a":1}}]}}'
+sample = '{"id":"x","state":{"index":0,"history":[{"variables":{"a":1}}]}}'
 assert savefile.lz_decompress_base64(savefile.lz_compress_base64(sample)) == sample
-save_obj = {"type": "saved", "id": "t", "state": {"index": 2, "delta": [
+save_obj = {"type": "saved", "id": "t", "state": {"index": 1, "delta": [
     {"title": "start", "variables": {"player": {"money": 50, "hp": 10}}},
     {"title": "next", "variables": {"player": {"money": 80}}},
 ]}}
@@ -1407,11 +1407,12 @@ from app.core.twine.parser import story_to_json, write_story_json
 with tempfile.TemporaryDirectory() as td:
     make_twine(td)
     module = TwineModule(td)
-    # TwineModule.extract дополнительно пишет «игра.json» рядом с игрой
+    # overlay-only: TwineModule.extract НЕ пишет «игра.json» рядом
+    # с игрой (soft-disable); прямой вызов парсера — работает
     es = module.extract(td)
     story = os.path.join(td, "index.html")
     jp = os.path.join(td, "index.json")
-    assert os.path.isfile(jp), "extract должен писать JSON рядом с игрой"
+    assert not os.path.isfile(jp), "extract не должен писать JSON"
     doc = story_to_json(td)
     assert doc["game"] == "index.html" and doc["format"] == "SugarCube"
     names = [p["name"] for p in doc["passages"]]
@@ -1425,12 +1426,12 @@ with tempfile.TemporaryDirectory() as td:
     assert macro["type"] == "macro" and macro["translatable"] == []
     link = [s for s in start["segments"] if s["line"] == 2][0]
     assert link["type"] == "link" and link["translatable"] == ["Go deeper"]
+    jp2 = write_story_json(td)
+    assert jp2 == jp and os.path.isfile(jp2)
     with open(jp, encoding="utf-8") as f:
         saved = _json.load(f)
     assert saved["passages"][0]["segments"][0]["translatable"] == \
         ["You wake up in a forest."]
-    jp2 = write_story_json(td)
-    assert jp2 == jp and os.path.isfile(jp2)
     # перевод в новую копию: оригинал не трогается
     originals = {e.original: e for e in es}
     for orig, trans in [("You wake up in a forest.", "Ты просыпаешься в лесу."),
@@ -1597,6 +1598,48 @@ with tempfile.TemporaryDirectory() as td:
     assert len(_paths11) == 1
     assert os.path.dirname(_paths11[0]) == td, _paths11
     assert ".." not in os.path.basename(_paths11[0]), _paths11
+print("   OK")
+
+print("12) Twine saves: LZ-раундтрип, пустые контейнеры целы, кап индекса...")
+# LZ: кириллица, пусто, длинное — бит-в-бит обратно
+for _t12 in ("Hello", "Привет, ведьма!", "", "x" * 5000,
+             '{"a":[1,{"b":null}],"c":"\\"q\\""}'):
+    assert _sf11.lz_decompress_base64(
+        _sf11.lz_compress_base64(_t12)) == _t12, repr(_t12)[:40]
+# абсурдный индекс — честная ошибка, а не миллионный массив
+_d12: dict = {}
+try:
+    _sf11._set_nested(_d12, "inv[99999999]", 1)
+    raise AssertionError("ожидался ValueError на индекс")
+except ValueError:
+    pass
+assert _d12 == {}, _d12
+# полный цикл: пустые контейнеры переживают запись без изменений
+with tempfile.TemporaryDirectory() as td:
+    _data12 = {"id": "s1",
+               "state": {"index": 0, "history": [
+                    {"variables": {"money": 100, "opts": {},
+                                   "flags": [], "name": "Герой"}}]}}
+    _p12 = os.path.join(td, "g.save")
+    _sf11.write_save(_p12, _data12)
+    _back12 = _sf11.load_save(_p12)
+    _vars12 = _sf11.get_variables(_back12)
+    assert _vars12["money"] == 100
+    assert _vars12["opts"] == {} and isinstance(_vars12["opts"], dict)
+    assert _vars12["flags"] == [] and isinstance(_vars12["flags"], list)
+    assert _vars12["name"] == "Герой"
+    # правка одного значения не трогает соседей
+    _sf11.set_variables(_back12, {"money": 999})
+    _sf11.write_save(_p12, _back12)
+    _vars12b = _sf11.get_variables(_sf11.load_save(_p12))
+    assert _vars12b["money"] == 999
+    assert _vars12b["opts"] == {} and _vars12b["flags"] == []
+    # бэкап и откат
+    assert os.path.isfile(_p12 + ".ob_backup")
+    assert _sf11.restore_backup(_p12) is True
+    assert _sf11.get_variables(
+        _sf11.load_save(_p12))["money"] == 100
+    assert _sf11.restore_backup(os.path.join(td, "nope.save")) is False
 print("   OK")
 
 print()

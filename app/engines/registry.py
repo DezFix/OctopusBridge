@@ -10,15 +10,16 @@ from app.engines.twine import TwineModule
 from app.engines.tyrano import TyranoModule
 from app.engines.unity import UnityModule
 from app.engines.wolf import WolfModule
+from app.engines.html import HtmlModule
 
 MODULES: list[type[EngineModule]] = [
     AjinModule, RpgMakerModule, RenPyModule, TwineModule, TyranoModule,
-    WolfModule, UnityModule]
+    WolfModule, UnityModule, HtmlModule]
 
 #: Отложенные движки: код и тесты на месте, но детект и интерфейс
-#: их не видят — фокус на RPG Maker и Ren'Py. Вернуть движок =
+#: их не видят — фокус на RPG Maker, Ren'Py и Twine. Вернуть движок =
 #: убрать его ключ отсюда (ничего больше трогать не нужно).
-DISABLED_ENGINES = frozenset({"ajin", "twine", "tyrano", "wolf", "unity"})
+DISABLED_ENGINES = frozenset({"ajin", "tyrano", "wolf"})
 
 
 def enabled_modules() -> list[type[EngineModule]]:

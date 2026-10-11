@@ -32,26 +32,42 @@ CMD_CHOICE_BRANCH = 402
 CMD_COMMENT = 108
 CMD_COMMENT_CONT = 408
 CMD_SHOW_TEXT_HDR = 101
-CMD_CHANGE_NAME = 320
-CMD_CHANGE_NICK = 324
 CMD_PLUGIN = 357
 CMD_PLUGIN_CONT = 657
 CMD_PLUGIN_MV = 356
 CMD_SCRIPT = 355
 CMD_SCRIPT_CONT = 655
 
+# ── «Сменить имя / прозвище / профиль»: коды зависят от варианта
+# движка, params[1] — строка. MV: 320 Change Name, 322 Change
+# Nickname; MZ: 321 Change Name, 323 Change Nickname, 324 Change
+# Profile. (320/322 в MZ — экипировка и класс, 321/323/324 в MV
+# отсутствуют — таблицы вариантов не смешиваем.) ──
+RENAME_CODES = {
+    "mv": frozenset({320, 322}),
+    "mz": frozenset({321, 323, 324}),
+}
+
+# устаревшие константы (только для совместимости импортов,
+# app/engines/rpgmaker/parser.py): MV-коды. Раньше 324 был
+# зашит как «прозвище» — ошибочно: в MV такого кода нет,
+# а в MZ 324 — это профиль. Вариантные коды — в RENAME_CODES.
+CMD_CHANGE_NAME = 320
+CMD_CHANGE_NICK = 322
+
 # ── Коды команд БЕЗ отображаемого текста: только ссылки на файлы,
 # метки и код (перевод ломает загрузку ресурсов / логику) ──
+# 101 заголовок диалога (имя файла лица и числа — текста нет),
 # 111 ветвление (операнды в т.ч. скрипты), 118/119 метки перехода,
 # 122 переменные (операнд-скрипт), 132/133/139/140 BGM/ME,
 # 205/505 маршрут (графика/SE/скрипты), 222 переход (файл),
 # 231-235 картинки, 241-250 аудио, 251 видео,
-# 283/284 фон/параллакс, 322/323 изображения героев/транспорта.
+# 283/284 фон/параллакс.
 CMD_NONTEXT_CODES = frozenset({
-    111, 118, 119, 122, 132, 133, 139, 140, 205, 505, 222,
+    101, 111, 118, 119, 122, 132, 133, 139, 140, 205, 505, 222,
     231, 232, 233, 234, 235,
     241, 242, 243, 244, 245, 246, 247, 248, 249, 250,
-    283, 284, 322, 323,
+    283, 284,
 })
 
 
@@ -517,13 +533,16 @@ def set_by_path(obj, path: str, value) -> None:
 # ── Извлечение ──
 
 class _Extractor:
-    def __init__(self, res: set[str] | None = None):
+    def __init__(self, res: set[str] | None = None,
+                 variant: str = "mz"):
         self.entries: list[TranslationEntry] = []
         self._next_id = 1
         self._seen: set[tuple[str, str]] = set()
         # индекс имён ресурсов игры (audio/img/movies): совпавшие строки —
         # ссылки на файлы, переводить их = "Failed to load" в игре
         self._res = res
+        # коды «сменить имя/прозвище/профиль» для варианта движка
+        self._rename_codes = RENAME_CODES.get(variant, RENAME_CODES["mz"])
 
     def _is_res(self, s: str) -> bool:
         if not self._res:
@@ -570,10 +589,9 @@ class _Extractor:
                              f"{context} / choice", label)
             elif code == CMD_CHOICE_BRANCH and len(params) > 1:
                 self.add(file, f"{p}[1]", f"{context} / branch", params[1])
-            elif code == CMD_SHOW_TEXT_HDR and len(params) > 4:
-                self.add(file, f"{p}[4]",
-                         f"{context} / speaker name", params[4])
-            elif code in (CMD_CHANGE_NAME, CMD_CHANGE_NICK) and len(params) > 1:
+            elif code in self._rename_codes and len(params) > 1:
+                # «Сменить имя/прозвище/профиль»: params[1] — строка
+                # (коды зависят от варианта движка, см. RENAME_CODES)
                 self.add(file, f"{p}[1]", f"{context} / rename", params[1])
             elif code == CMD_PLUGIN and len(params) > 3:
                 # params[2] НЕ извлекаем намеренно: ядро движка его
@@ -894,7 +912,7 @@ def extract(game_dir: str, data_dir: str | None = None,
         variant = detect_variant(game_dir)
     from .resrefs import build_index, clear_index
     clear_index(game_dir)
-    ex = _Extractor(build_index(game_dir))
+    ex = _Extractor(build_index(game_dir), variant)
     root = os.path.join(game_dir, *data_dir.split("/"))
     try:
         names = sorted(os.listdir(root))
@@ -1591,8 +1609,14 @@ def apply(game_dir: str, entries: list[TranslationEntry],
             elif on_skip:
                 on_skip(e, "current value is not a string")
         try:
+            # compact-файлы (indent is None) пишем без пробелов после
+            # разделителей — как RPG Maker; indent-стиль оригинала
+            # (indent-число) сохраняем как есть
             atomic_write_text(
-                abs_path, json.dumps(data, ensure_ascii=False, indent=indent),
+                abs_path,
+                json.dumps(data, ensure_ascii=False, indent=indent,
+                           separators=(",", ":") if indent is None
+                           else None),
                 encoding="utf-8")
         except OSError:
             continue

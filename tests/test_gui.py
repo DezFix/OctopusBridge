@@ -17,6 +17,7 @@ app = QApplication([])
 QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.critical = staticmethod(lambda *a, **k: QMessageBox.Ok)
+QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
 
 from app.engines.registry import MODULES, detect_engine
 from app.engines.ajin import AjinModule
@@ -26,6 +27,7 @@ from app.engines.twine import TwineModule
 from app.engines.tyrano import TyranoModule
 from app.engines.unity import UnityModule
 from app.engines.wolf import WolfModule
+from app.engines.html import HtmlModule
 from app.ui.i18n import TR
 from app.ui.main_window import MainWindow
 
@@ -61,12 +63,25 @@ def make_twine(root: str) -> None:
                 "Hi!</tw-passagedata></tw-storydata>")
 
 
+def make_html(root: str) -> None:
+    with open(os.path.join(root, "index.html"), "w", encoding="utf-8") as f:
+        f.write("<!DOCTYPE html><html><head><title>H</title></head>"
+                "<body><p>Hello!</p></body></html>")
+
+
 def make_tyrano(root: str) -> None:
     os.makedirs(os.path.join(root, "data", "scenario"))
     os.makedirs(os.path.join(root, "tyrano"))
     with open(os.path.join(root, "data", "scenario", "main.ks"),
               "w", encoding="utf-8") as f:
         f.write("こんにちは。\n[wait time=\"500\"]\n")
+
+
+def make_unity(root: str) -> None:
+    data = os.path.join(root, "UGame_Data")
+    os.makedirs(os.path.join(data, "Managed"))
+    open(os.path.join(root, "UGame.exe"), "w").close()
+    open(os.path.join(data, "globalgamemanagers"), "w").close()
 
 
 def make_wolf(root: str) -> None:
@@ -80,10 +95,12 @@ def make_wolf(root: str) -> None:
 
 print("1) Реестр движков...")
 assert MODULES == [AjinModule, RpgMakerModule, RenPyModule, TwineModule,
-                   TyranoModule, WolfModule, UnityModule]
+                   TyranoModule, WolfModule, UnityModule, HtmlModule]
 from app.engines.registry import DISABLED_ENGINES, enabled_modules
-assert DISABLED_ENGINES >= {"ajin", "twine", "tyrano", "wolf", "unity"}
-assert {c.key for c in enabled_modules()} == {"rpgmaker", "renpy"}
+assert DISABLED_ENGINES >= {"ajin", "tyrano", "wolf"}
+assert "unity" not in DISABLED_ENGINES
+assert {c.key for c in enabled_modules()} == {"rpgmaker", "renpy", "twine",
+                                              "unity", "html"}
 with tempfile.TemporaryDirectory() as td:
     make_rpgm(td, "mv")
     mod = detect_engine(td)
@@ -93,14 +110,17 @@ with tempfile.TemporaryDirectory() as td:
     make_renpy(td)
     assert isinstance(detect_engine(td), RenPyModule)
 # Отложенные движки: код на месте (прямой detect класса работает),
-# но общий детект их не видит — фокус на RPGM и Ren'Py.
+# но общий детект их не видит — фокус на RPGM, Ren'Py и Twine.
 with tempfile.TemporaryDirectory() as td:
     make_twine(td)
-    assert TwineModule.detect(td) > 0
-    assert detect_engine(td) is None
+    assert isinstance(detect_engine(td), TwineModule)
 with tempfile.TemporaryDirectory() as td:
     make_tyrano(td)
     assert detect_engine(td) is None
+with tempfile.TemporaryDirectory() as td:
+    make_unity(td)
+    assert UnityModule.detect(td) == 75  # 40 якорь + 25 Managed + 10 exe
+    assert isinstance(detect_engine(td), UnityModule)
 with tempfile.TemporaryDirectory() as td:
     make_wolf(td)
     assert WolfModule.detect(td) > 0
@@ -133,12 +153,31 @@ with tempfile.TemporaryDirectory() as td:
     make_renpy(td)
     assert w.open_project(td) == "renpy"
     assert not w.welcome_tab.font_box.isHidden()
-# Отложенные движки не открываются как проекты: детект их не видит.
-# Код и тесты движков на месте — вернутся отдельной задачей.
 with tempfile.TemporaryDirectory() as td:
     make_twine(td)
-    assert w.open_project(td) == "unknown"
-    assert w.engine_module is None
+    assert w.open_project(td) == "twine"
+    roles = [r for _, r in w._engine_tabs]
+    # Twine overlay-only: файлового перевода нет — только «Текст игры»
+    # (человекочитаемый просмотр пассажей, код свёрнут в маркеры ⟦…⟧)
+    # и редактор сейвов
+    assert "translate" not in roles
+    assert "module" in roles and roles.count("module") >= 2
+    # живые читы Twine: мост был написан давно, вкладки не было
+    assert "cheats" in roles, roles
+    from app.ui.twine_cheat_tab import TwineCheatTab
+    assert isinstance(w.cheat_tab, TwineCheatTab), type(w.cheat_tab)
+    # без запущенной игры — честная пустая страница, а не ошибка
+    w.cheat_tab.reload()
+    assert w.cheat_tab._rows == []
+    assert w.cheat_tab.lbl_status.text(), "статус объясняет, почему пусто"
+with tempfile.TemporaryDirectory() as td:
+    make_html(td)
+    assert w.open_project(td) == "html"
+    # HTML overlay-only: файловых вкладок нет вообще
+    assert w._engine_tabs == []
+    assert w.engine_module.extract(td) == []
+# Отложенные движки не открываются как проекты: детект их не видит.
+# Код и тесты движков на месте — вернутся отдельной задачей.
 with tempfile.TemporaryDirectory() as td:
     make_tyrano(td)
     assert w.open_project(td) == "unknown"
@@ -147,6 +186,203 @@ with tempfile.TemporaryDirectory() as td:
     make_wolf(td)
     assert w.open_project(td) == "unknown"
     assert w.engine_module is None
+with tempfile.TemporaryDirectory() as td:
+    make_unity(td)
+    assert w.open_project(td) == "unity"
+    roles = [r for _, r in w._engine_tabs]
+    # Unity как Twine: перевод + читы (живая игра) + сейвы (файлы).
+    assert "translate" in roles and "cheats" in roles, roles
+    assert roles.count("module") >= 1, roles
+    from app.ui.unity_cheat_tab import UnityScanTab, UnitySavesTab
+    assert isinstance(w.cheat_tab, UnityScanTab), type(w.cheat_tab)
+    # без запущенной игры канала нет — это честно, а не баг
+    assert not w.session.is_active()
+    from app.live import create_tentacle
+    tent = create_tentacle("unity")
+    assert tent.is_attached() is False
+    assert tent.attach(0) is False, "чужой pid не подключается"
+    assert UnityModule.features == {"files", "font"}, UnityModule.features
+    tent.deleteLater()
+    w.stop_session()
+    w.project = None
+    w.engine_module = None
+print("   OK")
+
+print("3b) Unity: поиск без канала — пустая страница, не падение...")
+with tempfile.TemporaryDirectory() as td:
+    make_unity(td)
+    assert w.open_project(td) == "unity"
+    tab = w.cheat_tab
+    assert tab is not None and tab._rows == []
+    assert tab.stack.currentIndex() == 0, "должна быть пустая страница"
+    assert not tab.btn_next.isEnabled(), "без результатов «Далее» некуда"
+    # нажатие «Найти» без канала обязано сказать ПОЧЕМУ, а не молчать
+    tab.inp_value.setText("2")
+    tab.scan()
+    assert tab.lbl_status.text(), "статус объясняет, почему поиск не идёт"
+    tab.reset()
+    assert tab._rows == []
+    w.stop_session()
+    w.project = None
+    w.engine_module = None
+    tab.deleteLater()
+print("   OK")
+
+print("3b2) Unity: поиск по памяти — как в Cheat Engine...")
+with tempfile.TemporaryDirectory() as td:
+    make_unity(td)
+    assert w.open_project(td) == "unity"
+    from app.ui.unity_cheat_tab import UnityScanTab
+    from PySide6.QtCore import Qt
+
+    tab = UnityScanTab(w)
+    assert tab._rows == [], "до поиска список пуст"
+    assert tab.stack.currentIndex() == 0, "должна быть пустая страница"
+    assert tab.btn_next.isEnabled() is False
+    assert tab.btn_undo.isEnabled() is False
+    # без канала поиск не должен ни падать, ни врать
+    tab.inp_value.setText("2")
+    tab.scan()
+    assert tab.table.rowCount() == 0
+    assert tab.lbl_status.text(), "без канала статус объясняет почему"
+
+    # типы значения: целое принимает 0x10, дробное — запятую
+    assert tab._parse("0x10") == 16
+    tab.cmb_kind.setCurrentIndex(3)          # f32
+    assert abs(tab._parse("1,5") - 1.5) < 1e-9
+    try:
+        tab._parse("не число")
+        raise AssertionError("мусор должен отвергаться")
+    except ValueError:
+        pass
+    tab.cmb_kind.setCurrentIndex(0)
+
+    # «Далее» сужает список по изменившимся значениям
+    class FakeTent:
+        def __init__(self):
+            self.written = []
+
+        def is_attached(self):
+            return True
+
+        def read_memory(self, addrs, kind):
+            return [{"addr": a, "value": v} for a, v in self.data
+                    if a in addrs]
+
+        def write_memory(self, addr, value, kind):
+            self.written.append((addr, value))
+            return True, value
+
+    ft = FakeTent()
+    ft.data = [("0x1", 5), ("0x2", 5), ("0x3", 9)]
+    tab._tentacle = lambda: ft          # подсовываем канал
+    tab._rows = [{"addr": a, "value": v} for a, v in ft.data]
+    ft.data = [("0x1", 5), ("0x2", 7), ("0x3", 9)]
+    tab.cmb_filter.setCurrentIndex(0)          # Изменилось
+    tab.next_scan()
+    assert [r["addr"] for r in tab._rows] == ["0x2"], tab._rows
+    # значение по этому адресу снова изменилось — «не изменилось» его
+    # отбросит, и список опустеет
+    ft.data = [("0x1", 5), ("0x2", 8), ("0x3", 9)]
+    tab.cmb_filter.setCurrentIndex(1)          # Не изменилось
+    tab.next_scan()
+    assert tab.table.rowCount() == 0, tab._rows
+
+    # запись запоминается, чтобы «Вернуть» её отменил
+    tab._rows = [{"addr": "0x10", "value": 5}]
+    tab._fill()
+    tab._on_edit(tab.table.item(0, 1))
+    assert ft.written == [("0x10", 5)], ft.written
+    assert tab.btn_undo.isEnabled() is True
+    tab.undo()
+    assert ft.written[-1] == ("0x10", 5), ft.written
+    w.stop_session()
+    w.project = None
+    w.engine_module = None
+    tab.deleteLater()
+print("   OK")
+
+print("3c) Unity: вкладка сейвов собирает файлы и реестр...")
+with tempfile.TemporaryDirectory() as td:
+    make_unity(td)
+    assert w.open_project(td) == "unity"
+    saves = None
+    for widget, role in w._engine_tabs:
+        if role == "module" and type(widget).__name__ == "UnitySavesTab":
+            saves = widget
+            break
+    assert saves is not None, "вкладки сейвов нет"
+
+    import app.ui.unity_cheat_tab as _uct
+    _orig_prefs = _uct.pp.read_prefs
+    _uct.pp.read_prefs = lambda _gd: [
+        {"name": "money", "kind": "int", "value": 100,
+         "system": False, "key": "money_h1"},
+        {"name": "Screenmanager Width", "kind": "int", "value": 1920,
+         "system": True, "key": "Screenmanager Width_h2"},
+    ]
+    _orig_saves = _uct.json_save.find_saves
+    _uct.json_save.find_saves = lambda _gd: []
+    try:
+        saves.reload_all()
+    finally:
+        _uct.pp.read_prefs = _orig_prefs
+        _uct.json_save.find_saves = _orig_saves
+    # служебные скрыты: видна только money
+    assert saves.table.rowCount() == 1, saves.table.rowCount()
+    assert saves.table.item(0, 1).text() == "money"
+    assert saves.table.item(0, 0).text() == "реестр"
+    # поиск
+    saves.search.setText("mon")
+    assert saves.table.rowCount() == 1
+    saves.search.setText("zzz")
+    assert saves.table.rowCount() == 0
+    saves.search.setText("")
+    # показать служебные
+    saves.chk_system.setChecked(True)
+    assert saves.table.rowCount() == 2, saves.table.rowCount()
+    saves.chk_system.setChecked(False)
+    # ПРАВКИ СЕЙВОВ БОЛЬШЕ НЕТ: игрок сообщил, что после неё ломалась
+    # игра. Таблица строго только для чтения.
+    from PySide6.QtCore import Qt
+    for i in range(saves.table.rowCount()):
+        flags = saves.table.item(i, 3).flags()
+        assert not (flags & Qt.ItemIsEditable), "сейв не должен правиться"
+    assert not hasattr(saves, "btn_backup"), "кнопка бэкапа убрана"
+    assert not hasattr(saves, "btn_restore"), "кнопка отката убрана"
+    w.stop_session()
+    w.project = None
+    w.engine_module = None
+    saves.deleteLater()
+print("   OK")
+
+print("3d) Unity: удаление сейвов с откатом в backup...")
+with tempfile.TemporaryDirectory() as td:
+    make_unity(td)
+    from app.core.unity import json_save as js
+
+    # подкладываем два «сейва» рядом с игрой
+    save_dir = os.path.join(td, "LocalLow")
+    os.makedirs(save_dir, exist_ok=True)
+    for name, lvl in (("save.json", 2), ("save2.json", 9)):
+        with open(os.path.join(save_dir, name), "w", encoding="utf-8") as f:
+            json.dump({"playerLevel": lvl}, f)
+    _orig_find = js.find_saves
+    js.find_saves = lambda _gd: [
+        os.path.join(save_dir, "save.json"),
+        os.path.join(save_dir, "save2.json")]
+    try:
+        res = js.delete_saves(td)
+    finally:
+        js.find_saves = _orig_find
+    assert res["count"] == 2, res
+    assert not res["errors"], res
+    assert not os.path.exists(os.path.join(save_dir, "save.json"))
+    assert not os.path.exists(os.path.join(save_dir, "save2.json"))
+    # и главное: перед удалением файлы отложены, действие обратимо
+    bdir = os.path.join(save_dir, "backup")
+    assert os.path.isdir(bdir), "бэкап не создан — удаление необратимо"
+    assert os.listdir(bdir), "в backup пусто"
 print("   OK")
 
 print("4) Настройки: 3 вкладки (Основные/Файлы/Система, без нейро)...")
@@ -206,8 +442,7 @@ assert RT._cheat_expr("no_such_cheat") is None
 print("   OK")
 
 print("7) Ключи i18n для новых функций...")
-for key in ("settings_corr_tab", "settings_glossary_box",
-            "settings_glossary_ai", "welcome_open_folder",
+for key in ("welcome_open_folder",
             "glossary_search", "glossary_count", "glossary_lang_ja",
             "update_title", "update_found", "update_open_release",
             "tr_translate_done", "tr_translate_done_skipped",

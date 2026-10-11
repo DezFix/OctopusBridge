@@ -15,7 +15,6 @@ from app.core.translate import fixers
 from app.core.translate.glossary import Glossary
 from app.core.translate.mask import (is_code_only, mask, split_edge_codes,
                                      unmask, validate)
-from app.core.translate.memory import TranslationMemory
 from app.core.translate.service import Translator
 
 
@@ -67,24 +66,20 @@ lead, mid, trail = split_edge_codes(r'\V[1]привет\c[8]')
 assert lead == [r'\V[1]'] and trail == [r'\c[8]'] and mid == "привет"
 print("   OK")
 
-print("3) Глоссарий + память переводов...")
+print("3) Глоссарий...")
 with tempfile.TemporaryDirectory() as td:
     g = Glossary(os.path.join(td, "glossary.json"))
     g.set_terms("en", "ru", {"Aira": "Айра", "Memory Orb": "Сфера памяти"})
     segs = g.split_by_terms("Aira used the Memory Orb!", "en", "ru")
     assert ("Aira", "Айра") in segs and ("Memory Orb", "Сфера памяти") in segs
-    tm = TranslationMemory(os.path.join(td, "tm.sqlite"))
-    tr = Translator(FakeEngine(), tm=tm, glossary=g)
+    tr = Translator(FakeEngine(), glossary=g)
     out = tr.translate_text("Aira used the Memory Orb!", "auto", "ru")
     assert "Айра" in out and "Сфера памяти" in out
-    assert tm.get("Aira used the Memory Orb!", "en", "ru") == out
-    tm.close()
 print("   OK:", out)
 
 print("4) Сервис: auto-язык, батчи, дедупликация, коды...")
 with tempfile.TemporaryDirectory() as td:
-    tm = TranslationMemory(os.path.join(td, "tm.sqlite"))
-    tr = Translator(FakeEngine(), tm=tm)
+    tr = Translator(FakeEngine())
     assert tr.translate_text("Уже по-русски", "auto", "ru") == "Уже по-русски"
     assert tr.translate_text("\\V[1]", "auto", "ru") == "\\V[1]"
     entries = [mk(1, "こんにちは"), mk(2, "Hello there"),
@@ -95,7 +90,6 @@ with tempfile.TemporaryDirectory() as td:
     assert entries[1].status == "translated"
     assert entries[3].translation == entries[0].translation  # дедуп
     assert entries[2].translation == ""
-    tm.close()
 print("   OK")
 
 print("5) Фиксеры...")

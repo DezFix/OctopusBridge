@@ -39,6 +39,12 @@ class SaveEditorTab(QWidget):
         self._save_data: dict | None = None
         self._save_path: str | None = None
         self._vars: list[dict] = []
+        # Снимок значений на момент загрузки: пишем обратно ТОЛЬКО
+        # изменённое. Раньше перезаписывались все переменные, и
+        # служебные представления flatten ("" → "{}", "[]" →
+        # строка) калечили нетронутые контейнеры — игра падала
+        # с Maximum call stack size exceeded.
+        self._orig_flat: dict = {}
         self._loading = False
         self.setAcceptDrops(True)
 
@@ -145,7 +151,7 @@ class SaveEditorTab(QWidget):
         from app.core.twine import savefile
         try:
             data = savefile.load_save(path)
-        except (ValueError, OSError) as e:
+        except (ValueError, OSError, IndexError) as e:
             QMessageBox.warning(self, TR("err"), str(e))
             return
 
@@ -153,6 +159,7 @@ class SaveEditorTab(QWidget):
         self._save_data = data
 
         flat = savefile.flatten_variables(savefile.get_variables(data))
+        self._orig_flat = dict(flat)
         self._vars = sorted(
             ({"name": k, "value": v} for k, v in flat.items()),
             key=lambda v: v["name"].lower())
@@ -237,12 +244,43 @@ class SaveEditorTab(QWidget):
         from app.core.twine import savefile
         if not self._save_data or not self._save_path:
             return
-        updates = {v["name"]: v["value"] for v in self._vars}
+        # Только изменённые: нетронутое не переписываем вообще.
+        updates = {v["name"]: v["value"] for v in self._vars
+                   if v["name"] not in self._orig_flat
+                   or self._orig_flat[v["name"]] != v["value"]
+                   or type(self._orig_flat[v["name"]]) is not type(v["value"])}
+        if not updates:
+            self.lbl_status.setText(
+                TR("save_saved", name=os.path.basename(self._save_path),
+                   n=0))
+            return
         try:
             savefile.set_variables(self._save_data, updates)
             savefile.write_save(self._save_path, self._save_data)
-            self.lbl_status.setText(
-                TR("save_saved", name=os.path.basename(self._save_path),
-                   n=len(updates)))
         except (ValueError, OSError) as e:
             QMessageBox.warning(self, TR("sv_save_err"), str(e))
+            return
+        # Самопроверка: читаем записанное обратно и сверяем каждое
+        # изменённое значение. Расхождение = битый сейв (игра упадёт
+        # при загрузке) — откатываемся на бэкап сразу, а не в игре.
+        try:
+            check = savefile.get_variables(
+                savefile.load_save(self._save_path))
+            bad = [k for k, v in updates.items()
+                   if savefile.flatten_variables(check).get(k) != v]
+        except (ValueError, OSError):
+            bad = sorted(updates)
+        if bad:
+            try:
+                savefile.restore_backup(self._save_path)
+            except OSError:
+                pass
+            QMessageBox.critical(
+                self, TR("err"),
+                TR("sv_save_verify_fail", n=len(bad)))
+            return
+        for k, v in updates.items():
+            self._orig_flat[k] = v
+        self.lbl_status.setText(
+            TR("save_saved", name=os.path.basename(self._save_path),
+               n=len(updates)))

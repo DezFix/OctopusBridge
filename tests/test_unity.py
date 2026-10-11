@@ -21,12 +21,13 @@ from app.core.unity.parser import (
     detect_unity,
     harvest_monobehaviour,
     harvest_textasset,
+    patch_textasset_lines,
     iter_asset_files,
     patch_monobehaviour,
     patch_textasset,
 )
 from app.core.models import TranslationEntry
-from app.engines.registry import detect_engine
+from app.engines.registry import DISABLED_ENGINES, detect_engine
 from app.engines.unity import UnityModule
 
 
@@ -99,13 +100,16 @@ with tempfile.TemporaryDirectory() as td:
     assert iter_asset_files(td) == []
 print("   OK:", iter_asset_files.__name__)
 
-print("4) Реестр находит unity; extract/apply-заглушки не падают...")
+print("4) Unity: класс работает, реестр видит (enabled); extract/apply не падают...")
 with tempfile.TemporaryDirectory() as td:
     make_full(td)
-    mod = detect_engine(td)
-    assert mod is not None and mod.key == "unity", type(mod)
+    assert "unity" not in DISABLED_ENGINES
+    found = detect_engine(td)
+    assert isinstance(found, UnityModule), type(found)
+    mod = UnityModule(td)
     assert isinstance(mod, UnityModule), type(mod)
-    assert mod.features == {"file-translation", "font-patch"}, mod.features
+    assert mod.features == {"files", "font"}, mod.features
+    assert mod.maturity == "experimental", mod.maturity
     # пустая синтетика без текстов: модуль честно падает с объяснением,
     # а не молча отдаёт [] (диагностика вместо тишины)
     try:
@@ -114,7 +118,12 @@ with tempfile.TemporaryDirectory() as td:
         assert "Текстов не найдено" in str(e) and "файлов:" in str(e), e
     else:
         raise AssertionError("mod.extract обязан падать на пустой синтетике")
-    assert mod.apply(td, []) == {"files": 0}
+    # apply с пустым входом: контракт ApplyReport, а не «{files:0}»,
+    # иначе UI не сможет показать причины пропусков
+    empty = mod.apply(td, [])
+    assert empty["files"] == 0 and empty["skipped_total"] == 0, empty
+    assert isinstance(empty["verify_failed"], list), empty
+    assert empty["skipped_by"] == {}, empty
     view = mod.file_view(td)
     assert view is not None
 print("   OK")
@@ -125,22 +134,36 @@ with tempfile.TemporaryDirectory() as td:
     os.makedirs(os.path.join(td, "data", "scenario"))
     open(os.path.join(td, "data", "scenario", "main.ks"), "w").close()
     assert parser.detect(td) == 0
-    mod = detect_engine(td)
-    assert mod is not None and mod.key == "tyrano", \
-        getattr(mod, "key", mod)
+    assert "tyrano" in DISABLED_ENGINES
+    assert detect_engine(td) is None, \
+        "реестр скрывает tyrano (DISABLED_ENGINES)"
 print("   OK")
 
 print("6) harvest/patch roundtrip (чистые, без UnityPy, синтетика)...")
-# TextAsset: str и bytes, пусто/бинарь -> []
+# TextAsset строится ПОСТРОЧНО: json_path несёт индекс строки, иначе
+# переводчик ломает диалог, склеивая/теряя строки
 assert harvest_textasset("FableStone",
                          "  Zorblax greets the hollow traveler  ") == \
-    [("m_Script", "Zorblax greets the hollow traveler")]
+    [("m_Script#0", "Zorblax greets the hollow traveler")]
 assert harvest_textasset("FableStone",
-                         "Zorblax greets the hollow traveler".encode()) == \
-    [("m_Script", "Zorblax greets the hollow traveler")]
+                         "Zorblax greets\nZorblax leaves".encode()) == \
+    [("m_Script#0", "Zorblax greets"), ("m_Script#1", "Zorblax leaves")]
 assert harvest_textasset("FableStone", "   ") == []
 assert harvest_textasset("FableStone", "12345 !!") == []  # без букв
 assert harvest_textasset("FableStone", b"\xff\xfe\x00bin") == []
+# отчёт сборки Unity (JSON с дottiрованными зависимостями) — конфиг
+assert harvest_textasset(
+    "FableStone", '{"TestSuite":"","Dependencies":'
+                  '["com.unity.2d.sprite@1.0.0"]}') == []
+assert harvest_textasset("FableStone", "id,name\n1,sword\n2,shield\n") == []
+# patch_textasset_lines: только свои строки, число строк неизменно
+script = "Zorblax greets\n\nZorblax leaves\n"
+new_s = patch_textasset_lines(script, {0: "Zorblax privet"})
+assert new_s == "Zorblax privet\n\nZorblax leaves\n", repr(new_s)
+assert new_s.count("\n") == script.count("\n")
+assert patch_textasset_lines("Zorblax".encode(), {0: "Zorb"}) == b"Zorb"
+assert patch_textasset_lines(script, {}) is script
+assert patch_textasset_lines(script, {99: "нет такой"}) is script
 # patch_textasset: dict и список, тип исходника сохраняется
 new_s = patch_textasset("Zorblax greets the hollow traveler",
                         {"m_Script": "Zorblax privet"})
@@ -297,7 +320,7 @@ with tempfile.TemporaryDirectory() as td:
                                 for e in entries]
     e = entries[0]
     assert e.file == rel, e.file
-    assert e.json_path == "asset://sharedassets9.assets/777/m_Script", \
+    assert e.json_path == "asset://sharedassets9.assets/777/m_Script#0", \
         e.json_path
     assert e.original == "Zorblax dedup probe chant", e.original
     assert e.context == "TextAsset:FableStone", e.context
@@ -317,8 +340,8 @@ with tempfile.TemporaryDirectory() as td:
     finally:
         restore()
     assert len(entries) == 2, [(e.json_path, e.original) for e in entries]
-    assert entries[0].json_path.endswith("/101/m_Script")
-    assert entries[1].json_path.endswith("/102/m_Script")
+    assert entries[0].json_path.endswith("/101/m_Script#0")
+    assert entries[1].json_path.endswith("/102/m_Script#0")
 print("   OK")
 
 print("9) apply: пропуск skip/пустых, запись валидной (UnityPy-стаб)...")
@@ -370,18 +393,22 @@ with tempfile.TemporaryDirectory() as td:
             json_path="asset://sharedassets9.assets/101/m_Script",
             context="TextAsset:FableStone", original="Zorblax probe",
             translation="Zorblax perevod", status="new")])
-        assert noup == {"files": 0, "strings": 0, "skipped": "no-unitypy"}, \
-            noup
+        assert noup.get("files") == 0 and noup.get("strings") == 0, noup
+        assert noup.get("skipped_by", {}).get("no-unitypy") == 1, noup
         # пустой вход без UnityPy — та же честная ветка
-        assert parser.apply(td, []) == \
-            {"files": 0, "strings": 0, "skipped": "no-unitypy"}
+        noup2 = parser.apply(td, [])
+        assert noup2.get("files") == 0 and \
+            noup2.get("skipped_by", {}).get("no-unitypy") == 1, noup2
     finally:
         parser._try_import_unitypy = orig  # type: ignore[method-assign]
 # wiring UnityModule -> parser (target_lang из проекта)
 with tempfile.TemporaryDirectory() as td:
     mod = UnityModule(td)
-    assert mod.features == {"file-translation", "font-patch"}
-    assert mod.font_patch(td) == {"patched": False, "reason": "todo"}
+    assert mod.features == {"files", "font"}
+    assert mod.maturity == "experimental"
+    fp = mod.font_patch(td)
+    assert fp["patched"] is False and fp["reason"] == "no-fonts", fp
+    assert fp["fonts"] == 0 and fp["tmp_fonts"] == 0, fp
     captured: dict = {}
     orig_apply = parser.apply
     try:

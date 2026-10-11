@@ -5,8 +5,9 @@
 1) CDPClient: close на неподключенном, join reader с timeout 2с,
    _reader=None после; call при send fail/timeout -> close+last_error;
    heartbeat ping_interval=20 в _ws_connect_compat.
-2) cdp_base._connect_page: retry-пауза 5x0.2 (не сплошной sleep 1.0).
-3) cdp_base detach: идемпотентный, disconnect сигналов, guard _detaching,
+2) app/live/cdp_base._connect_page: retry-пауза 5x0.2
+    (не сплошной sleep 1.0).
+3) app/live/cdp_base detach: идемпотентный, disconnect сигналов, guard _detaching,
    _inject_payload сохраняет scriptId, detach зовёт removeScript.
 4) browser.scan_ports: висящий probe не вешает скан (timeout 0.5с).
 """
@@ -21,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.transport.cdp.client import CDPClient, CDPError
 from app.transport.cdp import browser
-from app.core.tentacles.cdp_base import CDPTentacle
+from app.live.cdp_base import CDPTentacle
 
 
 print("1) close на неподключенном + double close...")
@@ -238,7 +239,7 @@ assert t._script_id == "sid-1", t._script_id
 print("   OK: scriptId =", t._script_id)
 
 print("12) _connect_page: retry-пауза кусочками 0.2...")
-import app.core.tentacles.cdp_base as cdp_mod
+import app.live.cdp_base as cdp_mod
 
 sleeps = []
 _real_sleep = cdp_mod.time.sleep

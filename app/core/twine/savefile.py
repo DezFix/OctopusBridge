@@ -4,7 +4,8 @@
 Формат экспортированного .save: base64-строка LZ-String
 (LZString.compressToBase64) над JSON-объектом:
     {"id": ..., "state": {"index": N, "history": [{"variables": {...}}]}}
-Текущие переменные — в history[state.index - 1] (активный момент).
+Текущие переменные — в history[state.index] (активный момент;
+index в SugarCube 0-based: моменты в массиве от старых к новым).
 
 LZ-String портирован с референс-реализации (MIT, pieroxy/lz-string) —
 самодостаточно, без внешних зависимостей.
@@ -15,7 +16,6 @@ import json
 import os
 import re
 import shutil
-import time
 from datetime import datetime
 
 _B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
@@ -107,6 +107,10 @@ def _decompress(length: int, reset_value: int, get_next_value) -> str | None:
 def lz_decompress_base64(compressed: str) -> str | None:
     """LZString.decompressFromBase64."""
     compressed = compressed.strip()
+    if not compressed:
+        # пустой/битый .save: без этого лямбда лезет в compressed[0]
+        # -> IndexError вместо "не раскодировалось" (None)
+        return None
     return _decompress(len(compressed), 32,
                        lambda i: _B64_ALPHABET.find(compressed[i]))
 
@@ -235,6 +239,15 @@ def write_save(path: str, data: dict, backup: bool = True):
         f.write(lz_compress_base64(text))
 
 
+def restore_backup(path: str) -> bool:
+    """Вернуть .save из .ob_backup. False — бэкапа не было."""
+    bak = path + ".ob_backup"
+    if not os.path.isfile(bak):
+        return False
+    shutil.copy2(bak, path)
+    return True
+
+
 def _deep_merge(base: dict, extra: dict) -> dict:
     """base + extra рекурсивно (как SugarCube State.deltaDecode)."""
     out = dict(base)
@@ -253,9 +266,13 @@ def _moments(state: dict) -> list:
 def _current_moment(data: dict) -> dict | None:
     state = data.get("state") or {}
     moments = _moments(state)
-    index = state.get("index", len(moments))
-    if 1 <= index <= len(moments):
-        return moments[index - 1]
+    # state.index в SugarCube 0-based: активный момент —
+    # history[index] (массив от старых к новым). Раньше читали
+    # [index - 1] — правки попадали в предыдущий момент, а
+    # игра грузила активный и не видела изменений.
+    index = state.get("index", len(moments) - 1)
+    if 0 <= index < len(moments):
+        return moments[index]
     return moments[-1] if moments else None
 
 
@@ -266,11 +283,12 @@ def get_variables(data: dict) -> dict:
     if not moments:
         return {}
     if state.get("delta"):
-        # delta-формат: первый момент полный, дальше — диффы до активного
-        index = state.get("index", len(moments))
-        index = max(1, min(index, len(moments)))
+        # delta-формат: первый момент полный, дальше — диффы
+        # до активного (index 0-based: дельта i == история i)
+        index = state.get("index", len(moments) - 1)
+        index = max(0, min(index, len(moments) - 1))
         merged: dict = {}
-        for moment in moments[:index]:
+        for moment in moments[:index + 1]:
             variables = moment.get("variables")
             if isinstance(variables, dict):
                 merged = _deep_merge(merged, variables)
@@ -298,17 +316,29 @@ def _path_parts(dotted: str) -> list:
     return parts
 
 
+#: Максимальный индекс списка в dot-path. Больше — ошибка, а не
+#: молчаливое создание гигантского массива: JSON на миллион элементов
+#: игра не переживает (Maximum call stack size exceeded при загрузке).
+MAX_LIST_INDEX = 65535
+
+
 def _set_nested(target: dict, dotted: str, value):
     """Записывает значение по dot-path с поддержкой индексов списков
     ('flags[0]', 'inv[1].qty'). Следующий сегмент пути заранее известен —
     промежуточные контейнеры создаются сразу нужного типа и сразу
     привязываются к родителю (потеря привязки = молчаливое ничегонеделание).
-    Путь, начинающийся с индекса, для словаря-корня бессмыслен — игнор."""
+    Путь, начинающийся с индекса, для словаря-корня бессмыслен — игнор.
+    Абсурдный индекс (> MAX_LIST_INDEX) — ValueError: лучше честная
+    ошибка в диалоге, чем битый сейв в игре.
+    """
     parts = _path_parts(dotted)
     if not parts:
         return
     if parts[0][0] == "idx":
         return
+    for kind, key in parts:
+        if kind == "idx" and key > MAX_LIST_INDEX:
+            raise ValueError(f"слишком большой индекс в пути: {dotted}")
     node: object = target
     for i, (kind, key) in enumerate(parts[:-1]):
         nxt = parts[i + 1][0]
@@ -403,7 +433,11 @@ def write_slots(game_dir: str, base_name: str, slots: list,
         # id присылает игра — чистим от ../ и прочего (иначе запись
         # уйдёт за пределы папки игры)
         sid = re.sub(r'[^\w\-]+', '_', str(s.get('id', 'x'))) or 'x'
-        stamp = fallback_ts or time.strftime('%Y%m%d-%H%M%S')
+        # date:0/отсутствует (webapp шлёт 0 при пустом saveDate) -
+        # стабильная заглушка: иначе имя файла меняется на каждый
+        # синк и дубли копятся (документировано: повторный синк
+        # перезаписывает те же файлы)
+        stamp = fallback_ts or '19700101-000000'
         date = s.get('date')
         if date:
             try:

@@ -757,7 +757,7 @@ class CheatTab(QWidget):
         engine = self.main.create_engine("files")
         if engine is None:
             return
-        translator = Translator(engine, tm=self.main.tm,
+        translator = Translator(engine,
                                 glossary=self.main.glossary)
         tgt = self.main.settings.value("target_lang", "ru")
         self.busy_names.start(TR("cheat_names_translating"))

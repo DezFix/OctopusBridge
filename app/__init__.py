@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import sys
 
-__version__ = "7.29"
+__version__ = "7.32"
 
 
 def is_frozen() -> bool:
@@ -37,7 +37,7 @@ def user_data_dir() -> str:
 
 
 def projects_dir() -> str:
-    """Папка проектов (.ob.json, tm.sqlite)."""
+    """Папка проектов (.ob.json)."""
     d = os.path.join(user_data_dir(), "projects")
     os.makedirs(d, exist_ok=True)
     return d
