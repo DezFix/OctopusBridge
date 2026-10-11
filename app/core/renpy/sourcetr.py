@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 from app.core.io import BackupStore, atomic_write_text
 
@@ -67,34 +68,106 @@ def _find_literal_patterns(text: str, literal: str):
         yield pos, pos + len(needle)
 
 
+#: строки, которые игра ИСПОЛНЯЕТ или использует как ключи/пути.
+#: Переведение такой строки ломает игру: реальный случай из SR24 —
+# `eval(preload_assets_condition)` подаёт строку в py_compile как код,
+#: и русский текст вместо условия даёт SyntaxError на старте.
+_RE_USED_AS_CODE = re.compile(r"\b(eval|exec|compile)\s*\(", re.IGNORECASE)
+_RE_CODE_FRAGMENT = re.compile(
+    r"[=]|(==)|(=>)|[\+\-\*/%<>!&|^~:]|\b(and|or|not|is|None|True|False"
+    r"|lambda|import|def|class|return|for|while|if|else|elif)\b")
+_RE_PATH_LIKE = re.compile(
+    r"[\\/]|\.(py|rpy|ogg|mp3|wav|json|png|jpg|ttf|webp|rpyc)\b")
+
+
+def _line_is_code_position(line: str) -> bool:
+    """Строка кода/настройки: литералы на ней переводить нельзя."""
+    if _RE_USED_AS_CODE.search(line):
+        return True
+    if line.lstrip().startswith(("import ", "from ", "def ", "class ",
+                                 "return ", "yield ", "assert ",
+                                 "raise ", "while ", "for ", "if ",
+                                 "elif ", "else:", "with ", "del ",
+                                 "global ", "print ", "lambda ")):
+        return True
+    return False
+
+
 def translate_text(text: str, mapping: dict) -> tuple[str, int, list]:
     """Заменить литералы в тексте .rpy на переводы.
 
     mapping: {оригинал (без кавычек): перевод}.
     Возвращает (новый текст, сколько заменено, пропущенные оригиналы).
+
+    Не переводим строки, от которых зависит КОД: всё, что стоит на строках
+    с eval/exec/import/def и т.п., и всё, что похоже на путь, идентификатор
+    или выражение. Иначе игра падает на старте (SR24: eval(...) строки).
     """
     if not mapping:
         return text, 0, []
+
+    lines = text.split("\n")
+    out_lines: list[str] = []
+    hits = 0
+    missed: list[str] = []
+    for line in lines:
+        guard = _line_is_code_position(line)
+        if guard:
+            for orig in mapping:
+                if '"%s"' % _escape(orig) in line:
+                    missed.append(orig)
+            out_lines.append(line)
+            continue
+        new_line, count, _miss = _replace_in_line(line, mapping)
+        hits += count
+        for orig in _miss:
+            if orig not in missed:
+                missed.append(orig)
+        out_lines.append(new_line)
+    return "\n".join(out_lines), hits, missed
+
+
+def _replace_in_line(line: str, mapping: dict) -> tuple[str, int, list]:
+    """Замена литералов внутри одной строки."""
     hits: list[tuple[int, int, str]] = []
     missed: list[str] = []
     for orig, tr in mapping.items():
+        # Сначала отказ, потом запись: иначе continue ниже не отменял бы
+        # уже добавленную замену и защита была бы бездействующей.
+        if _RE_CODE_FRAGMENT.search(orig) or _RE_PATH_LIKE.search(orig):
+            missed.append(orig)
+            continue
         span = None
-        for span in _find_literal_patterns(text, orig):
+        for span in _find_literal_patterns(line, orig):
             hits.append((span[0], span[1], tr))
             break
         if span is None:
             missed.append(orig)
     if not hits:
-        return text, 0, missed
+        return line, 0, missed
     hits.sort()
-    out: list[str] = []
+    parts: list[str] = []
     last = 0
     for start, end, tr in hits:
-        out.append(text[last:start])
-        out.append('"%s"' % _escape(tr))
+        parts.append(line[last:start])
+        parts.append('"%s"' % _escape(tr))
         last = end
-    out.append(text[last:])
-    return "".join(out), len(hits), missed
+    parts.append(line[last:])
+    return "".join(parts), len(hits), missed
+
+
+def _decode(data: bytes) -> tuple[str, str] | None:
+    """Распаковать байты .rpy. Возвращает (текст, кодировка) или None.
+
+    Строгий разбор: `errors="replace"` тут означал бы, что мы молча
+    вписываем «замены» в не-ASCII файл и ломаем код игры. Лучше отказ.
+    """
+    for enc in ("utf-8", "cp1251", "cp932", "latin-1"):
+        try:
+            return data.decode(enc), enc
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return None
 
 
 def apply_sourced(game_dir: str, entries, lang: str = "") -> dict:
@@ -123,7 +196,7 @@ def apply_sourced(game_dir: str, entries, lang: str = "") -> dict:
         by_file.setdefault(getattr(e, "file", ""), {})[orig] = tr
 
     stats = {"files": 0, "strings": 0, "written": [], "missed": 0,
-             "errors": [], "backup_dir": ""}
+             "skipped": [], "errors": [], "backup_dir": ""}
     if not by_file:
         return stats
 
@@ -142,6 +215,7 @@ def apply_sourced(game_dir: str, entries, lang: str = "") -> dict:
         if not mapping:
             continue
         from_archive = path.startswith("rpa://")
+        enc = "utf-8"
         try:
             if from_archive:
                 rest = path[len("rpa://"):]
@@ -152,10 +226,18 @@ def apply_sourced(game_dir: str, entries, lang: str = "") -> dict:
                 if arc is None:
                     continue
                 raw = arc.read(fname)
-                text = raw.decode("utf-8", "replace")
+                got = _decode(raw)
+                if got is None:
+                    stats["skipped"].append(rel)
+                    continue
+                text, enc = got
             else:
-                with open(path, encoding="utf-8", errors="replace") as f:
-                    text = f.read()
+                with open(path, "rb") as f:
+                    got = _decode(f.read())
+                if got is None:
+                    stats["skipped"].append(rel)
+                    continue
+                text, enc = got
         except Exception as e:  # noqa: BLE001
             stats["errors"].append("%s: %s" % (rel, str(e)[:60]))
             continue
@@ -180,7 +262,7 @@ def apply_sourced(game_dir: str, entries, lang: str = "") -> dict:
                 store.backup(out_path)
             except Exception:
                 pass    # оригинала нет — нечего бэкапить
-            atomic_write_text(out_path, new_text, encoding="utf-8")
+            atomic_write_text(out_path, new_text, encoding=enc)
         except OSError as e:
             stats["errors"].append("%s: %s" % (rel, str(e)[:60]))
             continue
