@@ -123,6 +123,61 @@ _RE_SCREEN_KW = re.compile(r"(?:text|textbutton|label|input)(?=\s|['\"(])")
 # always column 0).
 _SCREEN_STACK: list[int] = []
 
+# Ren'Py ищет перевод реплики ПО ИМЕНОВАНИЮ УЗЛА, а не по строке:
+# `translate <lang> <label>:`. Без метки перевод не подставляется вообще
+# (проверено по исходникам движка: renpy/translation/__init__.py,
+# lookup_translate() падает в default_translates[identifier], то есть
+# в оригинал). Раньше метка при разборе не сохранялась вовсе, и весь
+# перевод уезжал в `translate <lang> strings:` — словарь для
+# python-строк, который реплики не переводит.
+RE_LABEL = re.compile(r"^[ \t]*label[ \t]+([A-Za-z_][A-Za-z0-9_]*)")
+#: имя метки, внутри которой сейчас разбирается файл ("" — вне метки)
+_CURRENT_LABEL: str = ""
+
+
+def _entry_label(entry) -> str:
+    """Метка из json_path записи ('' — метки не было)."""
+    raw = str(getattr(entry, "json_path", "") or "")
+    if raw.startswith("label:"):
+        _, _, rest = raw.partition(":")
+        name, _, _ = rest.partition("|")
+        return name
+    return ""
+
+
+#: вид строки -> блок перевода Ren'Py. Экраны Ren'Py держит ОТДЕЛЬНО от
+#: меток (`translate <lang> screens:`), поэтому текст UI нельзя класть в
+#: блок метки — он просто не применится, и интерфейс останется в
+#: оригинале.
+_KIND_BLOCK = {
+    "dialogue": "label",
+    "choice": "label",
+    "menu-caption": "label",
+    "translate-block": "label",
+    "screen": "screens",
+}
+
+
+def _entry_kind(entry) -> str:
+    """Вид строки из контекста ('<путь>:<строка>:<вид>')."""
+    ctx = str(getattr(entry, "context", "") or "")
+    tail = ctx.rsplit(":", 1)[-1] if ":" in ctx else ""
+    return tail if tail in _KIND_BLOCK or tail in ("_()", "code") else ""
+
+
+def _entry_block(entry) -> str:
+    """Куда писать запись: метка / screens / strings."""
+    kind = _entry_kind(entry)
+    want = _KIND_BLOCK.get(kind, "strings")
+    if want == "label" and not _entry_label(entry):
+        return "strings"      # метки нет — иначе перевод не подставится
+    return want
+
+
+def _reset_label() -> None:
+    global _CURRENT_LABEL
+    _CURRENT_LABEL = ""
+
 
 def _reset_screen_stack() -> None:
     """Reset the screen-block tracker (isolation between files/tests)."""
@@ -886,7 +941,7 @@ def extract(game_dir: str, extract_lang: str | None = None
     next_id = 1
     seen_originals: set[str] = set()
 
-    def add(file: str, context: str, original: str):
+    def add(file: str, context: str, original: str, label: str = ""):
         nonlocal next_id
         if not original or len(original.strip()) < 2:
             return
@@ -900,8 +955,12 @@ def extract(game_dir: str, extract_lang: str | None = None
         if key in seen_originals:
             return
         seen_originals.add(key)
+        # Метка едет в json_path (служебное поле, в UI не показывается):
+        # без неё Ren'Py не сможет подставить перевод реплики.
+        prefix = ("label:%s|" % label) if label else ""
         entries.append(TranslationEntry(
-            id=next_id, file=file, json_path=f"ctx:{context[:60]}",
+            id=next_id, file=file,
+            json_path="%sctx:%s" % (prefix, context[:60]),
             context=context, original=original))
         next_id += 1
 
@@ -1130,6 +1189,12 @@ def _extract_line(rel: str, n: int, line: str, add) -> None:
     """Extract strings from a single .rpy source line."""
     if len(line) > 20000 or RE_COMMENT.match(line):
         return
+    # метка открывает новый блок перевода: всё до следующей метки
+    # принадлежит ей (Ren'Py ищет перевод реплики по метке)
+    global _CURRENT_LABEL
+    _lm = RE_LABEL.match(line)
+    if _lm:
+        _CURRENT_LABEL = _lm.group(1)
     # Backslash-newline glues physical lines (joining happens in
     # extract; here we normalize a ready buffer so the STR regexes
     # see one logical line).
@@ -1201,7 +1266,7 @@ def _extract_line(rel: str, n: int, line: str, add) -> None:
     for text, kind in found:
         # текст из кавычек сохраняем дословно (см. add) — пробелы значимы
         if text:
-            add(rel, f"{rel}:{n}:{kind}", text)
+            add(rel, f"{rel}:{n}:{kind}", text, _CURRENT_LABEL)
 
 
 def _is_ob_artifact(fname: str) -> bool:
@@ -1395,16 +1460,50 @@ def apply(game_dir: str, entries: list[TranslationEntry],
         # Атомарно (tmp+rename): обрыв посреди trunc+write раньше оставлял
         # усечённый ob_*.rpy, и Ren'Py падал на старте игры.
         from app.core.io import atomic_write_text as _atomic_write
-        chunks = [f"# OctopusBridge translation ({rel})\n"
-                  f"translate {lang} strings:\n\n"]
+        # РАЗДЕЛЕНИЕ ПО БЛОКАМ. Ren'Py переводит реплику по МЕТКЕ:
+        # `translate <lang> <label>:`. Всё в одном `strings:` — словарь
+        # для python-строк, и реплики он не переводит вовсе (доказано
+        # по исходникам движка). Поэтому:
+        #   * есть метка  -> блок по метке (реплики, меню, экраны);
+        #   * метки нет   -> `strings:` (python-строки, скрипты).
+        by_label: dict[str, list[TranslationEntry]] = {}
+        screens: list[TranslationEntry] = []
+        plain: list[TranslationEntry] = []
         for e in deduped:
-            if e.original not in existing_olds:
-                new_count += 1
-            digest = hashlib.sha1(
-                e.original.encode("utf-8")).hexdigest()[:12]
-            chunks.append(f"    # ob-sha1 {digest}\n")
-            chunks.append(f'    old "{_escape(e.original)}"\n')
-            chunks.append(f'    new "{_escape(e.translation)}"\n\n')
+            where = _entry_block(e)
+            if where == "label":
+                by_label.setdefault(_entry_label(e), []).append(e)
+            elif where == "screens":
+                screens.append(e)
+            else:
+                plain.append(e)
+        chunks = [f"# OctopusBridge translation ({rel})\n"]
+        for label in sorted(by_label):
+            chunks.append(f"translate {lang} {label}:\n\n")
+            for e in by_label[label]:
+                if e.original not in existing_olds:
+                    new_count += 1
+                chunks.append(f'    old "{_escape(e.original)}"\n')
+                chunks.append(f'    new "{_escape(e.translation)}"\n\n')
+        if screens:
+            chunks.append(f"translate {lang} screens:\n\n")
+            for e in screens:
+                if e.original not in existing_olds:
+                    new_count += 1
+                chunks.append(f'    old "{_escape(e.original)}"\n')
+                chunks.append(f'    new "{_escape(e.translation)}"\n\n')
+        if plain:
+            chunks.append(f"translate {lang} strings:\n\n")
+            for e in plain:
+                if e.original not in existing_olds:
+                    new_count += 1
+                digest = hashlib.sha1(
+                    e.original.encode("utf-8")).hexdigest()[:12]
+                chunks.append(f"    # ob-sha1 {digest}\n")
+                chunks.append(f'    old "{_escape(e.original)}"\n')
+                chunks.append(f'    new "{_escape(e.translation)}"\n\n')
+        if not by_label and not screens and not plain:
+            continue
         try:
             _atomic_write(out_path, "".join(chunks), encoding="utf-8")
         except OSError:

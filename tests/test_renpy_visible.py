@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """Ren'Py player-visible text coverage: conditional menu choices,
 two-word speakers (image tags), single quotes, show/scene text,
 screen label/textbutton/input, menu caption, __()/_p(), f-/rf-
@@ -196,7 +196,7 @@ t = texts_of("screen s:\n"
 assert "Start" in t, t
 got9 = []
 renpy._reset_screen_stack()
-renpy._extract_line("t.rpy", 1, '    x = _p("One more line")', lambda f, c, o: got9.append(o))
+renpy._extract_line("t.rpy", 1, '    x = _p("One more line")', lambda f, c, o, *rest: got9.append(o))
 assert "One more line" in got9, got9
 print("   OK")
 
@@ -208,7 +208,7 @@ assert "Hello {name}" in t, t
 assert "Raw text" in t, t
 got10 = []
 renpy._reset_screen_stack()
-renpy._extract_line("t.rpy", 1, '    x = _(f"Gold: {gold}")', lambda f, c, o: got10.append(o))
+renpy._extract_line("t.rpy", 1, '    x = _(f"Gold: {gold}")', lambda f, c, o, *rest: got10.append(o))
 assert "Gold: {gold}" in got10, got10
 print("   OK")
 
@@ -257,3 +257,4 @@ assert not any("#ff8800" in x or "logo.png" in x or "example.com" in x
 print("   OK")
 
 print("OK: visible RenPy coverage checks passed")
+

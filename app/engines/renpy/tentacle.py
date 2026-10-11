@@ -25,6 +25,13 @@ FONT_REL = "ob_fonts/" + FONT_NAME
 AGENT_RPY = "ob_agent.rpy"
 
 
+#: 32-битная сборка Ren'Py. У неё адресное пространство ~2 ГБ, и на
+#: игре с архивом в 1.5 ГБ запуск падает с MemoryError прямо при
+#: загрузке (проверено на SR24: traceback -> loader.read). Рядом лежит
+#: рабочая 64-битная — её и надо запускать.
+_RE_32BIT = re.compile(r"(?:[-_ ]?32|x86|win32)$", re.IGNORECASE)
+
+
 def find_launcher(game_dir: str) -> str | None:
     """Исполняемый файл Ren'Py-игры."""
     for name in ("Game.exe", "game.exe", "renpy.exe", "renpy.sh"):
@@ -37,10 +44,29 @@ def find_launcher(game_dir: str) -> str | None:
             exe = os.path.join(sdk, name)
             if os.path.isfile(exe):
                 return exe
+    cands = []
     for exe in glob.glob(os.path.join(game_dir, "*.exe")):
         base = os.path.splitext(os.path.basename(exe))[0].lower()
         if base not in ("uninstall", "setup", "unins000"):
-            return exe
+            cands.append(exe)
+    if not cands:
+        return None
+    # Приоритет: одноимённый exe (он и есть «настоящая» сборка игры),
+    # затем явно 64-битный, и лишь в последнюю очередь 32-битный.
+    game_key = os.path.basename(os.path.normpath(game_dir)).lower()
+
+    def rank(path: str) -> tuple:
+        base = os.path.splitext(os.path.basename(path))[0]
+        score = 0
+        if _RE_32BIT.search(base):
+            score += 100
+        if "64" in base.lower():
+            score -= 10
+        if base.lower() == game_key:
+            score -= 50
+        return (score, os.path.basename(path))
+
+    return sorted(cands, key=rank)[0]
     return None
 
 
