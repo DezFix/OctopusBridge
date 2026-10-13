@@ -1635,8 +1635,9 @@ def apply(game_dir: str, entries: list[TranslationEntry],
             if not (fname.startswith("ob_")
                     and fname.endswith((".rpy", ".rpyc"))):
                 continue
-            if fname in ("ob_activate.rpy", "ob_activate.rpyc"):
-                continue  # пересоздаётся ниже, не осиротевший
+            # ob_activate.rpy больше НЕ создаётся в tl/<lang>/: активатор
+            # языка переехал в корень game/ (см. _ACTIVATE_NAME). Старый файл
+            # от прежних версий не нужен и только путает — вычищаем как осиротевший.
             path = os.path.join(tl_dir, fname)
             if path in written_paths:
                 continue
@@ -1688,8 +1689,14 @@ def apply(game_dir: str, entries: list[TranslationEntry],
         # и отключал ВСЕ переводы (_OB_DICT = {})
         _atomic_json(dict_path, full_dict, ensure_ascii=False)
 
-        activate_path = os.path.join(game_dir, "game", "tl", lang,
-                                     "ob_activate.rpy")
+# Активатор языка лежит в КОРНЕ game/, а не в tl/<lang>/.
+        # Ren'Py не исполняет файлы из tl/<язык>/ как обычные скрипты: это
+        # данные перевода для языка, который должен быть уже включён. Проверено
+        # экспериментом на Shoretown Saga: init-блок с config.language внутри
+        # tl/russian/ НЕ выполнялся, а тот же блок в game/ выполнялся.
+        # Отсюда и было «перевод есть, а в игре английский»: штатные блоки
+        # translate не включались, потому что язык никто не переключал.
+        activate_path = os.path.join(game_dir, "game", _ACTIVATE_NAME)
         _atomic_text(activate_path,
                      _ACTIVATE_TEMPLATE.format(lang=lang),
                      encoding="utf-8")
@@ -1697,6 +1704,10 @@ def apply(game_dir: str, entries: list[TranslationEntry],
     stats["skipped_total"] = sum(stats["skipped_by"].values())
     return stats
 
+
+#: Имя активатора в корне game/. Именно в корне, потому что Ren'Py не
+#: исполняет файлы из tl/<lang>/ (см. комментарий у записи в apply()).
+_ACTIVATE_NAME = "zz_ob_lang.rpy"
 
 # Шаблон рантайм-активатора: включает язык игры и ставит FontGroup на
 # каждый именованный стиль.

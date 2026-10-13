@@ -80,8 +80,11 @@ with tempfile.TemporaryDirectory() as td:
     assert "Он сказал \"привет\" и ушёл" in ob, list(ob)
     assert ob["Строка с \n переносом и café"] == \
         "TR:Строка с \n переносом и café"
-    # ob_activate.rpy пересоздан
-    assert os.path.isfile(os.path.join(
+# Активатор языка лежит в КОРНЕ game/, а не в tl/russian/:
+    # Ren'Py не исполняет файлы из tl/<язык>/ (проверено на игре —
+    # init-блок с config.language там не выполнялся).
+    assert os.path.isfile(os.path.join(td, "game", renpy._ACTIVATE_NAME))
+    assert not os.path.isfile(os.path.join(
         td, "game", "tl", "russian", "ob_activate.rpy"))
     # повторная генерация идемпотентна (old читается и
     # раскодируется обратно)

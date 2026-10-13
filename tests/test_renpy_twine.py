@@ -170,7 +170,10 @@ with tempfile.TemporaryDirectory() as td:
     assert stats2["removed_orphans"] == 2, stats2
     remaining = [f for f in os.listdir(tl_dir)
                  if f.startswith("ob_") and f.endswith(".rpy")]
-    assert "ob_activate.rpy" in remaining and "ob_game__script.rpy" in remaining
+    # ob_activate.rpy больше не создаётся в tl/: активатор языка живёт в
+    # корне game/ (Ren'Py не исполняет файлы из tl/<язык>/).
+    assert "ob_game__script.rpy" in remaining
+    assert "ob_activate.rpy" not in remaining
     for f in remaining:
         content = open(os.path.join(tl_dir, f), encoding="utf-8").read()
         for line in content.splitlines():
