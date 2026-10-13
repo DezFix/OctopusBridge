@@ -28,10 +28,11 @@ def mk(orig, ctx, label, trans):
 print("1) python-строки не попадают ни в один блок...")
 say = mk("Hello", "t.rpy:2:dialogue", "start", "Привет")
 ui = mk("Settings", "t.rpy:9:screen", "start", "Настройки")
-py1 = mk("Gold", "t.rpy:11:_()", "start", "Золото")
+py1 = mk("Gold", "t.rpy:11:python:gold_text", "start", "Золото")
 nolab = mk("Plain", "t.rpy:12:dialogue", "", "Просто")
-assert rp._entry_block(py1) == "strings"
-assert rp._entry_block(nolab) == "strings"
+# '' — некуда писать: 'strings:' запрещён, метки нет
+assert rp._entry_block(py1) == ""
+assert rp._entry_block(nolab) == ""
 
 with tempfile.TemporaryDirectory() as td:
     os.makedirs(os.path.join(td, "game"))
@@ -53,6 +54,12 @@ with tempfile.TemporaryDirectory() as td:
     assert "Gold" not in text, "python-строка записана в файл перевода"
     assert "Plain" not in text, "строка без метки записана в файл перевода"
     assert res.get("strings_dropped", 0) == 2, res
+    # ... и каждая пропущенная строка объяснена (AGENTS.md 5A: причина
+    # пропуска обязательна — иначе «применил, а в игре пусто» без ответа)
+    assert res.get("skipped_total") == 2, res
+    assert res.get("skipped_by") == {"python-expression": 1,
+                                     "no-label": 1}, res
+    assert res.get("strings") == 2, res
 print("   OK")
 
 print("2) блок без структурных строк не создаётся...")

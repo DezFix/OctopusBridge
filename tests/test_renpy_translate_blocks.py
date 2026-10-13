@@ -30,7 +30,7 @@ rp._extract_line("t.rpy", 2, '    e "Hello"', collect)
 assert got[-1][1] == "Hello", got
 print("   OK")
 
-print("2) запись разносится по блокам: метка / screens / strings...")
+print("2) запись разносится по блокам: метка / screens / никуда...")
 
 
 def mk(orig, ctx, label, trans):
@@ -41,12 +41,18 @@ def mk(orig, ctx, label, trans):
 
 say = mk("Hello", "t.rpy:2:dialogue", "start", "Привет")
 ui = mk("Settings", "t.rpy:9:screen", "start", "Настройки")
-py = mk("Gold", "t.rpy:11:_()", "start", "Золото")
+py = mk("Gold", "t.rpy:11:python:gold_text", "start", "Золото")
 nolab = mk("Plain", "t.rpy:12:dialogue", "", "Просто")
 assert rp._entry_block(say) == "label", rp._entry_block(say)
 assert rp._entry_block(ui) == "screens", rp._entry_block(ui)
-assert rp._entry_block(py) == "strings", rp._entry_block(py)
-assert rp._entry_block(nolab) == "strings", "без метки перевод не подставится"
+# '' — писать некуда: 'strings:' запрещён, метки нет
+assert rp._entry_block(py) == "", rp._entry_block(py)
+assert rp._entry_block(nolab) == "", "без метки перевод не подставится"
+# и у обеих запись обязана иметь ОБЪЯСНЕНИЕ, почему она не берётся
+assert rp._entry_skip_reason(py) == "python-expression", \
+    rp._entry_skip_reason(py)
+assert rp._entry_skip_reason(nolab) == "no-label", rp._entry_skip_reason(nolab)
+assert rp._entry_skip_reason(say) == "" and rp._entry_skip_reason(ui) == ""
 print("   OK")
 
 print("3) apply пишет блоки по меткам, а не один strings:...")
@@ -76,6 +82,12 @@ with tempfile.TemporaryDirectory() as td:
     assert "Settings" not in blocks.get("start", ""), \
         "текст экрана не должен попадать в блок метки"
     assert "Settings" in blocks.get("screens", ""), blocks
+print("   OK")
+
+print("3a) имена персонажей (who=) переводятся в блоке МЕТКИ...")
+who = mk("Alice", "t.rpyc:speaker", "start", "Алиса")
+assert rp._entry_block(who) == "label", rp._entry_block(who)
+assert rp._entry_skip_reason(who) == "", rp._entry_skip_reason(who)
 print("   OK")
 
 print("4) метка не теряется при извлечении...")

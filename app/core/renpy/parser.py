@@ -6,10 +6,12 @@ Extraction:
 - .rpyc compiled files: RPC2 unpickling with mock AST, walker extracts
   dialogues (Say.who/what), menu choices (Menu.items), Character names (Define)
 
-Generation: official Ren'Py mechanism — game/tl/<lang>/*.rpy with blocks:
-    translate russian strings:
-        old "original"
-        new "translation"
+Generation: штатный механизм Ren'Py — game/tl/<lang>/ob_*.rpy с блоками
+    translate <lang> <label>:      (реплики, имена персонажей, меню)
+    translate <lang> screens:       (текст интерфейса)
+Блок `translate <lang> strings:` НЕ используется никогда: он подменяет
+python-строки прямо в коде игры и ломает игры, построенные на строковых
+словарях (см. _entry_skip_reason).
 """
 from __future__ import annotations
 
@@ -148,28 +150,93 @@ def _entry_label(entry) -> str:
 #: меток (`translate <lang> screens:`), поэтому текст UI нельзя класть в
 #: блок метки — он просто не применится, и интерфейс останется в
 #: оригинале.
+#:
+#: Ключи — ТОЛЬКО те виды, которые движок кладёт в блок перевода как
+#: отображаемый текст. Виды вне таблицы (python-литералы, маркеры _())
+#: переводятся другим механизмом и в блоки меток/экранов НЕ пишутся:
+#: подмена python-строки ломает игры, построенные на строковых словарях.
 _KIND_BLOCK = {
     "dialogue": "label",
+    "speaker": "label",
     "choice": "label",
     "menu-caption": "label",
     "translate-block": "label",
     "screen": "screens",
 }
 
+#: вид строки -> причина пропуска. Причина обязательна (AGENTS.md 5A):
+#: «применил, а в игре пусто» без объяснения недопустимо.
+_SKIP_REASON = {
+    "python": "python-expression",
+    "_()": "string-marker",
+    "code": "python-expression",
+    "translated_string": "other-language",
+}
+
+#: маркер python-узла в контексте записи. Подсказка за видом
+#: ('python:action_image') содержит ':' (это кусок исходника игры), поэтому
+#: вид разбирать по последнему сегменту нельзя — ищем сам узел.
+_RE_PY_NODE = re.compile(r"(?:^|:)python(?::|$)")
+
 
 def _entry_kind(entry) -> str:
-    """Вид строки из контекста ('<путь>:<строка>:<вид>')."""
+    """Структурный вид узла Ren'Py, из которого взята запись.
+
+    Контекст кодирует вид суффиксом: '<путь>:<строка>:<вид>' (для .rpy) или
+    '<путь>:<вид>' (для узлов .rpyc). Вид бывает составным — литералы из
+    python-узлов помечаются подсказкой ('python:action_image',
+    'python:key=q1'), и это исходный код игры, а не имя узла.
+
+    Для решения «брать/не брать» подсказка не нужна и даже вредна: она
+    маскирует сам факт, что строка взята из ВЫРАЖЕНИЯ. Поэтому составной
+    вид сводится к своему узлу: 'python:...' -> 'python'.
+    """
     ctx = str(getattr(entry, "context", "") or "")
-    tail = ctx.rsplit(":", 1)[-1] if ":" in ctx else ""
-    return tail if tail in _KIND_BLOCK or tail in ("_()", "code") else ""
+    if not ctx or ":" not in ctx:
+        return ""
+    if _RE_PY_NODE.search(ctx):
+        return "python"
+    return ctx.rsplit(":", 1)[-1]
+
+
+def _entry_skip_reason(entry) -> str:
+    """Структурная причина, по которой запись НЕЛЬЗЯ положить в блок
+    перевода Ren'Py ('' — запись берём).
+
+    Решение опирается на ВИД УЗЛА, из которого строка получена, а НЕ на вид
+    текста (AGENTS.md: п. «честность важнее удобства»):
+
+    * `Say`/`TranslateSay`/`Menu`/экран — отображаемый текст, Ren'Py сам
+      подставляет его по МЕТКЕ (`translate <lang> <label>:`) или по блоку
+      экранов. Такое берём.
+    * `Define`/`Default`/`Python`/`python:`/`$` — строковый литерал внутри
+      ВЫРАЖЕНИЯ. Это либо ключ словаря, либо значение, которое игра ищет и
+      сравнивает сама. Перевод такого ключа ломает игру: на SR24
+      мод-лоадер строит словари из строк и на переведённом ключе падает
+      «'unicode' object has no attribute 'get'» на старте. Не берём.
+      `translate <lang> strings:` здесь не помощник — он подменяет
+      python-строки ПРЯМО в коде игры, это и есть поломка.
+    """
+    kind = _entry_kind(entry)
+    if kind in _KIND_BLOCK:
+        if _KIND_BLOCK[kind] == "label" and not _entry_label(entry):
+            # отображаемый текст вне метки: блок `translate <lang> <label>:`
+            # без метки не существует, а `strings:` запрещён
+            return "no-label"
+        return ""
+    return _SKIP_REASON.get(kind, "other-node")
 
 
 def _entry_block(entry) -> str:
-    """Куда писать запись: метка / screens / strings."""
+    """Куда писать запись: 'label' / 'screens' / '' (писать нельзя).
+
+    '' означает ровно то же, что раньше означал 'strings': блока, в который
+    такую запись можно поставить безопасно, не существует.
+    """
     kind = _entry_kind(entry)
-    want = _KIND_BLOCK.get(kind, "strings")
+    want = _KIND_BLOCK.get(kind, "")
     if want == "label" and not _entry_label(entry):
-        return "strings"      # метки нет — иначе перевод не подставится
+        return ""             # метки нет — иначе перевод не подставится
     return want
 
 
@@ -365,8 +432,9 @@ def _string_parts(text) -> list[str]:
     Ren'Py хранит интерполированный текст списком — например
     Say(what=["Привет, ", <var>, "!"]) — это части реплики вокруг
     вставок переменных. Переводим строковые элементы по отдельности:
-    рантайм-хук ob_dict подменяет каждый элемент списка своим переводом
-    (см. _ACTIVATE_TEMPLATE, ветку isinstance(text, list)).
+    блок `translate <lang> <label>:` сопоставляет old-строки с любой
+    строковой частью реплики, поэтому каждая часть переводится своим
+    old/new.
 
     Вставки переменных — объекты PyExpr/RawCode (в Ren'Py 7.4+/8.x это
     str-подклассы, mock-восстановленные как _MockPyExpr) — НЕ текст:
@@ -666,10 +734,25 @@ def _code_literals(code) -> list[tuple[str, str]]:
             if isinstance(c, str) and _looks_like_text(c)]
 
 
-def _walk_ast(stmts) -> list[tuple[str, str]]:
-    """Walk Ren'Py AST, extracting (kind, text) pairs."""
+def _walk_ast(stmts, labeled: bool = False) -> list[tuple]:
+    """Walk Ren'Py AST, extracting (kind, text) pairs.
+
+    labeled=True -> (kind, text, метка) тройками. Метка нужна, потому что
+    Ren'Py ищет перевод реплики по МЕТКЕ (`translate <lang> <label>:`),
+    а .rpyc-игры (а это почти все реальные игры: исходников .rpy на диске
+    нет) разбираются только по AST. Раньше узел Label проглатывался без
+    сохранения имени, и ВЕСЬ текст из .rpyc терял метку — а запись без
+    метки ни в один блок перевода не попадает.
+    """
     result = []
     visited = set()
+    # имя текущей метки: обновляется на каждом узле Label
+    state = {"label": ""}
+
+    def _add(item):
+        # метка фиксируется В МОМЕНТ добавления: после обхода она уже
+        # была бы «последней меткой файла»
+        result.extend(((item[0], item[1], state["label"]),))
 
     def walk(nodes):
         if isinstance(nodes, (list, tuple)):
@@ -684,29 +767,44 @@ def _walk_ast(stmts) -> list[tuple[str, str]]:
         # _mock_SLDisplayable) — нормализуем для ветвлений.
         base = nt.removeprefix("_mock_")
 
+        if nt == "Label":
+            # Узел Label ВЛАДЕЕТ своим блоком: всё, что внутри него,
+            # принадлежит этой метке, а всё после узла — уже нет
+            # (в .rpy это код уровня файла, у Ren'Py он выполняется вне
+            # метки). Поэтому метка восстанавливается на прежнюю при
+            # выходе из блока, иначе реплика верхнего уровня после
+            # последней метки молча уехала бы в чужой блок перевода.
+            name = getattr(nodes, "name", "")
+            prev = state["label"]
+            if isinstance(name, str) and name:
+                state["label"] = name
+            walk(getattr(nodes, "block", []) or [])
+            state["label"] = prev
+            return
+
         if nt == "Say":
             what = getattr(nodes, "what", None)
             who = getattr(nodes, "who", None)
             for part in _string_parts(what):
-                result.append(("dialogue", part))
+                _add(("dialogue", part))
             for part in _string_parts(who):
-                result.append(("speaker", part))
+                _add(("speaker", part))
 
         elif nt == "TranslateSay":
             what = getattr(nodes, "what", None)
             for part in _string_parts(what):
-                result.append(("dialogue", part))
+                _add(("dialogue", part))
             who = getattr(nodes, "who", None)
             for part in _string_parts(who):
-                result.append(("speaker", part))
+                _add(("speaker", part))
 
         elif nt == "Menu":
             items = getattr(nodes, "items", []) or []
             for item in items:
-                label = item[0] if isinstance(item, (list, tuple)) and len(item) > 0 else None
-                for part in _string_parts(label):
+                _cap = item[0] if isinstance(item, (list, tuple)) and len(item) > 0 else None
+                for part in _string_parts(_cap):
                     if len(part) >= 2:
-                        result.append(("choice", part))
+                        _add(("choice", part))
                 # 3-кортеж: (label, условие, блок); 2-кортеж:
                 # (label, блок) — пункт меню без условия, блок в item[1]
                 if isinstance(item, (list, tuple)):
@@ -719,10 +817,7 @@ def _walk_ast(stmts) -> list[tuple[str, str]]:
             for _cap_attr in ("caption", "prompt", "who"):
                 for part in _string_parts(getattr(nodes, _cap_attr, None)):
                     if len(part) >= 2:
-                        result.append(("choice", part))
-
-        elif nt == "Label":
-            walk(getattr(nodes, "block", []))
+                        _add(("choice", part))
 
         elif nt == "Translate":
             walk(getattr(nodes, "block", []))
@@ -730,21 +825,21 @@ def _walk_ast(stmts) -> list[tuple[str, str]]:
         elif nt == "TranslateString":
             old = getattr(nodes, "old", None)
             if old and isinstance(old, str):
-                result.append(("translated_string", old))
+                _add(("translated_string", old))
 
         elif nt == "Define":
             for s, hint in _code_literals(getattr(nodes, "code", None)):
-                result.append((f"python:{hint}" if hint else "python", s))
+                _add((f"python:{hint}" if hint else "python", s))
 
         elif nt == "Default":
             for s, hint in _code_literals(
                     getattr(nodes, "code", None)
                     or getattr(nodes, "value", None)):
-                result.append((f"python:{hint}" if hint else "python", s))
+                _add((f"python:{hint}" if hint else "python", s))
 
         elif nt == "Python":
             for s, hint in _code_literals(getattr(nodes, "code", None)):
-                result.append((f"python:{hint}" if hint else "python", s))
+                _add((f"python:{hint}" if hint else "python", s))
 
         elif nt == "Screen":
             # SL2 (Ren'Py 6.99+): Screen.screen → slast.SLScreen с
@@ -768,7 +863,7 @@ def _walk_ast(stmts) -> list[tuple[str, str]]:
                 for pos in getattr(nodes, "positional", []) or []:
                     v = _sl_text_value(pos)
                     if v and _looks_like_text(v):
-                        result.append(("screen", v))
+                        _add(("screen", v))
                 # keyword args (input default "...", Button value="...");
                 # action/background and the rest are code or file names.
                 _kw = getattr(nodes, "keyword", None)
@@ -779,21 +874,21 @@ def _walk_ast(stmts) -> list[tuple[str, str]]:
                         if _kk in _kw:
                             v = _sl_text_value(_kw[_kk])
                             if v and _looks_like_text(v):
-                                result.append(("screen", v))
+                                _add(("screen", v))
 
         elif base in ("Show", "Scene"):
             # show text "..." / scene text "..." (P4): the text sits in
             # imspec (PyExpr with a literal source) or in text/what.
             for _s in _show_text_parts(getattr(nodes, "imspec", None)):
-                result.append(("screen", _s))
+                _add(("screen", _s))
             for _s in _show_text_parts(getattr(nodes, "text", None)):
-                result.append(("screen", _s))
+                _add(("screen", _s))
             for _s in _show_text_parts(getattr(nodes, "what", None)):
-                result.append(("screen", _s))
+                _add(("screen", _s))
 
         elif base == "SLPython":
             for s, hint in _code_literals(getattr(nodes, "code", None)):
-                result.append((f"python:{hint}" if hint else "python", s))
+                _add((f"python:{hint}" if hint else "python", s))
 
         # SL2-деревья: дети блоков (SLBlock.children), ветки if/showif
         # (SLIf.entries — пары (условие, блок)), блоки use (SLUse.block).
@@ -805,7 +900,9 @@ def _walk_ast(stmts) -> list[tuple[str, str]]:
         walk(getattr(nodes, "body", []) or [])
 
     walk(stmts)
-    return result
+    if labeled:
+        return result
+    return [(kind, text) for kind, text, _label in result]
 
 # ── Main API ────────────────────────────────────────────────────────
 
@@ -947,8 +1044,7 @@ def extract(game_dir: str, extract_lang: str | None = None
         # ВАЖНО: не strip() — игровая строка сохраняется дословно.
         # Строки с ведущими/хвостовыми пробелами (части интерполированных
         # реплик «Привет, »/« конец», диалоги с пробелом перед закрывающей
-        # кавычкой) обязаны совпадать с текстом игры ПОСИМВОЛЬНО: рантайм-
-        # хук Text.__init__ ищет точное вхождение в ob_dict.json, а
+        # кавычкой) обязаны совпадать с текстом игры ПОСИМВОЛЬНО:
         # официальный механизм tl/* матчит old-блоки по точной строке.
         key = original
         if key in seen_originals:
@@ -991,8 +1087,8 @@ def extract(game_dir: str, extract_lang: str | None = None
                     parsed = _unpickle_rpyc(raw)
                     if parsed:
                         _, stmts = parsed
-                        for kind, s in _walk_ast(stmts):
-                            add(rel, f"{rel}:{kind}", s)
+                        for kind, s, label in _walk_ast(stmts, labeled=True):
+                            add(rel, f"{rel}:{kind}", s, label)
                 else:
                     try:
                         text = raw.decode("utf-8")
@@ -1015,8 +1111,8 @@ def extract(game_dir: str, extract_lang: str | None = None
                 parsed = _unpickle_rpyc(raw)
                 if parsed:
                     _, stmts = parsed
-                    for kind, s in _walk_ast(stmts):
-                        add(rel, f"{rel}:{kind}", s)
+                    for kind, s, label in _walk_ast(stmts, labeled=True):
+                        add(rel, f"{rel}:{kind}", s, label)
             except Exception:
                 pass
 
@@ -1431,7 +1527,10 @@ def apply(game_dir: str, entries: list[TranslationEntry],
     tl_dir = os.path.join(game_dir, "game", "tl", lang)
     stats = {"files": 0, "strings": 0, "new_strings": 0, "out_dir": "",
              "unsafe_skipped": unsafe_count, "removed_orphans": 0,
-             "dup_skipped": 0, "strings_dropped": 0}
+             "dup_skipped": 0, "strings_dropped": 0,
+             # контракт ApplyReport (AGENTS.md 5A): не «применил, а в игре
+             # пусто», а «эти N строк не переведены, потому что ...»
+             "skipped_total": 0, "skipped_by": {}}
     written_paths: set[str] = set()
     # Ren'Py запрещает дубликаты old-строк в одном языке (падение
     # «A translation ... already exists»), поэтому одна и та же реплика
@@ -1460,30 +1559,28 @@ def apply(game_dir: str, entries: list[TranslationEntry],
         # усечённый ob_*.rpy, и Ren'Py падал на старте игры.
         from app.core.io import atomic_write_text as _atomic_write
         # РАЗДЕЛЕНИЕ ПО БЛОКАМ. Ren'Py переводит реплику по МЕТКЕ:
-        # `translate <lang> <label>:`. Всё в одном `strings:` — словарь
-        # для python-строк, и реплики он не переводит вовсе (доказано
-        # по исходникам движка). Поэтому:
-        #   * есть метка  -> блок по метке (реплики, меню, экраны);
-        #   * метки нет   -> `strings:` (python-строки, скрипты).
+        # `translate <lang> <label>:`. `translate <lang> strings:` — словарь
+        # для python-строк: он подменяет строки ПРЯМО В КОДЕ ИГРЫ, реплики не
+        # переводит и ломает игры, построенные на строковых словарях (SR24:
+        # мод-лоадер падал на старте). Поэтому блоков ровно два вида:
+        #   * отображаемый текст с меткой -> блок по метке;
+        #   * отображаемый текст экрана  -> `translate <lang> screens:`;
+        #   * всё остальное (строки внутри python-выражений, вне метки)
+        #     НЕ пишется вообще, но попадает в skipped_by с причиной —
+        #     см. _entry_skip_reason.
         by_label: dict[str, list[TranslationEntry]] = {}
         screens: list[TranslationEntry] = []
-        dropped = 0
         for e in deduped:
-            where = _entry_block(e)
-            if where == "label":
+            reason = _entry_skip_reason(e)
+            if reason:
+                stats["strings_dropped"] += 1
+                stats["skipped_by"][reason] = \
+                    stats["skipped_by"].get(reason, 0) + 1
+                continue
+            if _entry_block(e) == "label":
                 by_label.setdefault(_entry_label(e), []).append(e)
-            elif where == "screens":
-                screens.append(e)
             else:
-                # `translate <lang> strings:` подменяет python-строки
-                # ПРЯМО В КОДЕ ИГРЫ. На SR24 это ломало игру насмерть:
-                # мод-лоадер строит словари из строк, и переводённый
-                # ключ приходит строкой вместо dict -> AttributeError
-                # 'unicode' object has no attribute 'get' на старте.
-                # Такие строки не пишем: их переводит runtime-хук
-                # Text.__init__, он трогает только отображаемый текст.
-                dropped += 1
-        stats["strings_dropped"] = dropped
+                screens.append(e)
         chunks = [f"# OctopusBridge translation ({rel})\n"]
         for label in sorted(by_label):
             chunks.append(f"translate {lang} {label}:\n\n")
@@ -1518,7 +1615,9 @@ def apply(game_dir: str, entries: list[TranslationEntry],
             written_paths.discard(out_path)
             continue
         stats["files"] += 1
-        stats["strings"] += len(deduped)
+        # считаем РЕАЛЬНО записанное, а не deduped: иначе в «строк
+        # переведено» попадали записи, которые мы не записали
+        stats["strings"] += sum(len(v) for v in by_label.values()) + len(screens)
         stats["new_strings"] += new_count
         stats["out_dir"] = os.path.dirname(out_path)
 
@@ -1595,40 +1694,32 @@ def apply(game_dir: str, entries: list[TranslationEntry],
                      _ACTIVATE_TEMPLATE.format(lang=lang),
                      encoding="utf-8")
 
+    stats["skipped_total"] = sum(stats["skipped_by"].values())
     return stats
 
 
-# Шаблон рантайм-активатора: подключает язык, грузит JSON-словарь и
-# ставит ДВА независимых, дополняющих друг друга механизма перевода:
+# Шаблон рантайм-активатора: включает язык игры и ставит FontGroup на
+# каждый именованный стиль.
 #
-# 1) Хук на Text.__init__ — перехватывает АБСОЛЮТНО ЛЮБОЙ текст в момент
-#    создания Text-displayable (диалог, реплика, пункт меню, кнопка
-#    экрана, всплывающее уведомление — всё это в итоге создаёт Text).
-#    Ищет точную строку в словаре и подменяет её ДО того, как Ren'Py
-#    вообще начнёт что-либо парсить/лейаутить. Не зависит от того,
-#    зарегистрировал ли официальный tl-механизм эту строку как
-#    "переводимую" — если строка была в словаре, она будет заменена
-#    в любом контексте. Именно так работают инструменты вроде MTool:
-#    не встраивание перевода "по месту", а перехват на границе рендера.
+# Перевод текста делают ШТАТНЫЕ блоки Ren'Py (см. apply: `translate <lang>
+# <label>:` и `translate <lang> screens:`) — они трогают только отображаемый
+# текст. Никаких глобальных перехватчиков текста здесь нет намеренно: хук на
+# Text.__init__ правил текст у КАЖДОГО узла игры, включая те, что игра держит
+# как данные (словари модов, ключи таблиц), и ломал загрузку (SR24: мод-лоадер
+# падал на старте). Правило остаётся: лучше пропустить строку, чем убить игру.
 #
-# 2) FontGroup на каждый именованный стиль — вместо жёсткой замены шрифта
-#    (что теряет иконки/спецсимволы оригинального шрифта и требует ручного
-#    перечисления имён стилей) берём оригинальный шрифт стиля и НАШ шрифт
-#    как fallback по диапазону кодовых точек: там, где в оригинальном
-#    шрифте нет кириллицы — символ берётся из NotoSans, всё остальное
-#    (латиница, иконки) остаётся как в оригинале. Проходим по ВСЕМ стилям
-#    через dir(store.style), а не по жёсткому списку — так patch покрывает
-#    и кастомные стили, которых разработчик игры мог насоздавать сколько
-#    угодно под свои экраны.
+# FontGroup вместо жёсткой замены шрифта: жёсткая замена теряет
+# иконки/спецсимволы оригинального шрифта и требует ручного перечисления имён
+# стилей. Берём оригинальный шрифт стиля и НАШ шрифт как fallback по диапазону
+# кодовых точек: там, где в оригинальном шрифте нет кириллицы — символ берётся
+# из NotoSans, всё остальное (латиница, иконки) остаётся как в оригинале.
+# Проходим по ВСЕМ стилям через dir(store.style), а не по жёсткому списку —
+# так patch покрывает и кастомные стили, которых разработчик игры мог
+# насоздавать сколько угодно под свои экраны.
 _ACTIVATE_TEMPLATE = '''# OctopusBridge: activate {lang} translation + font fallback
 init 1 python:
     config.language = "{lang}"
 
-# Глобальная подмена Text.__init__ УДАЛЕНА намеренно.
-# Она правила текст у КАЖДОГО узла игры, включая те, что игра держит как
-# данные (словари модов, ключи таблиц), и ломала загрузку: на SR24
-# мод-лоадер падал на старте. Штатные блоки перевода по меткам и экранам
-# переводят реплики и интерфейс сами и трогают только отображаемый текст.
 init 999 python:
     _ob_fallback_font = "ob_fonts/NotoSans-Regular.ttf"
 
