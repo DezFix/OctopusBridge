@@ -52,6 +52,19 @@ class RenPyModule(EngineModule):
         return parser.list_languages(game_dir)
 
     def apply(self, game_dir: str, entries: list, **kwargs) -> dict:
-        from app.core.renpy import parser
-        return parser.apply(game_dir, entries,
-                            target_lang=kwargs.get("target_lang", "ru"))
+        from app.core.renpy import parser, universal
+        choice = universal.choose_method(game_dir)
+        if choice["method"] == "source":
+            # Есть исходники: самый безопасный путь — перевод прямо в .rpy,
+            # движок переводов не трогается вообще (без tl/, хуков, strings:).
+            from app.core.renpy import sourcetr
+            stats = sourcetr.apply_sourced(
+                game_dir, entries, lang=kwargs.get("target_lang", "ru"))
+            stats["method"] = "source"
+            stats["method_reason"] = choice["reason"]
+            return stats
+        stats = parser.apply(game_dir, entries,
+                             target_lang=kwargs.get("target_lang", "ru"))
+        stats["method"] = choice["method"]
+        stats["method_reason"] = choice["reason"]
+        return stats

@@ -1674,12 +1674,15 @@ def apply(game_dir: str, entries: list[TranslationEntry],
             shutil.copy2(font_src, font_dst)
 
         # ── JSON-словарь original -> translation (для рантайм-хука) ──
-        # Строится из ВСЕХ entries сразу, независимо от файла-источника,
-        # это и есть словарь для универсального перехвата текста.
+        # Только ОТОБРАЖАЕМЫЕ строки (те, что попали в label/screens блоки).
+        # Python-выражения сюда не попадают никогда: хук подменяет текст в
+        # момент отрисовки, и словарь с ключами данных безвреден для логики,
+        # но мы всё равно держим его чистым — так проще проверять.
         full_dict: dict[str, str] = {}
         for e in entries:
             if e.translation.strip() and e.status != "skip" \
-                    and _is_interp_safe(e.original, e.translation):
+                    and _is_interp_safe(e.original, e.translation) \
+                    and not _entry_skip_reason(e):
                 full_dict[e.original] = e.translation
         dict_path = os.path.join(game_dir, "game", "tl", lang,
                                  "ob_dict.json")
@@ -1709,15 +1712,28 @@ def apply(game_dir: str, entries: list[TranslationEntry],
 #: исполняет файлы из tl/<lang>/ (см. комментарий у записи в apply()).
 _ACTIVATE_NAME = "zz_ob_lang.rpy"
 
-# Шаблон рантайм-активатора: включает язык игры и ставит FontGroup на
-# каждый именованный стиль.
+# Шаблон рантайм-активатора: включает язык игры, ставит рантайм-хук
+# на отображаемый текст и FontGroup на каждый именованный стиль.
 #
-# Перевод текста делают ШТАТНЫЕ блоки Ren'Py (см. apply: `translate <lang>
-# <label>:` и `translate <lang> screens:`) — они трогают только отображаемый
-# текст. Никаких глобальных перехватчиков текста здесь нет намеренно: хук на
-# Text.__init__ правил текст у КАЖДОГО узла игры, включая те, что игра держит
-# как данные (словари модов, ключи таблиц), и ломал загрузку (SR24: мод-лоадер
-# падал на старте). Правило остаётся: лучше пропустить строку, чем убить игру.
+# Почему хук нужен, хотя есть штатные блоки translate: блоки
+# `translate <lang> <label>:` с old/new внутри НЕ подменяют реплики —
+# проверено на живой игре (блоки загружены в память, а диалог идёт
+# на языке оригинала). Штатный формат требует идентификаторов узлов,
+# которых у нас нет. Хук подменяет текст в момент отрисовки по точному
+# совпадению со словарём — это тот механизм, который реально показывал
+# перевод в версиях до 7.35.
+#
+# Почему хук безопасен (и чем отличается от удалённого в 7.35):
+# словарь содержит ТОЛЬКО отображаемые строки (метки и экраны),
+# python-выражения в него не попадают (см. фильтр при построении
+# full_dict). Хук срабатывает лишь при отрисовке текста и не трогает
+# код и данные игры — сломать загрузку (как это делал strings:)
+# он не может в принципе. Любая ошибка внутри хука отключает его
+# молча, игра идёт на языке оригинала.
+#
+# `translate <lang> strings:` не возвращался и не возвращается: он
+# подменяет python-строки прямо в коде игры (SR24: мод-лоадер падал).
+# Правило остаётся: лучше пропустить строку, чем убить игру.
 #
 # FontGroup вместо жёсткой замены шрифта: жёсткая замена теряет
 # иконки/спецсимволы оригинального шрифта и требует ручного перечисления имён
@@ -1727,9 +1743,116 @@ _ACTIVATE_NAME = "zz_ob_lang.rpy"
 # Проходим по ВСЕМ стилям через dir(store.style), а не по жёсткому списку —
 # так patch покрывает и кастомные стили, которых разработчик игры мог
 # насоздавать сколько угодно под свои экраны.
-_ACTIVATE_TEMPLATE = '''# OctopusBridge: activate {lang} translation + font fallback
+#
+# Код ниже обязан быть совместим с Python 2 (Ren'Py 7.x): без f-строк.
+_ACTIVATE_TEMPLATE = '''# OctopusBridge: activate {lang} translation + text hook + font fallback
 init 1 python:
     config.language = "{lang}"
+
+init 999 python:
+    _ob_dict = {{}}
+    try:
+        _ob_dict_path = renpy.loader.transfn("tl/{lang}/ob_dict.json")
+        with open(_ob_dict_path, "r") as _ob_f:
+            import json as _ob_json
+            _ob_loaded = _ob_json.load(_ob_f)
+            # НЕ isinstance(x, dict): в области видимости Ren'Py встроенный
+            # dict подменён на RevertableDict (проверено на живой игре),
+            # и настоящий dict проверку не проходит. Сверяем имя типа.
+            if type(_ob_loaded).__name__ == "dict":
+                _ob_dict = _ob_loaded
+    except Exception:
+        _ob_dict = {{}}
+
+    if _ob_dict:
+        try:
+            try:
+                _ob_str_types = (basestring,)
+            except NameError:
+                _ob_str_types = (str,)
+            # type([]) вместо голого list: в области видимости Ren'Py list
+            # тоже может быть подменён (RevertableList), а настоящий список
+            # проверку против него не пройдёт. type([]) — всегда настоящий.
+            _ob_real_list = type([])
+            # Нормализованный индекс: извлечённая строка и строка в игре
+            # могут различаться пробелами/переносами (исходник .rpy против
+            # скомпилированного .rpyc, склейка строк). Сначала пробуем точное
+            # совпадение, потом нормализованное. Перевод берётся из словаря,
+            # нормализация — только для поиска ключа, текст не трогаем.
+            def _ob_norm(s):
+                try:
+                    return " ".join(s.split())
+                except Exception:
+                    return s
+            _ob_norm_index = {{}}
+            try:
+                for _k, _v in _ob_dict.items():
+                    _nk = _ob_norm(_k)
+                    if _nk and _nk not in _ob_norm_index:
+                        _ob_norm_index[_nk] = _v
+            except Exception:
+                _ob_norm_index = {{}}
+
+            def _ob_tr(s):
+                try:
+                    if s in _ob_dict:
+                        return _ob_dict[s]
+                    return _ob_norm_index.get(_ob_norm(s), s)
+                except Exception:
+                    return s
+            # Счётчики попаданий/промахов (только числа): по ним видно
+            # покрытие без чтения текста игры.
+            _ob_hits = [0, 0]
+            _ob_orig_text_init = renpy.text.text.Text.__init__
+
+            def _ob_text_init(self, text, *args, **kwargs):
+                try:
+                    if isinstance(text, _ob_str_types):
+                        _new = _ob_tr(text)
+                        if _new != text:
+                            _ob_hits[0] += 1
+                        else:
+                            _ob_hits[1] += 1
+                        text = _new
+                    elif isinstance(text, _ob_real_list):
+                        text = [_ob_tr(t)
+                                if isinstance(t, _ob_str_types) else t
+                                for t in text]
+                except Exception:
+                    pass
+                return _ob_orig_text_init(self, text, *args, **kwargs)
+
+            renpy.text.text.Text.__init__ = _ob_text_init
+        except Exception:
+            pass
+
+    # Хук на реплики (до подстановок): Say выполняет Character.__call__,
+    # внутри которого [...] и теги подставляются, и Text получает уже
+    # изменённую строку — в словарь она не попадает. Поэтому переводим
+    # who/what на входе, пока строка сырая и совпадает с извлечённой.
+    # Только точное совпадение, любая ошибка — мимо, игра идёт дальше.
+    if _ob_dict:
+        try:
+            _ob_Char = renpy.character.Character
+            _ob_char_call = _ob_Char.__call__
+
+            def _ob_char_hook(self, who, what, *args, **kwargs):
+                try:
+                    if isinstance(who, _ob_str_types):
+                        who = _ob_tr(who)
+                    if isinstance(what, _ob_str_types):
+                        what = _ob_tr(what)
+                    elif isinstance(what, _ob_real_list):
+                        what = [_ob_tr(t)
+                                if isinstance(t, _ob_str_types) else t
+                                for t in what]
+                except Exception:
+                    pass
+                return _ob_char_call(self, who, what, *args, **kwargs)
+
+            _ob_Char.__call__ = _ob_char_hook
+        except Exception:
+            pass
 
 init 999 python:
     _ob_fallback_font = "ob_fonts/NotoSans-Regular.ttf"
