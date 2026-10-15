@@ -6,12 +6,17 @@ Extraction:
 - .rpyc compiled files: RPC2 unpickling with mock AST, walker extracts
   dialogues (Say.who/what), menu choices (Menu.items), Character names (Define)
 
-Generation: штатный механизм Ren'Py — game/tl/<lang>/ob_*.rpy с блоками
-    translate <lang> <label>:      (реплики, имена персонажей, меню)
-    translate <lang> screens:       (текст интерфейса)
-Блок `translate <lang> strings:` НЕ используется никогда: он подменяет
-python-строки прямо в коде игры и ломает игры, построенные на строковых
-словарях (см. _entry_skip_reason).
+Generation: штатный механизм Ren'Py — game/tl/<lang>/ob_strings.rpy
+    с единственным блоком translate <lang> strings: (все отображаемые
+    строки old/new). По документации (renpy.org/doc/html/translation)
+    strings: покрывает меню, _()-строки И реплики без перевода
+    ("String translations are also applied to dialogue strings that are
+    not translated as dialogue") — это же официальный путь
+    несанкционированного перевода. Подмена — во время показа, код игры
+    не трогается. Формат translate <lang> <label>: с old/new внутри
+    документацией не определён и движком игнорируется — не пишем.
+    Рантайм-хуки (Text.__init__, Character.__call__) остаются вторым
+    рубежом для строк с переменными, где точное совпадение невозможно.
 """
 from __future__ import annotations
 
@@ -344,6 +349,24 @@ class _MockNode:
     def __init__(self, *args, **kwargs):
         pass
 
+    # Страховка от потери всего файла: pickle собирает контейнеры
+    # через obj[key] = value (SETITEM/SETITEMS/BUILD). Без __setitem__
+    # один OrderedDict в файле ронял unpickle целиком (TaintedPhilter:
+    # loose script.rpyc не читался вообще). Данные складываем в
+    # инертное хранилище — они никогда не исполняются, только читаются
+    # извлекателем как структура.
+    def __setitem__(self, key, value):
+        try:
+            self.__dict__.setdefault("_ob_items", {})[key] = value
+        except Exception:
+            pass
+
+    def __getitem__(self, key):
+        return self.__dict__.get("_ob_items", {})[key]
+
+    def __contains__(self, key):
+        return key in self.__dict__.get("_ob_items", {})
+
 _RENPY_MOCKS: dict[tuple[str, str], type] = {
     ("renpy.ast", "PyCode"): _PyCode,
     ("renpy.ast", "PyExpr"): _MockPyExpr,
@@ -383,6 +406,13 @@ class _RenPyUnpickler(pickle.Unpickler):
         if module in ("builtins", "__builtin__") \
                 and name in self._SAFE_BUILTINS:
             return super().find_class(module, name)
+        # Контейнеры без поведения: pickle собирает их через
+        # __new__ + присваивания, вызовов чужого кода нет — безопасно
+        # вернуть настоящие. Иначе mock без __setitem__ ронял весь файл
+        # (см. _MockNode.__setitem__ и loose script.rpyc TaintedPhilter).
+        if module == "collections" and name in ("OrderedDict", "Counter"):
+            import collections as _c
+            return getattr(_c, name)
         if module.startswith("renpy."):
             cls = type(f"_mock_{name}", (_MockNode,), {})
             _RENPY_MOCKS[key] = cls
@@ -1580,93 +1610,83 @@ def apply(game_dir: str, entries: list[TranslationEntry],
              "skipped_total": 0, "skipped_by": {}}
     written_paths: set[str] = set()
     # Ren'Py запрещает дубликаты old-строк в одном языке (падение
-    # «A translation ... already exists»), поэтому одна и та же реплика
-    # из разных скриптов игры пишется ровно один раз — в первый файл.
-    global_olds: set[str] = set()
-    for rel, items in by_file.items():
-        flat = rel.replace("/", "__")
-        if flat.endswith(".rpy"):
-            flat = flat[:-4]
-        out_path = os.path.join(tl_dir, f"ob_{flat}.rpy")
+    # «A translation ... already exists»), поэтому одна и та же строка
+    # пишется ровно один раз — глобальный дедуп по original.
+    seen_old: set[str] = set()
+    deduped_all: list[TranslationEntry] = []
+    for _rel, _items in by_file.items():
+        for e in _items:
+            if e.original in seen_old:
+                stats["dup_skipped"] += 1
+                continue
+            seen_old.add(e.original)
+            deduped_all.append(e)
+    # Единый strings:-файл (один на язык).
+    # Атомарно (tmp+rename): обрыв посреди trunc+write раньше оставлял
+    # усечённый ob_*.rpy, и Ren'Py падал на старте игры.
+    from app.core.io import atomic_write_text as _atomic_write
+    # ОДИН strings:-БЛОК ПО ДОКУМЕНТАЦИИ (renpy.org/doc/html/translation).
+    # Официально: `translate <lang> strings:` с old/new — штатный путь
+    # для меню, _()-строк И для реплик без перевода ("String translations
+    # are also applied to dialogue strings that are not translated as
+    # dialogue"). Это же — официальный путь несанкционированного перевода
+    # (RENPY_LANGUAGE + RENPY_UPDATE_STRINGS -> strings.rpy).
+    # Подмена — во время показа, код игры не трогается: утверждение
+    # «strings: подменяет строки прямо в коде» неверно, из-за него же
+    # был ошибочно удалён рабочий механизм. Штатный формат реплик
+    # (`translate <lang> <label>_<hash>:`) нам недоступен: идентификаторы
+    # генерируются движком из метки и содержимого, в .rpyc их нет,
+    # синтезировать нельзя. Формат `translate <lang> <label>:` с old/new
+    # внутри документацией не определён — движок такие блоки глотает
+    # молча и ничего не подменяет (проверено на живой игре). Поэтому их
+    # больше не пишем; старые вычистит orphan-cleanup ниже.
+    # В strings: идут все отображаемые строки с целыми плейсхолдерами.
+    # Кроме: string-marker (обрывки разметки), other-language (уже не
+    # исходный язык), unsafe (плейсхолдеры побиты).
+    all_display: list[TranslationEntry] = []
+    for e in deduped_all:
+        reason = _entry_skip_reason(e)
+        if reason in ("string-marker", "other-language"):
+            stats["strings_dropped"] += 1
+            stats["skipped_by"][reason] = \
+                stats["skipped_by"].get(reason, 0) + 1
+            continue
+        all_display.append(e)
+    new_count = 0
+    if all_display:
+        out_path = os.path.join(tl_dir, "ob_strings.rpy")
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         written_paths.add(out_path)
         existing_olds = _read_existing_olds(out_path)
-        seen_old: set[str] = set()
-        deduped: list[TranslationEntry] = []
-        for e in items:
-            if e.original in seen_old or e.original in global_olds:
-                if e.original not in seen_old:
-                    stats["dup_skipped"] += 1
-                continue
-            seen_old.add(e.original)
-            global_olds.add(e.original)
-            deduped.append(e)
-        new_count = 0
-        # Атомарно (tmp+rename): обрыв посреди trunc+write раньше оставлял
-        # усечённый ob_*.rpy, и Ren'Py падал на старте игры.
-        from app.core.io import atomic_write_text as _atomic_write
-        # РАЗДЕЛЕНИЕ ПО БЛОКАМ. Ren'Py переводит реплику по МЕТКЕ:
-        # `translate <lang> <label>:`. `translate <lang> strings:` — словарь
-        # для python-строк: он подменяет строки ПРЯМО В КОДЕ ИГРЫ, реплики не
-        # переводит и ломает игры, построенные на строковых словарях (SR24:
-        # мод-лоадер падал на старте). Поэтому блоков ровно два вида:
-        #   * отображаемый текст с меткой -> блок по метке;
-        #   * отображаемый текст экрана  -> `translate <lang> screens:`;
-        #   * всё остальное (строки внутри python-выражений, вне метки)
-        #     НЕ пишется вообще, но попадает в skipped_by с причиной —
-        #     см. _entry_skip_reason.
-        by_label: dict[str, list[TranslationEntry]] = {}
-        screens: list[TranslationEntry] = []
-        for e in deduped:
-            reason = _entry_skip_reason(e)
-            if reason:
-                stats["strings_dropped"] += 1
-                stats["skipped_by"][reason] = \
-                    stats["skipped_by"].get(reason, 0) + 1
-                continue
-            if _entry_block(e) == "label":
-                by_label.setdefault(_entry_label(e), []).append(e)
-            else:
-                screens.append(e)
-        chunks = [f"# OctopusBridge translation ({rel})\n"]
-        for label in sorted(by_label):
-            chunks.append(f"translate {lang} {label}:\n\n")
-            for e in by_label[label]:
-                if e.original not in existing_olds:
-                    new_count += 1
-                chunks.append(f'    old "{_escape(e.original)}"\n')
-                chunks.append(f'    new "{_escape(e.translation)}"\n\n')
-        if screens:
-            chunks.append(f"translate {lang} screens:\n\n")
-            for e in screens:
-                if e.original not in existing_olds:
-                    new_count += 1
-                chunks.append(f'    old "{_escape(e.original)}"\n')
-                chunks.append(f'    new "{_escape(e.translation)}"\n\n')
-        if not by_label and not screens:
-            continue
+        chunks = [f"# OctopusBridge strings translation ({lang})\n",
+                  f"translate {lang} strings:\n\n"]
+        for e in all_display:
+            if e.original not in existing_olds:
+                new_count += 1
+            chunks.append(f'    old "{_escape(e.original)}"\n')
+            chunks.append(f'    new "{_escape(e.translation)}"\n\n')
         try:
             _atomic_write(out_path, "".join(chunks), encoding="utf-8")
         except OSError:
-            # путь попал в written_paths ДО записи: при сбое
-            # убираем — иначе осиротевший ob_*.rpy посчитают
-            # текущим и не вычистят
+            # путь попал в written_paths ДО записи: при сбое убираем —
+            # иначе осиротевший ob_*.rpy посчитают текущим и не вычистят
             written_paths.discard(out_path)
-            continue
-        if not _written_file_ok(out_path):
-            # свой же битый файл не оставляем: Ren'Py упадёт на старте
-            try:
-                os.remove(out_path)
-            except OSError:
-                pass
-            written_paths.discard(out_path)
-            continue
-        stats["files"] += 1
-        # считаем РЕАЛЬНО записанное, а не deduped: иначе в «строк
-        # переведено» попадали записи, которые мы не записали
-        stats["strings"] += sum(len(v) for v in by_label.values()) + len(screens)
-        stats["new_strings"] += new_count
-        stats["out_dir"] = os.path.dirname(out_path)
+            out_path = ""
+        else:
+            if not _written_file_ok(out_path):
+                # свой же битый файл не оставляем: Ren'Py упадёт на старте
+                try:
+                    os.remove(out_path)
+                except OSError:
+                    pass
+                written_paths.discard(out_path)
+                out_path = ""
+            else:
+                stats["files"] += 1
+                # считаем РЕАЛЬНО записанное
+                stats["strings"] += len(all_display)
+                stats["new_strings"] += new_count
+                stats["out_dir"] = os.path.dirname(out_path)
 
     # Осиротевшие ob_*.rpy/.rpyc чистятся при ЛЮБОМ прогоне, не только
     # когда файлы переписывались: старые билды (до 0.5.9, без
@@ -1721,16 +1741,25 @@ def apply(game_dir: str, entries: list[TranslationEntry],
             shutil.copy2(font_src, font_dst)
 
         # ── JSON-словарь original -> translation (для рантайм-хука) ──
-        # Только ОТОБРАЖАЕМЫЕ строки (те, что попали в label/screens блоки).
-        # Python-выражения сюда не попадают никогда: хук подменяет текст в
-        # момент отрисовки, и словарь с ключами данных безвреден для логики,
-        # но мы всё равно держим его чистым — так проще проверять.
+        # Хук подменяет текст ТОЛЬКО в момент отрисовки, поэтому ему
+        # не страшны ключи данных: поиск в коде через Text.__init__
+        # не идёт, логика игры не затрагивается. Единственное требование
+        # к записи словаря — плейсхолдеры целы (_is_interp_safe выше).
+        # Поэтому в словарь идут все переведённые строки, кроме:
+        # string-marker (обрывки разметки — их замена на экране может
+        # порвать теги) и other-language (уже не исходный язык).
+        # no-label — тоже текст на экране (реплики уровня файла, диалоги
+        # в screens), для них хук вообще единственный путь перевода.
+        # Блоки translate при этом по-прежнему только для структурно
+        # безопасных (label/screens): словарь и блоки — разные ворота
+        # с разными правилами.
         full_dict: dict[str, str] = {}
         for e in entries:
             if e.translation.strip() and e.status != "skip" \
-                    and _is_interp_safe(e.original, e.translation) \
-                    and not _entry_skip_reason(e):
-                full_dict[e.original] = e.translation
+                    and _is_interp_safe(e.original, e.translation):
+                _reason = _entry_skip_reason(e)
+                if _reason not in ("string-marker", "other-language"):
+                    full_dict[e.original] = e.translation
         dict_path = os.path.join(game_dir, "game", "tl", lang,
                                  "ob_dict.json")
         os.makedirs(os.path.dirname(dict_path), exist_ok=True)
@@ -1766,9 +1795,16 @@ _ACTIVATE_NAME = "zz_ob_lang.rpy"
 # `translate <lang> <label>:` с old/new внутри НЕ подменяют реплики —
 # проверено на живой игре (блоки загружены в память, а диалог идёт
 # на языке оригинала). Штатный формат требует идентификаторов узлов,
-# которых у нас нет. Хук подменяет текст в момент отрисовки по точному
-# совпадению со словарём — это тот механизм, который реально показывал
-# перевод в версиях до 7.35.
+# которых у нас нет. Хук подменяет текст в момент отрисовки — это тот
+# механизм, который реально показывал перевод в версиях до 7.35.
+#
+# Три уровня поиска (по убыванию точности): точное совпадение,
+# нормализованное (пробелы/переносы), скелетное для строк с [var].
+# Третий нужен, потому что на экране уже значение ("Han"), а в словаре
+# шаблон ("[mc_name]"): точное совпадение невозможно в принципе.
+# Скелет строится только по литеральным кускам ({...} — теги, их не
+# трогаем), значения подставляются в перевод ПО ИМЕНАМ. Наборы имён
+# ключа и перевода обязаны совпасть, иначе шаблон не строится.
 #
 # Почему хук безопасен (и чем отличается от удалённого в 7.35):
 # словарь содержит ТОЛЬКО отображаемые строки (метки и экраны),
@@ -1844,8 +1880,78 @@ init 999 python:
                 try:
                     if s in _ob_dict:
                         return _ob_dict[s]
-                    return _ob_norm_index.get(_ob_norm(s), s)
+                    _ns = _ob_norm(s)
+                    if _ns in _ob_norm_index:
+                        return _ob_norm_index[_ns]
+                    return _ob_tr_pat(s)
                 except Exception:
+                    return s
+
+            # Скелетные шаблоны для строк с [подстановками]: точное
+            # совпадение невозможно (на экране значение, в словаре [var]).
+            # Плоский список (префикс, паттерн, имена, перевод): startswith
+            # отсекает чужое за микросекунды, дальше ^...$ по скелету.
+            # Бакетов по префиксу нет намеренно: ключ бакета и срез строки
+            # расходятся на коротких префиксах и дают ложные промахи.
+            _ob_pat_list = []
+            try:
+                import re as _ob_re
+
+                def _ob_ph_names(t):
+                    _ns = []
+                    for _m in _ob_re.findall(r"\[([^\[\]]+)\]", t):
+                        _b = _m.split("!")[0].split(":")[0]
+                        if _b and _b not in _ns:
+                            _ns.append(_b)
+                    return _ns
+
+                for _k, _v in _ob_dict.items():
+                    try:
+                        if "[" not in _k:
+                            continue
+                        _kn = _ob_ph_names(_k)
+                        if not _kn or sorted(_ob_ph_names(_v)) != sorted(_kn):
+                            continue
+                        _parts = _ob_re.split(r"(\[[^\[\]]+\])", _k)
+                        _rx = []
+                        _names = []
+                        for _p in _parts:
+                            _pm = _ob_re.match(r"^\[([^\[\]]+)\]$", _p)
+                            if _pm:
+                                _names.append(_pm.group(1).split("!")[0].split(":")[0])
+                                _rx.append("(.+?)")
+                            else:
+                                _rx.append(_ob_re.escape(_p))
+                        _pat = _ob_re.compile("\\A" + "".join(_rx) + "\\Z")
+                        _prefix = _parts[0] if _parts else ""
+                        _ob_pat_list.append((_prefix, _pat, _names, _v))
+                    except Exception:
+                        pass
+
+                def _ob_tr_pat(s):
+                    try:
+                        for _prefix, _pat, _names, _v in _ob_pat_list:
+                            if _prefix and not s.startswith(_prefix):
+                                continue
+                            _m = _pat.match(s)
+                            if not _m:
+                                continue
+                            _seen = {{}}
+                            for _nm, _vv in zip(_names, _m.groups()):
+                                if _nm not in _seen:
+                                    _seen[_nm] = _vv
+                            _res = _v
+                            for _nm, _vv in _seen.items():
+                                _res, _n = _ob_re.subn(
+                                    r"\[" + _ob_re.escape(_nm)
+                                    + r"(?:![^\[\]]*)?(?::[^\[\]]*)?\]",
+                                    lambda _mm: _vv, _res)
+                            return _res
+                    except Exception:
+                        pass
+                    return s
+            except Exception:
+                def _ob_tr_pat(s):
                     return s
             # Счётчики попаданий/промахов (только числа): по ним видно
             # покрытие без чтения текста игры.

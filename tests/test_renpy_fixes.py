@@ -66,8 +66,11 @@ with tempfile.TemporaryDirectory() as td:
     for e in entries:
         e.translation = "TR:" + e.original
     stats = renpy.apply(td, entries, "ru")
-    out = os.path.join(stats["out_dir"], "ob_game__script.rpy")
+    # единый strings:-файл (один на язык), а не пофайловые ob_*.rpy:
+    # старые `translate <lang> <label>:` с old/new движок игнорировал
+    out = os.path.join(stats["out_dir"], "ob_strings.rpy")
     content = open(out, encoding="utf-8").read()
+    assert content.count("translate russian strings:") == 1, content
     # запись экранирует обратно: кавычка — \\", перенос — \\n
     assert 'old "Он сказал \\"привет\\" и ушёл"' in content, content
     assert 'old "Строка с \\n переносом и café"' in content, content

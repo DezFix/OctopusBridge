@@ -1,12 +1,19 @@
 ﻿# -*- coding: utf-8 -*-
-"""Перевод Ren'Py уходит в блоки, которые игра вообще понимает.
+"""Перевод Ren'Py уходит в ОДИН strings:-блок, который игра понимает.
 
-Проверено по исходникам движка (renpy/translation/__init__.py,
-lookup_translate): реплика ищет перевод ПО ИМЕНОВАНИЮ УЗЛА
-(`translate <lang> <label>:`), экраны — в `screens:`, а `strings:` —
-словарь для python-строк, который реплики не переводит. Раньше всё
-лежало в `strings:`, и штатный механизм Ren'Py молча ничего не переводил
-(текст спасал только наш runtime-хук `Text.__init__`, а он ловит не всё).
+По документации (renpy.org/doc/html/translation) `translate <lang>
+strings:` с old/new — штатный путь для меню, _()-строк И для реплик
+без перевода ("String translations are also applied to dialogue
+strings that are not translated as dialogue"). Подмена — во время
+показа, код игры не трогается.
+
+Старый формат (`translate <lang> <label>:` и `translate <lang>
+screens:` с old/new внутри) документацией не определён — движок
+такие блоки молча глотает и ничего не подменяет (проверено на живой
+игре). Штатный формат реплик (`translate <lang> <label>_<hash>:`)
+нам недоступен: идентификаторы генерируются движком, в .rpyc их
+нет. Поэтому apply() пишет ОДИН game/tl/<lang>/ob_strings.rpy,
+а старые пофайловые ob_*.rpy вычищаются orphan-cleanup.
 """
 import io
 import os
@@ -26,11 +33,15 @@ rp._reset_screen_stack()
 got = []
 collect = lambda f, c, o, *rest: got.append((c, o))
 rp._extract_line("t.rpy", 1, "label start:", collect)
-rp._extract_line("t.rpy", 2, '    e "Hello"', collect)
-assert got[-1][1] == "Hello", got
+rp._extract_line("t.rpy", 2, '    e "Alpha marker"', collect)
+assert got[-1][1] == "Alpha marker", got
 print("   OK")
 
-print("2) запись разносится по блокам: метка / screens / никуда...")
+print("2) в strings: идут все с целым переводом, кроме маркера/чужого...")
+# Правило для БЛОКОВ теперь одно: все записи с целым переводом
+# (_is_interp_safe), кроме string-marker и other-language. Метка,
+# вид узла (dialogue/screen/python/...) на попадание в блок НЕ
+# влияют: подмена при показе, код не трогается.
 
 
 def mk(orig, ctx, label, trans):
@@ -39,55 +50,66 @@ def mk(orig, ctx, label, trans):
                             context=ctx, original=orig, translation=trans)
 
 
-say = mk("Hello", "t.rpy:2:dialogue", "start", "Привет")
-ui = mk("Settings", "t.rpy:9:screen", "start", "Настройки")
-py = mk("Gold", "t.rpy:11:python:gold_text", "start", "Золото")
-nolab = mk("Plain", "t.rpy:12:dialogue", "", "Просто")
-assert rp._entry_block(say) == "label", rp._entry_block(say)
-assert rp._entry_block(ui) == "screens", rp._entry_block(ui)
-# '' — писать некуда: 'strings:' запрещён, метки нет
-assert rp._entry_block(py) == "", rp._entry_block(py)
-assert rp._entry_block(nolab) == "", "без метки перевод не подставится"
-# и у обеих запись обязана иметь ОБЪЯСНЕНИЕ, почему она не берётся
-assert rp._entry_skip_reason(py) == "python-expression", \
-    rp._entry_skip_reason(py)
-assert rp._entry_skip_reason(nolab) == "no-label", rp._entry_skip_reason(nolab)
-assert rp._entry_skip_reason(say) == "" and rp._entry_skip_reason(ui) == ""
+say = mk("Alpha dialogue marker", "t.rpy:2:dialogue", "start",
+         "TR Alpha dialogue marker")
+ui = mk("Beta screen marker", "t.rpy:9:screen", "start",
+        "TR Beta screen marker")
+py = mk("Gamma python marker", "t.rpy:11:python:gold_text", "start",
+        "TR Gamma python marker")
+nolab = mk("Delta nolabel marker", "t.rpy:12:dialogue", "",
+           "TR Delta nolabel marker")
+mark = mk("Epsilon marker text", "t.rpy:5:_()", "start", "TR Epsilon")
+other = mk("Zeta other text", "t.rpy:3:translated_string", "start",
+           "TR Zeta")
+# _entry_skip_reason остался для детальной классификации (см. словарь
+# хука в test_renpy_coverage.py): маркер и чужой язык отведены,
+# остальные — нет
+assert rp._entry_skip_reason(mark) == "string-marker", \
+    rp._entry_skip_reason(mark)
+assert rp._entry_skip_reason(other) == "other-language", \
+    rp._entry_skip_reason(other)
+assert rp._entry_skip_reason(say) == "", rp._entry_skip_reason(say)
+assert rp._entry_skip_reason(ui) == "", rp._entry_skip_reason(ui)
 print("   OK")
 
-print("3) apply пишет блоки по меткам, а не один strings:...")
+print("3) apply пишет ОДИН ob_strings.rpy, а не блоки по меткам...")
 with tempfile.TemporaryDirectory() as td:
     os.makedirs(os.path.join(td, "game"))
-    res = rp.apply(td, [say, ui, py, nolab], target_lang="ru")
+    res = rp.apply(td, [say, ui, py, nolab, mark, other],
+                   target_lang="ru")
     out = os.path.join(td, "game", "tl", "russian")
-    files = [f for f in os.listdir(out)
-             if f.endswith(".rpy") and "dict" not in f]
-    assert files, res
-    text = ""
-    for f in files:
-        cand = io.open(os.path.join(out, f), encoding="utf-8").read()
-        if "translate russian" in cand:
-            text = cand
-            break
-    assert text, files
-    assert "translate russian start:" in text, text
-    assert "translate russian screens:" in text, text
-    # БЛОКА strings: быть не должно: он подменяет python-строки в коде
-    # игры и ломает словари (SR24). См. test_renpy_no_strings_block.py
-    assert "translate russian strings:" not in text, text
-    blocks = dict(re.findall(
-        r"^translate russian ([^:\r\n]+):\r?\n((?:(?:    .*)?\r?\n)+)",
-        text, re.M))
-    assert "Hello" in blocks.get("start", ""), blocks
-    assert "Settings" not in blocks.get("start", ""), \
-        "текст экрана не должен попадать в блок метки"
-    assert "Settings" in blocks.get("screens", ""), blocks
+    assert os.path.isfile(os.path.join(out, "ob_strings.rpy")), \
+        os.listdir(out) if os.path.isdir(out) else "нет tl/russian"
+    # старых пофайловых файлов нет — только единый strings:-файл
+    rpy_files = [f for f in os.listdir(out) if f.endswith(".rpy")]
+    assert rpy_files == ["ob_strings.rpy"], rpy_files
+    text = io.open(os.path.join(out, "ob_strings.rpy"),
+                   encoding="utf-8").read()
+    assert text.count("translate russian strings:") == 1, text
+    # НИКАКИХ label/screens блоков с old/new: движок их игнорировал
+    assert not re.search(r"^translate russian (?!strings:)\S+:",
+                         text, re.M), text
+    for orig in ("Alpha dialogue marker", "Beta screen marker",
+                 "Gamma python marker", "Delta nolabel marker"):
+        assert 'old "%s"' % orig in text, (orig, text)
+    # экранный текст — в ТОМ ЖЕ strings:-блоке, а не в screens:
+    assert "translate russian screens:" not in text, text
+    assert res.get("files") == 1, res
+    assert res.get("strings") == 4, res
+    assert res.get("skipped_by") == {"string-marker": 1,
+                                     "other-language": 1}, res
 print("   OK")
 
-print("3a) имена персонажей (who=) переводятся в блоке МЕТКИ...")
-who = mk("Alice", "t.rpyc:speaker", "start", "Алиса")
-assert rp._entry_block(who) == "label", rp._entry_block(who)
-assert rp._entry_skip_reason(who) == "", rp._entry_skip_reason(who)
+print("3a) имена персонажей (who=) тоже идут в strings:...")
+who = mk("Alice marker name", "t.rpyc:speaker", "start",
+         "TR Alice marker name")
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "game"))
+    rp.apply(td, [who], target_lang="ru")
+    text = io.open(os.path.join(td, "game", "tl", "russian",
+                                "ob_strings.rpy"), encoding="utf-8").read()
+    assert 'old "Alice marker name"' in text, text
+    assert 'new "TR Alice marker name"' in text, text
 print("   OK")
 
 print("4) метка не теряется при извлечении...")
@@ -96,17 +118,17 @@ with tempfile.TemporaryDirectory() as td:
     os.makedirs(g)
     io.open(os.path.join(g, "script.rpy"), "w", encoding="utf-8").write(
         'label intro:\n'
-        '    e "Hello there"\n'
+        '    e "Alpha intro marker"\n'
         '    menu:\n'
-        '        "Yes":\n'
+        '        "Beta choice marker":\n'
         '            pass\n'
         'label other:\n'
-        '    e "Second"\n')
+        '    e "Gamma second marker"\n')
     entries = rp.extract(td)
     by_orig = {e.original: rp._entry_label(e) for e in entries}
-    assert by_orig.get("Hello there") == "intro", by_orig
-    assert by_orig.get("Yes") == "intro", by_orig
-    assert by_orig.get("Second") == "other", by_orig
+    assert by_orig.get("Alpha intro marker") == "intro", by_orig
+    assert by_orig.get("Beta choice marker") == "intro", by_orig
+    assert by_orig.get("Gamma second marker") == "other", by_orig
 print("   OK")
 
 print("ALL RENPY TRANSLATION-BLOCK TESTS GREEN")

@@ -60,10 +60,11 @@ with tempfile.TemporaryDirectory() as td:
     for e in entries:
         e.translation = "TR:" + e.original
     stats = renpy.apply(td, entries, "ru")
-    out = os.path.join(stats["out_dir"], "ob_game__script.rpy")
+    # ЕДИНСТВЕННЫЙ strings:-файл (один на язык): старые пофайловые
+    # ob_*.rpy с `translate <lang> <label>:` движок игнорировал
+    out = os.path.join(stats["out_dir"], "ob_strings.rpy")
     content = open(out, encoding="utf-8").read()
-    # БЛОКА strings: больше нет: он подменяет python-строки в коде
-# игр и ломал словари (SR24). См. test_renpy_no_strings_block.py
+    assert content.count("translate russian strings:") == 1, content
     assert 'old "Привет, я ведьма."' in content
     assert 'new "TR:Привет, я ведьма."' in content
     assert renpy.apply(td, entries, "ru")  # повторная генерация не падает
@@ -72,7 +73,7 @@ with tempfile.TemporaryDirectory() as td:
     for i, e in enumerate(dup):
         e.id = i + 1
     stats2 = renpy.apply(td, dup, "ru")
-    c2 = open(os.path.join(stats2["out_dir"], "ob_game__script.rpy"),
+    c2 = open(os.path.join(stats2["out_dir"], "ob_strings.rpy"),
               encoding="utf-8").read()
     assert c2.count('old "Привет, я ведьма."') == 1
 print("   OK")
@@ -88,7 +89,7 @@ with tempfile.TemporaryDirectory() as td:
         "Первая строка\nВторая строка",
         "Первый перевод\nВторой перевод", "translated"))
     stats = renpy.apply(td, entries, "ru")
-    out = os.path.join(stats["out_dir"], "ob_game__script.rpy")
+    out = os.path.join(stats["out_dir"], "ob_strings.rpy")
     content = open(out, encoding="utf-8").read()
     assert 'old "Первая строка\\nВторая строка"' in content, content
     assert 'new "Первый перевод\\nВторой перевод"' in content, content
@@ -143,7 +144,7 @@ with tempfile.TemporaryDirectory() as td:
     for e in entries:
         e.translation = "TR:" + e.original
     stats = renpy.apply(td, entries, "ru")
-    content = open(os.path.join(stats["out_dir"], "ob_game__script.rpy"),
+    content = open(os.path.join(stats["out_dir"], "ob_strings.rpy"),
                    encoding="utf-8").read()
     assert 'old "Первая строка\\n        вторая строка"' in content, content
 print("   OK")
@@ -172,7 +173,8 @@ with tempfile.TemporaryDirectory() as td:
                  if f.startswith("ob_") and f.endswith(".rpy")]
     # ob_activate.rpy больше не создаётся в tl/: активатор языка живёт в
     # корне game/ (Ren'Py не исполняет файлы из tl/<язык>/).
-    assert "ob_game__script.rpy" in remaining
+    # Единственный файл перевода — ob_strings.rpy со strings:-блоком.
+    assert remaining == ["ob_strings.rpy"], remaining
     assert "ob_activate.rpy" not in remaining
     for f in remaining:
         content = open(os.path.join(tl_dir, f), encoding="utf-8").read()
@@ -290,14 +292,19 @@ with tempfile.TemporaryDirectory() as td:
                                 "TR:Уникальная реплика.", "translated")]
     stats = renpy.apply(td, entries, "ru")
     tl_dir = stats["out_dir"]
-    c1 = open(os.path.join(tl_dir, "ob_game__script.rpy"),
-              encoding="utf-8").read()
-    c2 = open(os.path.join(tl_dir, "ob_game__other.rpy"),
-              encoding="utf-8").read()
-    assert c1.count('old "Общая реплика."') == 1, c1
-    assert 'old "Общая реплика."' not in c2, c2
-    assert c2.count('old "Уникальная реплика."') == 1, c2
+    # единый strings:-файл: дедуп по original глобальный
+    assert os.path.isfile(os.path.join(tl_dir, "ob_strings.rpy")), \
+        os.listdir(tl_dir)
+    single = open(os.path.join(tl_dir, "ob_strings.rpy"),
+                  encoding="utf-8").read()
+    assert single.count("translate russian strings:") == 1, single
+    assert single.count('old "Общая реплика."') == 1, single
+    assert single.count('old "Уникальная реплика."') == 1, single
+    assert not os.path.exists(
+        os.path.join(tl_dir, "ob_game__other.rpy")), \
+        "пофайловые ob_*.rpy больше не пишутся"
     assert stats["dup_skipped"] == 1, stats
+    assert stats["files"] == 1, stats
 print("   OK")
 from app.core.renpy import parser as _renpy
 
@@ -330,6 +337,33 @@ assert ("choice", " дальше") in out2, out2
 assert _renpy._string_parts("просто строка") == ["просто строка"]
 assert _renpy._string_parts(None) == []
 assert _renpy._string_parts(["a", 1, "b"]) == ["a", "b"]
+print("   OK")
+
+print("2d6) Ren'Py: старый пофайловый ob_*.rpy с label-блоком — orphan...")
+with tempfile.TemporaryDirectory() as td:
+    make_renpy(td)
+    entries = renpy.extract(td)
+    for e in entries:
+        e.translation = "TR:" + e.original
+    tl_dir = os.path.join(td, "game", "tl", "russian")
+    os.makedirs(tl_dir, exist_ok=True)
+    # мусор старого формата: пофайловый блок, который движок игнорировал
+    stale = os.path.join(tl_dir, "ob_game__script.rpy")
+    with open(stale, "w", encoding="utf-8") as f:
+        f.write("translate russian start:\n"
+                '    old "Alpha stale marker"\n'
+                '    new "TR Alpha stale marker"\n')
+    stats = renpy.apply(td, entries, "ru")
+    assert not os.path.exists(stale), \
+        "старый пофайловый ob_*.rpy не вычищен как orphan"
+    fresh = os.path.join(tl_dir, "ob_strings.rpy")
+    assert os.path.isfile(fresh), os.listdir(tl_dir)
+    body = open(fresh, encoding="utf-8").read()
+    assert body.count("translate russian strings:") == 1, body
+    assert 'old "Привет, я ведьма."' in body, body
+    assert "Alpha stale marker" not in body, body
+    assert stats["removed_orphans"] >= 1, stats
+    assert stats["files"] == 1, stats
 print("   OK")
 
 # ── Ren'Py: скомпилированные .rpyc и .rpa ──
@@ -922,7 +956,7 @@ with tempfile.TemporaryDirectory() as td:
         e.translation = "TR\x01:" + e.original
     stats = renpy.apply(td, entries, "ru")
     assert stats["files"] > 0
-    out = os.path.join(stats["out_dir"], "ob_game__script.rpy")
+    out = os.path.join(stats["out_dir"], "ob_strings.rpy")
     assert _wok2q(out)
     content = open(out, encoding="utf-8").read()
     assert "\x01" not in content

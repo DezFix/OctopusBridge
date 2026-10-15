@@ -30,12 +30,13 @@ def mk(orig, ctx, label, trans, status="translated"):
                             translation=trans, status=status)
 
 
-print("1) активатор в корне game/, словарь только безопасных строк...")
+print("1) словарь хука: блоки + no-label + python, без маркеров...")
 say = mk("Hello", "t.rpy:2:dialogue", "start", "RU-Hello")
 py1 = mk("Gold", "t.rpy:11:python:gold_text", "start", "RU-Gold")
+nolab = mk("Plain", "t.rpy:12:dialogue", "", "RU-Plain")
 with tempfile.TemporaryDirectory() as td:
     os.makedirs(os.path.join(td, "game"))
-    rp.apply(td, [say, py1], target_lang="ru")
+    rp.apply(td, [say, py1, nolab], target_lang="ru")
     act = os.path.join(td, "game", rp._ACTIVATE_NAME)
     assert os.path.isfile(act), "активатор не создан"
     body = io.open(act, encoding="utf-8").read()
@@ -46,7 +47,11 @@ with tempfile.TemporaryDirectory() as td:
     import json
     d = json.load(io.open(dpath, encoding="utf-8"))
     assert d.get("Hello") == "RU-Hello", d
-    assert "Gold" not in d, "python-строка попала в словарь хука"
+    # хук render-only: python-строка в словаре безвредна для логики,
+    # а если она показывается на экране — переведётся
+    assert d.get("Gold") == "RU-Gold", d
+    # no-label некуда положить блоком, но хук её берёт
+    assert d.get("Plain") == "RU-Plain", d
 print("   OK")
 
 print("2) python-блоки активатора без синтаксиса только-Python-3...")
@@ -92,6 +97,67 @@ assert "_ob_norm_index" in body, "нет fallback-поиска по нормал
 assert "_ob_tr(" in body, "нет единой функции поиска перевода"
 # счётчики покрытия (только числа, без текста игры)
 assert "_ob_hits" in body, "нет счётчиков попаданий/промахов"
+# скелетный поиск для строк с [var]: на экране значение, в словаре шаблон
+assert "_ob_pat_list" in body and "_ob_tr_pat" in body, \
+    "нет поиска по скелету для подстановок"
+print("   OK")
+
+print("4) скелетный поиск: шаблон с [var] ловит строку со значением...")
+# Симулируем алгоритм из шаблона один в один (re + строки — одинаково
+# работают в py2/py3 для этих операций).
+_d = {"Hello [name], you have [n] coins": "RU-Hello [name], coins [n]"}
+_pl = []
+for _k, _v in _d.items():
+    _kn = []
+    for _m in re.findall(r"\[([^\[\]]+)\]", _k):
+        _b = _m.split("!")[0].split(":")[0]
+        if _b and _b not in _kn:
+            _kn.append(_b)
+    _vn = []
+    for _m in re.findall(r"\[([^\[\]]+)\]", _v):
+        _b = _m.split("!")[0].split(":")[0]
+        if _b and _b not in _vn:
+            _vn.append(_b)
+    assert sorted(_vn) == sorted(_kn)
+    _parts = re.split(r"(\[[^\[\]]+\])", _k)
+    _rx, _names = [], []
+    for _p in _parts:
+        _pm = re.match(r"^\[([^\[\]]+)\]$", _p)
+        if _pm:
+            _names.append(_pm.group(1).split("!")[0].split(":")[0])
+            _rx.append("(.+?)")
+        else:
+            _rx.append(re.escape(_p))
+    _pat = re.compile("\\A" + "".join(_rx) + "\\Z")
+    _pl.append((_parts[0], _pat, _names, _v))
+
+
+def _tr_pat(s):
+    for _prefix, _pat, _names, _v in _pl:
+        if _prefix and not s.startswith(_prefix):
+            continue
+        _m = _pat.match(s)
+        if not _m:
+            continue
+        _seen = {}
+        for _nm, _vv in zip(_names, _m.groups()):
+            if _nm not in _seen:
+                _seen[_nm] = _vv
+        _res = _v
+        for _nm, _vv in _seen.items():
+            _res, _ = re.subn(r"\[" + re.escape(_nm)
+                              + r"(?:![^\[\]]*)?(?::[^\[\]]*)?\]",
+                              lambda _mm: _vv, _res)
+        return _res
+    return s
+
+
+assert _tr_pat("Hello Han, you have 5 coins") == \
+    "RU-Hello Han, coins 5", _tr_pat("Hello Han, you have 5 coins")
+# чужой текст не задевает
+assert _tr_pat("Goodbye Han, see you") == "Goodbye Han, see you"
+# теги {...} не считаются подстановками
+assert _tr_pat("Hello {b}Han{/b}") == "Hello {b}Han{/b}"
 print("   OK")
 
 print("ALL RENPY HOOK TESTS GREEN")

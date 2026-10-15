@@ -1,23 +1,19 @@
 # -*- coding: utf-8 -*-
 """Покрытие перевода Ren'Py: правило «брать/не брать» и его следствия.
 
-Было: из 6562 записей реальной игры в перевод попадали 3158 (48.1%) —
-это блоки меток; остальные 3291 молча терялись, потому что решение
-«писать/не писать» принималось по белому списку видов, а обещанный
-рантайм-хук Text.__init__, который их якобы переводил, удалён (dd3ffe6).
+Правило для БЛОКОВ теперь одно: в `translate <lang> strings:`
+идут все записи с целым переводом (_is_interp_safe), кроме
+string-marker (обрывки разметки) и other-language (уже не исходный
+язык). Метка, вид узла (dialogue/screen/python/...) на попадание
+в блок НЕ влияют: подмена при показе, код не трогается.
 
-Стало: решение принимается по ВИДУ УЗЛА Ren'Py, из которого строка
-получена, а не по виду текста:
-
-    Say / TranslateSay / Menu / экран  -> отображаемый текст, БЕРЁМ
-                                          (метка / `translate <lang> screens:`)
-    Define / Default / Python / python: -> литерал внутри ВЫРАЖЕНИЯ, НЕ БЕРЁМ
-                                          (ключ словаря или значение, которое
-                                          игра ищет и сравнивает сама)
-    отображаемый текст без метки        -> НЕ БЕРЁМ (блока без метки нет)
-
-`translate <lang> strings:` не возвращается НИКОГДА: он подменяет
-python-строки прямо в коде игры и ломает игры на строковых словарях.
+Детальная таблица видов ниже осталась для СЛОВАРЯ хука: хук
+подменяет текст только в момент отрисовки, поэтому ему видны и
+python/no-label строки (если они показываются на экране —
+переведутся, логика игры не затрагивается). _entry_skip_reason
+как функция НЕ удалена — она теперь отвечает «пойдёт ли в
+словарь / какая структурная причина», а для БЛОКОВ решает одно
+правило выше (см. test_renpy_strings_block.py).
 """
 import io
 import os
@@ -36,13 +32,16 @@ print("1) решение «брать/не брать» — по виду УЗЛ
 from app.core.models import TranslationEntry  # noqa: E402
 
 
-def entry(orig, ctx, label, trans="ПЕР"):
+def entry(orig, ctx, label, trans="TR"):
     jp = ("label:%s|" % label if label else "") + "ctx:" + ctx
     return TranslationEntry(id=1, file="t.rpyc", json_path=jp,
                             context=ctx, original=orig, translation=trans)
 
 
-# вид узла -> (пишем?, причина пропуска)
+# вид узла -> (блок старой классификации / причина пропуска).
+# Таблица осталась для СЛОВАРЯ хука (куда идут и python-expression,
+# и no-label — хук render-only, код не трогает). Для БЛОКОВ правило
+# теперь одно: в strings: всё, кроме string-marker/other-language.
 RULE = [
     # сказать что: узел Say внутри метки — обычный переводимый текст
     ("dialogue", "start", "label", ""),
@@ -76,7 +75,7 @@ RULE = [
     ("some_new_node", "start", "other-node", ""),
 ]
 for kind, label, block_or_reason, _ in RULE:
-    e = entry("Text here", "t.rpyc:" + kind, label)
+    e = entry("Alpha marker text", "t.rpyc:" + kind, label)
     reason = rp._entry_skip_reason(e)
     if reason:
         assert reason == block_or_reason, (kind, label, reason)
@@ -90,7 +89,7 @@ print("2) подсказка вида не маскирует python-узел...
 # контекст = "<путь>:<вид>", вид python-узла составной и может содержать
 # двоеточия (это кусок исходника игры). Вид должен остаться 'python'.
 for hint in ("action_image", "key=q1", 'botlore_answer.append("{mark}...")'):
-    e = entry("Text", "t.rpyc:python:" + hint, "start")
+    e = entry("Alpha marker", "t.rpyc:python:" + hint, "start")
     assert rp._entry_kind(e) == "python", (hint, rp._entry_kind(e))
     assert rp._entry_skip_reason(e) == "python-expression", hint
 print("   OK")
@@ -158,42 +157,43 @@ def label(name, block):
 
 
 triples = rp._walk_ast([
-    label("chapter_one", [say("Первая реплика", who="Гость"),
-                          say("Вторая реплика")]),
-    label("chapter_two", [say("Третья реплика")]),
-    say("Реплика вне метки"),
+    label("chapter_one", [say("Alpha first marker", who="Beta guest marker"),
+                          say("Gamma second marker")]),
+    label("chapter_two", [say("Delta third marker")]),
+    say("Epsilon stray marker"),
 ], labeled=True)
 got = {(k, t): lab for k, t, lab in triples}
-assert got[("dialogue", "Первая реплика")] == "chapter_one", got
-assert got[("speaker", "Гость")] == "chapter_one", got
-assert got[("dialogue", "Вторая реплика")] == "chapter_one", got
+assert got[("dialogue", "Alpha first marker")] == "chapter_one", got
+assert got[("speaker", "Beta guest marker")] == "chapter_one", got
+assert got[("dialogue", "Gamma second marker")] == "chapter_one", got
 # метка ПЕРЕКЛЮЧАЕТСЯ на следующем Label, а не остаётся последней
-assert got[("dialogue", "Третья реплика")] == "chapter_two", got
-assert got[("dialogue", "Реплика вне метки")] == "", got
+assert got[("dialogue", "Delta third marker")] == "chapter_two", got
+assert got[("dialogue", "Epsilon stray marker")] == "", got
 # обратная совместимость вызова без labeled=
-assert rp._walk_ast([label("x", [say("Только")])]) == \
-    [("dialogue", "Только")], rp._walk_ast([label("x", [say("Только")])])
+assert rp._walk_ast([label("x", [say("Zeta only marker")])]) == \
+    [("dialogue", "Zeta only marker")], \
+    rp._walk_ast([label("x", [say("Zeta only marker")])])
 print("   OK")
 
 print("4) сквозная проверка на синтетике: .rpyc + .rpy -> apply...")
 SCRIPT_RPY = (
     'label intro:\n'
-    '    e "Текст из исходника"\n'
+    '    e "Alpha source marker"\n'
     '    menu:\n'
-    '        "Идти в лес":\n'
+    '        "Beta forest marker":\n'
     '            pass\n'
     'screen main_menu:\n'
-    '    text "Начать игру"\n'
-    '    textbutton "Выход"\n'
+    '    text "Gamma start marker"\n'
+    '    textbutton "Delta exit marker"\n'
     'init python:\n'
-    '    title_text = "Заголовок из python"\n'
+    '    title_text = "Epsilon python title marker"\n'
 )
 stmts = [
-    label("chapter_one", [say("Первая реплика", who="Гость"),
-                          say("Вторая реплика")]),
-    label("chapter_two", [say("Третья реплика")]),
-    python('items = {"key=first": "Описание из python"}'),
-    say("Реплика вне метки"),
+    label("chapter_one", [say("Zeta first marker", who="Eta guest marker"),
+                          say("Theta second marker")]),
+    label("chapter_two", [say("Iota third marker")]),
+    python('items = {"key=first": "Kappa python desc marker"}'),
+    say("Lambda stray marker"),
 ]
 rpyc = zlib.compress(pickle.dumps(({"_ob": True}, stmts), protocol=2))
 
@@ -208,66 +208,61 @@ with tempfile.TemporaryDirectory() as td:
     entries = rp.extract(td)
     kinds = {e.original: rp._entry_kind(e) for e in entries}
     assert len(entries) == 11, sorted(kinds)
-    assert kinds["Гость"] == "speaker", kinds
-    assert kinds["Начать игру"] == "screen", kinds
-    assert kinds["Заголовок из python"] == "python", kinds
-    assert kinds["Описание из python"] == "python", kinds
+    assert kinds["Eta guest marker"] == "speaker", kinds
+    assert kinds["Gamma start marker"] == "screen", kinds
+    assert kinds["Epsilon python title marker"] == "python", kinds
+    assert kinds["Kappa python desc marker"] == "python", kinds
 
-    taken = [e for e in entries if not rp._entry_skip_reason(e)]
-    coverage_now = 100.0 * len(taken) / len(entries)
-    # правило ДО фикса: белый список видов, speaker в него не входил
+    # покрытие считается по попаданию в strings: (а не в label-блоки):
+    # все 11 идут в strings (пропуски — только string-marker /
+    # other-language, которых здесь нет). Старое правило (белый список
+    # видов + обязательная метка, speaker вне списка) давало меньше.
+    taken_strings = [e for e in entries
+                     if rp._entry_skip_reason(e)
+                     not in ("string-marker", "other-language")]
+    coverage_now = 100.0 * len(taken_strings) / len(entries)
     _OLD_KINDS = {"dialogue", "choice", "menu-caption", "translate-block",
                   "screen"}
     coverage_old = 100.0 * sum(
         1 for e in entries
         if rp._entry_kind(e) in _OLD_KINDS and rp._entry_label(e)) / len(entries)
     assert coverage_now > coverage_old, (coverage_now, coverage_old)
+    assert coverage_now == 100.0, coverage_now
 
     for e in entries:
-        e.translation = "ПЕР:" + e.original
+        e.translation = "TR " + e.original
     res = rp.apply(td, entries, target_lang="ru")
-    assert res["skipped_total"] == 3, res
-    assert res["skipped_by"] == {"no-label": 1,
-                                 "python-expression": 2}, res
-    assert res["strings"] == len(taken), res
+    assert res["skipped_total"] == 0, res
+    assert res["skipped_by"] == {}, res
+    assert res["strings"] == len(taken_strings) == 11, res
+    assert res["files"] == 1, res
 
     out_dir = os.path.join(td, "game", "tl", "russian")
-    text = ""
-    for name in sorted(os.listdir(out_dir)):
-        if name.endswith(".rpy"):
-            text += io.open(os.path.join(out_dir, name),
-                            encoding="utf-8").read()
+    assert os.path.isfile(os.path.join(out_dir, "ob_strings.rpy")), \
+        os.listdir(out_dir)
+    text = io.open(os.path.join(out_dir, "ob_strings.rpy"),
+                    encoding="utf-8").read()
     assert text, os.listdir(out_dir)
-    # 1) блока strings: быть не должно НИГДЕ
-    assert "translate russian strings:" not in text, \
-        "strings: подменяет python-строки в коде игры"
-    # 2) ни одна python-строка не заменена переводом
-    for py_text in ("Заголовок из python", "Описание из python"):
-        assert "ПЕР:" + py_text not in text, \
-            "python-строка заменена переводом в файле перевода"
-        assert py_text not in text, py_text
-    # 3) отображаемый текст вне метки тоже не записан
-    assert "Реплика вне метки" not in text, "запись без метки записана"
-    # 4) блоки на месте: метки + screens
-    assert "translate russian chapter_one:" in text, text
-    assert "translate russian chapter_two:" in text, text
-    assert "translate russian intro:" in text, text
-    assert "translate russian screens:" in text, text
-    # 5) точечно: имя персонажа и реплики — в блоке СВОЕЙ метки
-    def block_of(label_name):
-        marker = "translate russian %s:\n" % label_name
-        i = text.index(marker) + len(marker)
-        j = text.find("\ntranslate russian ", i)
-        return text[i:j if j > 0 else len(text)]
-
-    ch1 = block_of("chapter_one")
-    assert "ПЕР:Гость" in ch1, ch1
-    assert "ПЕР:Первая реплика" in ch1, ch1
-    assert "ПЕР:Третья реплика" not in ch1, ch1
-    assert "ПЕР:Начать игру" not in ch1, \
-        "текст экрана не должен попадать в блок метки"
-    scr = block_of("screens")
-    assert "ПЕР:Начать игру" in scr and "ПЕР:Выход" in scr, scr
+    # 1) ОДИН блок strings: — и никаких label/screens блоков с old/new
+    # (движок их игнорировал)
+    assert text.count("translate russian strings:") == 1, text
+    import re as _re
+    assert not _re.search(r"^translate russian (?!strings:)\S+:",
+                          text, _re.M), text
+    # 2) python-строки ТОЖЕ в strings: (подмена при показе, код цел)
+    for py_text in ("Epsilon python title marker",
+                    "Kappa python desc marker"):
+        assert 'old "%s"' % py_text in text, py_text
+        assert "TR %s" % py_text in text, py_text
+    # 3) отображаемый текст вне метки тоже записан (хук и strings:
+    # его берут — раньше он молча терялся)
+    assert 'old "Lambda stray marker"' in text, text
+    # 4) точечно: имя персонажа, реплики, экраны — все в ОДНОМ блоке
+    for want in ("Eta guest marker", "Zeta first marker",
+                 "Iota third marker", "Gamma start marker",
+                 "Delta exit marker", "Alpha source marker",
+                 "Beta forest marker"):
+        assert 'old "%s"' % want in text, (want, text)
     print("   OK: покрытие %.1f%% (было по старому правилу %.1f%%), "
           "пропущено %d" % (coverage_now, coverage_old,
                             res["skipped_total"]))
