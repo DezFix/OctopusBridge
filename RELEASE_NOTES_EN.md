@@ -3,6 +3,19 @@
 Build: `OctopusBridge_v7.36.exe` (138 MB, FileVersion 7.36).
 Tests: 31/31 green, ruff clean.
 
+## Docs-driven strings-only output (new in this build)
+
+`apply()` now writes a single `game/tl/<lang>/ob_strings.rpy` with one
+`translate <lang> strings:` block holding every display pair — per
+renpy.org/doc/html/translation, which defines string translations as
+covering menus, `_()` strings AND untranslated dialogue, and as the
+official path for translation without sources. Display-time
+substitution; game code is never rewritten. Verified live on a Ren'Py
+8.3 game: 5,572 pairs load, `translate_string()` resolves through the
+official table, game runs clean. Dead per-label/per-screen old/new
+blocks are no longer written (the engine ignores them); leftovers are
+removed by orphan cleanup.
+
 ## Ren'Py translation that actually shows up in games
 
 The headline fix of this cycle. Previously translations were written but
