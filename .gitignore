@@ -30,3 +30,8 @@ Thumbs.db
 # ── Тесты на реальных играх: только локальные, не в репозиторий ──
 tests/real/
 tests/*/real/
+
+# ── Rust (задача C: порты парсеров; тулчейн — rustup stable-gnullvm) ──
+rust/*/target/
+rust/*/*.pyd
+rust/*/libunwind.dll

@@ -1,27 +1,26 @@
-Ren'Py: активатор языка перенесён в корень game/
+System language defaults, Chinese UI, Rust parsers, Ren'Py on Rust
 
-Причина того, что перевод не появлялся в игре. Активатор
-config.language лежал в tl/<lang>/ob_activate.rpy, а Ren'Py файлы из
-tl/<язык>/ как обычные скрипты НЕ исполняет: это данные перевода для
-языка, который должен быть уже включён. Замкнутый круг — язык не
-переключается, потому что перевод не грузится, а перевод не грузится,
-потому что язык не переключён.
+UI now starts in the system language (QLocale with locale fallback)
+instead of hardcoded English, and the translation target defaults to
+the system language too. Manual selection always overrides.
 
-Проверено экспериментом на Shoretown Saga (Ren'Py 7.4.3, Python 2),
-маркером, пишущим файл при выполнении init-блока:
-  init-блок внутри tl/russian/ -> НЕ выполнился
-  тот же блок в game/          -> выполнился
-После переноса config.language в игре = 'russian'.
+Chinese (zh) interface: all 783 UI strings translated (machine draft,
+needs native review), language selectors rebuilt on SUPPORTED_UI_LANGS.
+TR() fallback verified, placeholders and newlines match EN one to one.
 
-Раньше это было не видно: перевод подменял рантайм-хук на
-Text.__init__, который тоже жил в tl/<lang>/... но хук ставился из
-того же файла, а сам хук цеплялся к renpy.text.text.Text глобально и
-работал независимо от языка — поэтому текст менялся всегда, хоть и
-частично. Хук удалён в 7.35 как ломающий загрузку игр, и вместе с ним
-исчез единственный реально работавший механизм.
+Rust, one parser at a time, behavior-identical ports with conformance
+suites and zero-panic guarantees on malformed input:
+- rust/ob_pck: .pck reader (Godot v2/v3), 18/18 tests, byte-identical
+  conformance vs Python, PyO3 module builds and imports.
+- rust/ob_renpy: sourcetr string logic + universal method-choice rule,
+  19/19 tests, 0 divergences on 300+ generated inputs, PyO3 works.
+- rust/ob_renpy_rpyc: .rpyc framing + pickle-VM with Ren'Py mocks +
+  AST extraction, 14/14 tests, 384 conformance comparisons with 0
+  divergences, 200-mutation fuzzer with 0 panics, PyO3 works.
 
-Хук не возвращаем: он правил текст у КАЖДОГО узла игры, включая те,
-что игра держит как данные, и ломал старт (SR24). Теперь работают
-штатные блоки Ren'Py.
+Ren'Py finished: app/core/renpy/parser.py now tries the Rust .rpyc
+extractor first and falls back to Python on any refusal. Verified live:
+Rust path engages on real game archives.
 
-ВСЕ 28 ТЕСТОВЫХ ФАЙЛОВ ЗЕЛЁНЫЕ, ruff чистый.
+Tests: all 31 green, ruff clean. No commits were made for this work
+until now per project rules; this commit was explicitly requested.

@@ -1,0 +1,10 @@
+[package]
+name = "ob_renpy"
+version = "0.1.0"
+edition = "2021"
+description = "Прямой перевод исходников Ren'Py — Rust-порт app/core/renpy/sourcetr.py и правила выбора из universal.py (только чистая строковая логика, без I/O)"
+license = "GPL-3.0-or-later"
+
+[lib]
+name = "ob_renpy"
+path = "src/lib.rs"

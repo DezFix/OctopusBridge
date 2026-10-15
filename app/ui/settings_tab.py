@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QFormLayout,
 
 from app.core import cache as app_cache
 from app.core.translate.engines import TARGET_LANGS
-from app.ui.i18n import TR
+from app.ui.i18n import SUPPORTED_UI_LANGS, TR, default_target_lang
 from app.ui.icons import icon
 from app.ui.loading_overlay import BusyLabel
 from app.ui.theme import AnimatedComboBox, AnimatedTabWidget
@@ -117,7 +117,7 @@ class SettingsDialog(QDialog):
         self.target_lang = AnimatedComboBox()
         for code in TARGET_LANGS:
             self.target_lang.addItem(TR("lang_" + code), code)
-        idx = self.target_lang.findData(s.value("target_lang", "ru"))
+        idx = self.target_lang.findData(s.value("target_lang", default_target_lang()))
         self.target_lang.setCurrentIndex(max(idx, 0))
         form.addRow(TR("settings_tgt_lang"), self.target_lang)
 
@@ -131,8 +131,10 @@ class SettingsDialog(QDialog):
         ui_box = QGroupBox(TR("settings_ui_lang"))
         ui_form = QFormLayout(ui_box)
         self.ui_lang = AnimatedComboBox()
-        self.ui_lang.addItems([TR("settings_ui_ru"), TR("settings_ui_en")])
-        self.ui_lang.setCurrentIndex(0 if s.value("ui_lang", "ru") == "ru" else 1)
+        for code in SUPPORTED_UI_LANGS:
+            self.ui_lang.addItem(TR("lang_" + code), code)
+        self.ui_lang.setCurrentIndex(max(
+            self.ui_lang.findData(s.value("ui_lang", "ru")), 0))
         ui_form.addRow(TR("settings_ui_lang"), self.ui_lang)
         lay.addWidget(ui_box)
 
@@ -234,7 +236,8 @@ class SettingsDialog(QDialog):
         return w
 
     def _cache_lang(self) -> str:
-        return "ru" if self.ui_lang.currentIndex() == 0 else "en"
+        lang = self.ui_lang.currentData() or "en"
+        return lang if lang in SUPPORTED_UI_LANGS else "en"
 
     def _refresh_cache_size(self):
         total, files = app_cache.projects_size()
@@ -294,7 +297,7 @@ class SettingsDialog(QDialog):
         wizard = SetupWizard(self)
         wizard.exec()
         new_lang = s.value("ui_lang", "ru")
-        self.ui_lang.setCurrentIndex(0 if new_lang == "ru" else 1)
+        self.ui_lang.setCurrentIndex(max(self.ui_lang.findData(new_lang), 0))
         if new_lang != old_lang:
             QMessageBox.information(self, TR("info"),
                                     TR("settings_restart_hint"))
@@ -317,7 +320,7 @@ class SettingsDialog(QDialog):
         s.setValue("cache_auto_clean", self.auto_clean.isChecked())
         s.setValue("cache_auto_clean_mb", self.cache_limit_spin.value())
         old_lang = s.value("ui_lang", "ru")
-        new_lang = "ru" if self.ui_lang.currentIndex() == 0 else "en"
+        new_lang = self.ui_lang.currentData() or "en"
         s.setValue("ui_lang", new_lang)
         if new_lang != old_lang:
             from PySide6.QtWidgets import QMessageBox

@@ -1,0 +1,13 @@
+[package]
+name = "ob_pck_py"
+version = "0.1.0"
+edition = "2021"
+description = "PyO3-обёртка чтения .pck (read_entries как Python-функция) — stretch goal задачи C"
+
+[dependencies]
+ob_pck = { path = "../ob_pck" }
+pyo3 = { version = "0.26", features = ["extension-module"] }
+
+[lib]
+name = "_ob_pck_py"
+crate-type = ["cdylib"]

@@ -1,0 +1,14 @@
+[package]
+name = "ob_renpy_py"
+version = "0.1.0"
+edition = "2021"
+description = "PyO3-обёртка чистого перевода Ren'Py (translate_text/find_literals/choose_method поверх ob_renpy)"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+ob_renpy = { path = "../ob_renpy" }
+pyo3 = { version = "0.26", features = ["extension-module"] }
+
+[lib]
+name = "_ob_renpy_py"
+crate-type = ["cdylib"]

@@ -1,0 +1,13 @@
+[package]
+name = "ob_renpy_rpyc"
+version = "0.1.0"
+edition = "2021"
+description = "Распакoвка .rpyc Ren'Py (RPC2/zlib + pickle-VM с mock-классами AST) и извлечение строк — Rust-порт app/core/renpy/parser.py (_unpickle_rpyc, _walk_ast)"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+flate2 = "1"
+
+[lib]
+name = "ob_renpy_rpyc"
+path = "src/lib.rs"

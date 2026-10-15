@@ -22,7 +22,7 @@ from app.core.translate.engines import GoogleFreeEngine
 from app.core.translate.glossary import Glossary
 
 from app.engines.registry import detect_engine
-from app.ui.i18n import TR, provider_short_name, set_language
+from app.ui.i18n import TR, provider_short_name, set_language, system_ui_lang
 from app.ui.welcome_tab import WelcomeTab
 from app.ui.projects_tab import ProjectsTab
 from app.ui.translate_tab import TranslateTab
@@ -132,7 +132,7 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("OctopusBridge", "OctopusBridge")
         _migrate_qsettings(self.settings)
         _cleanup_legacy_settings(self.settings)
-        set_language(self.settings.value("ui_lang", "ru"))
+        set_language(self.settings.value("ui_lang", system_ui_lang()))
         self._base_title = f"{TR('app_title')}  v{app_paths.__version__}"
         self.setWindowTitle(self._base_title)
         self.resize(1390, 755)

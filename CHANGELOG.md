@@ -2,6 +2,12 @@
 
 All notable changes to the project. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: `X.Y` — `X` is the update number (new features), `Y` fixes for the last update (e.g. `154.6`).
 
+## [Unreleased]
+
+### Added
+- **Rust-порт чтения `.pck` (первый парсер, задача C).** Крейт `rust/ob_pck/` без внешних зависимостей — чтение v2/v3 один в один с `app/core/godot/pck.py` (те же инварианты, те же отказы; запись/пересборка не портированы): `cargo test` — 18 тестов зелёные, `conform.py` сверяет число/пути/ofs/size/md5/flags с Python-версией. Stretch goal тоже закрыт: `rust/ob_pck_py/` — PyO3-обёртка `parse_pck`/`read_blob` (сборка `build_mod.py` без maturin, рядом с `.pyd` кладётся `libunwind.dll` из llvm-mingw), `test_py.py` вызывает Rust вместо `pck.read_entries` на синтетике. Python-код (`pck.py`, тесты) не тронут.
+- **Rust-порт чистой логики Ren'Py (второй парсер, задача C-RenPy-1).** Крейт `rust/ob_renpy/` без внешних зависимостей — только чистые функции из `app/core/renpy/sourcetr.py` (`_escape`, поиск литералов в двойных кавычках с проверкой границ, `translate_text` с guards против кода/путей) и правило выбора из `universal.py` (`>= 3 .rpy → source`, иначе по флагу идентификаторов; подсчёт файлов и I/O остались в Python). Поведение один в один: `cargo test` — 19 тестов зелёные, `conform.py` — 0 расхождений с Python на 210 сгенерированных входах (три сида) плюс спаны, guards и `choose_method` на синтетических папках. PyO3-обёртка `rust/ob_renpy_py/` (`translate_text`/`find_literals`/`choose_method`, сборка `build_mod.py` без maturin), `test_py.py` вызывает Rust на синтетике. `.rpyc`-распаковка (pickle + mock-классы AST) не портирована — отдельным этапом. Python-файлы парсера и тесты не тронуты.
+
 ## [7.36] - 2026-10-10
 
 ### Added
@@ -12,6 +18,7 @@ All notable changes to the project. Format follows [Keep a Changelog](https://ke
 - Бэкап оригинала перед записью и атомарная запись — откатить одним удалением файла.
 
 ### Fixed
+- **Язык системы по умолчанию.** Интерфейс при первом запуске говорит на языке системы (QLocale, фолбэк на locale), а не на захардкоженном. Цель перевода в настройках по умолчанию — тоже язык системы. Ручной выбор всегда перекрывает авто. (`system_ui_lang()`, `default_target_lang()` в `app/ui/i18n.py`, тест `tests/test_sys_lang.py`.)
 - **Ren'Py: перевод наконец включается в игре.** Активатор языка (`config.language`) лежал в `tl/<lang>/ob_activate.rpy` — а Ren'Py НЕ ИСПОЛЯЕТ файлы iz `tl/<язык>/`: это данные перевода для языка, который должен быть уже включён. Замкнутый круг: язык не включался, поэтому штатные блоки `translate` не грузились. Проверено экспериментом на игре: метка-заглушка в `tl/<lang>/` не отработала, тот же блок в `game/` — выполнился. Активатор теперь пишется в корень `game/zz_ob_lang.rpy`. На живой игре язык переключился сам: “перевод есть, а в игре английский”.
 Раньше подвигалось, что старый видимый текст менял видимый хук на `Text.__init__` версии 7.35 вообще остались, а теперь работает штатный механизм.
 - Старый `tl/<lang>/ob_activate.rpy` больше не создаётся и вычищается как осиротевший.

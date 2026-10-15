@@ -1,0 +1,10 @@
+[package]
+name = "ob_pck"
+version = "0.1.0"
+edition = "2021"
+description = "Чтение .pck Godot 4 (v2/v3) — Rust-порт app/core/godot/pck.py (только чтение)"
+license = "GPL-3.0-or-later"
+
+[lib]
+name = "ob_pck"
+path = "src/lib.rs"

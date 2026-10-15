@@ -203,6 +203,163 @@ app/ui          виджеты, вкладки, i18n          единствен
 
 Записи — от новых к низу старых. Формат: дата, что сделано, почему.
 
+## 2026-10-14 — Rust-порт чистой логики Ren'Py (задача C-RenPy-1, второй парсер)
+
+Вторым на Rust переехал Ren'Py — но только чистый срез без I/O: строковая
+логика `app/core/renpy/sourcetr.py` + правило выбора `universal.py`.
+`.rpyc`-распаковка (pickle + mock-классы AST) сознательно оставлена на
+отдельный последний этап — она на порядок сложнее (оценка в §5 ниже).
+
+### 1. Что создано
+
+- `rust/ob_renpy/` — крейт без внешних зависимостей, как `ob_pck`:
+  `Cargo.toml`, `src/lib.rs` (`escape`, `find_literal_spans`,
+  `line_is_code_position`, `replace_in_line`, `translate_text`,
+  `is_source_rpy_name`, `choose_method` + `MethodChoice`), `src/tests.rs`
+  (19 тестов), `conform.py` (сравнение с Python на генерируемых входах).
+- `rust/ob_renpy_py/` — PyO3-обёртка (`translate_text`/`find_literals`/
+  `choose_method` + тонкие `escape`/`line_is_code_position`/
+  `is_source_rpy_name` для отладки), `build_mod.py` (прямой `cargo build`
+  + `.dll`→`.pyd`, `libunwind.dll` рядом — та же схема, что `ob_pck_py`),
+  `test_py.py` (Rust вместо `sourcetr` на синтетике).
+
+### 2. Тонкости один-в-один (пойманы зондом до порта, проверены конформностью)
+
+- Индексы спанов — в СИМВОЛАХ, как у Python (не байты UTF-8): вся логика
+  идёт по `Vec<char>`. На кириллице байтовые индексы дали бы другие числа.
+- Пробел — по-питоновски: `is_whitespace` ПЛЮС `\x1c..\x1f` (Python их
+  ест в `\s`/`lstrip`, Rust — нет). ZWSP — не пробел ни там, ни там.
+- Слово для `\b` — `is_alphanumeric || '_'`: кириллица/катакана — символы
+  слова (границы нет), скобки — нет. Регистр: `used_as_code` —
+  case-insensitive через `to_lowercase` с проверкой «ровно один символ»
+  (турецкая `İ` складывается в два — Python её за `i` не считает, и мы
+  тоже), остальные regex — case-sensitive (`AND`/`Else:`/`x.PY` — мимо).
+- Пустой перевод Python ЗАМЕНЯЕТ на `""` (счётчик 1), а не пропускает —
+  повторено, а не «починено». `missed` на guard-строках — с дубликатами,
+  на обычных — с дедупликацией (включая кейс «всё заменено, но `menu:` без
+  игл добавил все ключи в missed»). Перекрытие хитов даёт пустой срез,
+  а не панику — повторено.
+- В `sourcetr.py` НЕТ `_unescape` (в задаче упомянут парой к `_escape`):
+  есть только `_escape`. Одноимённые `_escape`/`_unescape_rpy_string` из
+  `parser.py` — другая, более агрессивная пара для tl-блоков (режет
+  C0-контролы, экранирует табы) — оставлена на этап портирования
+  извлечения, не трогалась.
+
+### 3. Проверки (все зелёные)
+
+- `cargo test` в `rust/ob_renpy/`: 19 passed, 0 failed.
+- `conform.py` (сиды 777/1234/99999): 70 входов `translate_text` × 3,
+  30 `find_literals`, 40 guards/escape/имён, 7 папок `choose_method` +
+  ветка native — 0 расхождений. Битый вход — `TypeError`, не падение.
+- `test_py.py`: все вызовы Rust совпали с Python, битый вход — `TypeError`.
+- `python run_tests.py` (offscreen): все 31 файл зелёные.
+- `ruff check app --select F821,F401,F811,E9`: passed.
+- `app/core/renpy/*.py` и `tests/test_renpy*.py` не тронуты.
+
+### 4. PyO3: сделано
+
+`_ob_renpy_py.pyd` собран прямым `cargo build` (офлайн, закэшированный
+`pyo3 0.26.0`), те же две оговорки, что у `ob_pck_py`: `libunwind.dll`
+рядом обязательна, maturin не используется. Невалидный UTF-8 и не-строки
+отклоняет сам extractor PyO3 (`TypeError`) — до Rust не доходят.
+
+### 5. Что осталось
+
+- Портирование `.rpyc`-распаковки (`parser.py::_unpickle_rpyc` + mock-классы
+  + обход AST + извлечение строк). Честная оценка после изучения кода:
+  ВОЗМОЖНО, но ТЯЖЕЛО — кратно больше текущего среза. По слоям:
+  а) zlib + RPC2-фрейминг — легко (но нужна внешняя зависимость, сейчас
+  крейты zero-dep); б) pickle-VM с mock-семантикой (`find_class` → mock
+  вместо реального класса, защита от hostile-pickle-RCE, протоколы py2/py3,
+  `copyreg.__newobj__`, str-подклассы с флагом `_ob_py_expr`, py2-байты) —
+  средне-тяжело, по сути свой интерпретатор pickle; в) извлечение
+  (~1000+ строк `parser.py`: десятки regex, ветки Say/Menu/Screen/Define/
+  Python, восстановление меток, `_looks_like_text`, версионные различия
+  6.x/7.x/8.x) — тяжело и хрупко, главный риск расхождений. Конформности
+  нужны фикстуры нескольких версий Ren'Py (SR24 на диске есть).
+- Подключение в `app/` (вызов Rust из Python с фолбэком) — не делалось,
+  как и в задаче `.pck`: сначала сами крейты.
+- Артефакты сборки покрыты уже существующими правилами `.gitignore`
+  (`rust/*/target/`, `*.pyd`, `libunwind.dll`); `Cargo.lock` оставлен.
+- Ничего не коммитилось.
+
+## 2026-10-14 — Rust-порт чтения `.pck` (задача C, первый парсер)
+
+Python остаётся для UI/сети/оркестрации, парсеры по одному переезжают на
+Rust и подключаются через PyO3 как обычные функции. Первым — `.pck`
+(Godot): эталон `app/core/godot/pck.py`, формат не переизобретался.
+
+### 1. Тулчейн: MSVC-линкера нет, собираем через gnullvm + llvm-mingw
+
+На машине не было ни Visual Studio (`link.exe`), ни gcc, а `winget`
+висел на обеих установках (WinLibs, LLVM-MinGW — таймаут 10 мин без
+прогресса). Сработало вот что:
+
+- `rustup-init.exe` с `static.rust-lang.org` (12 МБ — сеть в порядке,
+  дело было в winget/CDN, а не в сети вообще);
+- хост-тулчейн `stable-x86_64-pc-windows-gnullvm` (1.99.0) — ему не нужен
+  MSVC, но нужен `x86_64-w64-mingw32-clang`;
+- `llvm-mingw-20261006-ucrt-x86_64.zip` (190 МБ) напрямую с GitHub-релиза
+  `mstorsjo/llvm-mingw`, распакован в `%USERPROFILE%\.llvm-mingw`
+  (вне репозитория), `bin` добавлен в пользовательский PATH.
+
+Проверка связки: `cargo run` печатает `Hello, world!`. Дефолтный тулчейн
+переключён на gnullvm (`rustup default`), так что plain `cargo test`
+в `rust/ob_pck/` работает без флагов.
+
+### 2. Что создано
+
+- `rust/ob_pck/` — крейт без единой внешней зависимости (LE-разбор
+  вручную через `u32::from_le_bytes`, `byteorder` не понадобился):
+  `Cargo.toml`, `src/lib.rs` (константы, `PckHeader`/`PckEntry`,
+  `PckError`-иерархия с `reason`/`version`, `locate`/`check_version`/
+  `parse_header`/`read_entries`/`read_blob`/`catalog_end`), `src/tests.rs`
+  (18 тестов), `src/bin/ob_pck_dump.rs` (построчный дамп для сверки),
+  `conform.py` (сравнение с `pck.py`).
+- `rust/ob_pck_py/` — stretch goal: PyO3-обёртка (`parse_pck` = связка
+  `read_header`+`read_entries`, `read_blob`; ошибки — `ValueError` с тем
+  же текстом), `build_mod.py` (сборка без maturin — он не знает таргет
+  gnullvm), `test_py.py` (Rust вместо `pck.read_entries` на синтетике).
+
+Инварианты и отказы — один в один с Python: ветка v2/v3 по версии,
+`file_count` v3 после `seek(dir_offset)`, `file_base_abs` (v3 безусловно,
+v2 только с `PACK_REL_FILEBASE`), NUL-обрезка путей, отказ на
+шифровании/версии/sparse/removal/delta/смещениях. Битая арифметика не
+паникует: суммы через `u128`/`checked`, чтение через `slice::get`.
+
+### 3. Проверки (все зелёные)
+
+- `cargo test` в `rust/ob_pck/`: 18 passed, 0 failed.
+- `conform.py`: v2, v3 и v3-с-каталогом-в-хвосте — число/пути/ofs/size/
+  md5/flags совпали; битое смещение обе версии отвергли без паники.
+- `test_py.py`: v2+v3 через `_ob_pck_py` совпали с `pck.py`, усечения —
+  `ValueError`.
+- `python run_tests.py` (offscreen): все 31 файл зелёные.
+- `ruff check app --select F821,F401,F811,E9`: passed.
+- `pck.py` и `test_godot.py` не тронуты, ничего не коммитилось.
+
+### 4. PyO3: сделано, но с двумя оговорками
+
+1. Собранный `.pyd` тянет `libunwind.dll` из llvm-mingw — без неё
+   `ImportError`. DLL кладётся рядом скриптом (`build_mod.py`).
+   Прилинковать размотчик статически не вышло: rustc добавляет `-lunwind`
+   сам, позже наших `-Wl,-Bstatic`, флаг тонет (проверено на clang-23).
+2. `maturin`/`setuptools-rust` не использовались: первый не знает
+   gnullvm-хост, второй под MSC-Python тянет MSVC-линковку. Прямой
+   `cargo build` + переименование `.dll` в `.pyd` даёт тот же импортируемый
+   модуль (проверено на Python 3.13). Упаковка — отдельной задачей, когда
+   появится MSVC-тулчейн.
+
+### 5. Что осталось
+
+- Порт записи/пересборки (`write_pck`, `verify`, `blob_md5`) — следующий
+  этап этой же задачи; чтение его не касается.
+- Подключение в `app/` (вызов Rust из `parser.py`, фолбэк на Python,
+  регистрация) — не делалось: сначала сам крейт.
+- Следующие парсеры — по одному, тем же маршрутом.
+- Артефакты сборки (`rust/*/target/`, `*.pyd`, `libunwind.dll`) занесены
+  в `.gitignore`; `Cargo.lock` оставлен в репозитории осознанно.
+
 ## 2026-10-08 — Unity: перевод наконец виден в игре (v7.30)
 
 **Симптом.** Пользователь: «в Unity игра не переводится». Переводчик при этом

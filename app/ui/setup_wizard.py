@@ -15,7 +15,8 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QFormLayout,
                                QVBoxLayout, QWidget)
 
 from app.core.translate.engines import TARGET_LANGS
-from app.ui.i18n import TR, set_language
+from app.ui.i18n import (SUPPORTED_UI_LANGS, TR, default_target_lang,
+                         set_language, system_ui_lang)
 from app.ui.theme import (C_TEXT, C_TEXT_SECONDARY,
                           AnimatedComboBox)
 
@@ -153,8 +154,10 @@ class SetupWizard(QDialog):
         form = QFormLayout(box)
 
         self.cb_ui_lang = AnimatedComboBox()
-        self.cb_ui_lang.addItems([TR("settings_ui_ru"), TR("settings_ui_en")])
-        default_idx = 0 if self.settings.value("ui_lang", "ru") == "ru" else 1
+        for code in SUPPORTED_UI_LANGS:
+            self.cb_ui_lang.addItem(TR("lang_" + code), code)
+        saved_ui = self.settings.value("ui_lang", system_ui_lang())
+        default_idx = max(self.cb_ui_lang.findData(saved_ui), 0)
         self.cb_ui_lang.setCurrentIndex(snap.get("cb_ui_lang_idx", default_idx))
         self.cb_ui_lang.currentIndexChanged.connect(self._on_ui_lang_changed)
         form.addRow(TR("settings_ui_lang"), self.cb_ui_lang)
@@ -169,7 +172,8 @@ class SetupWizard(QDialog):
         for code in TARGET_LANGS:
             self.cb_target.addItem(TR("lang_" + code), code)
         saved_t = snap.get("cb_target_saved",
-                           self.settings.value("target_lang", "ru"))
+                           self.settings.value(
+                               "target_lang", default_target_lang()))
         self.cb_target.setCurrentIndex(max(
             self.cb_target.findData(saved_t), 0))
         form.addRow(TR("settings_tgt_lang"), self.cb_target)
@@ -178,7 +182,7 @@ class SetupWizard(QDialog):
         return w
 
     def _on_ui_lang_changed(self, idx: int):
-        lang = "ru" if idx == 0 else "en"
+        lang = SUPPORTED_UI_LANGS[idx] if 0 <= idx < len(SUPPORTED_UI_LANGS) else "en"
         self.settings.setValue("ui_lang", lang)
         set_language(lang)
         self._rebuild_pages()
@@ -275,8 +279,7 @@ class SetupWizard(QDialog):
 
     def _finish(self):
         s = self.settings
-        s.setValue("ui_lang", "ru" if self.cb_ui_lang.currentIndex() == 0
-                   else "en")
+        s.setValue("ui_lang", self.cb_ui_lang.currentData() or "en")
         s.setValue("source_lang", "auto")
         s.setValue("target_lang", self.cb_target.currentData())
         s.setValue("engine_files", "rotate")

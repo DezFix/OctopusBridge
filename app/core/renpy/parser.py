@@ -395,6 +395,41 @@ class _RenPyUnpickler(pickle.Unpickler):
 
 # ── RPC2 unpickling ─────────────────────────────────────────────────
 
+#: Кэш доступности Rust-ускорителя (None — ещё не проверяли).
+_RUST_RPYC = {"mod": None, "ok": None}
+
+
+def _walk_ast_rust(raw: bytes):
+    """Обход .rpyc через Rust (быстрее, не падает на битом входе).
+
+    Возвращает список (kind, text, label) или None, если Rust недоступен
+    или отказался. Вызывающий обязан иметь Python-фолбэк: None означает
+    «иди обычным путём», а не «файл битый».
+    """
+    if _RUST_RPYC["ok"] is None:
+        try:
+            import sys as _sys
+            import os as _os
+            _rp = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                                "..", "..", "..", "rust", "ob_renpy_rpyc_py")
+            _rp = _os.path.normpath(_rp)
+            if _rp not in _sys.path:
+                _sys.path.insert(0, _rp)
+            import _ob_renpy_rpyc_py as _m
+            _RUST_RPYC["mod"] = _m
+            _RUST_RPYC["ok"] = hasattr(_m, "extract_rpyc")
+        except Exception:
+            _RUST_RPYC["mod"] = None
+            _RUST_RPYC["ok"] = False
+    if not _RUST_RPYC["ok"]:
+        return None
+    try:
+        res = _RUST_RPYC["mod"].extract_rpyc(bytes(raw))
+        return [(str(k), str(s), str(lb)) for k, s, lb in res]
+    except Exception:
+        return None
+
+
 def _unpickle_rpyc(rpyc_data: bytes):
     """Unpickle .rpyc data, return (data_dict, stmts_list) or None."""
     if rpyc_data[:10] != b"RENPY RPC2":
@@ -1084,6 +1119,13 @@ def extract(game_dir: str, extract_lang: str | None = None
             try:
                 raw = arc.read(fname)
                 if fname.endswith(".rpyc"):
+                    # Rust-ускоритель первым (не падает на битом входе);
+                    # при отказе — обычный Python-путь ниже.
+                    _rust_items = _walk_ast_rust(raw)
+                    if _rust_items is not None:
+                        for kind, s, label in _rust_items:
+                            add(rel, f"{rel}:{kind}", s, label)
+                        continue
                     parsed = _unpickle_rpyc(raw)
                     if parsed:
                         _, stmts = parsed
@@ -1108,6 +1150,11 @@ def extract(game_dir: str, extract_lang: str | None = None
             try:
                 with open(path, "rb") as f:
                     raw = f.read()
+                _rust_items = _walk_ast_rust(raw)
+                if _rust_items is not None:
+                    for kind, s, label in _rust_items:
+                        add(rel, f"{rel}:{kind}", s, label)
+                    continue
                 parsed = _unpickle_rpyc(raw)
                 if parsed:
                     _, stmts = parsed
